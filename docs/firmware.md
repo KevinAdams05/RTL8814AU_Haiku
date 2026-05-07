@@ -88,7 +88,7 @@ in and out.
 ## Reference
 
 The 23,787-packet `morrownr-coldstart.pcap` USB capture from a
-working Linux Mint install on `192.168.74.192` is the source of
+working Linux Mint install on `DevHaikuBox` is the source of
 truth for any unclear sequence.  Extract writes with:
 
 ```

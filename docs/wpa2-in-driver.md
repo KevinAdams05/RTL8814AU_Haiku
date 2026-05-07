@@ -52,17 +52,7 @@ running.  We didn't dig deeper because the conclusion is the same
 for every `AF_LINK`-bound listener: ethertype 0x888E doesn't reach
 userland on Haiku.
 
-### Why every Haiku Wi-Fi driver has the same bug
-
-The `freebsd_wlan` compat layer (`src/libs/compat/freebsd_wlan/`)
-runs the same path: `if_input → ether_input → ifp->receive_queue →
-compat_receive (Read) → Haiku stack → AF_LINK handler dispatch`.
-There's no Haiku-specific routing for 0x888E in any driver, the
-compat layer, the kernel network stack, or net_server — confirmed
-by exhaustive grep.  So no FreeBSD-derived driver on Haiku can do
-WPA2 either.
-
-Fixing the kernel is a real Haiku bug worth filing upstream, but it's
+Fixing the kernel is a real Haiku bug worth addressing, but it's
 out of scope for an unofficial standalone .hpkg driver.  We work
 around it instead.
 
@@ -190,13 +180,3 @@ RX loop mid-handshake.
 See [known-issues.md](known-issues.md) for the open work to bring
 this from "M2 builds correctly in memory" to a fully connected DHCP
 session.
-
-## Open question: should this go upstream?
-
-Long-term, fixing the underlying `AF_LINK` packet-socket routing in
-Haiku's kernel network stack would let `wpa_supplicant` work for
-every Wi-Fi driver, not just ours.  When the dust settles on this
-driver, it might be worth filing the kernel bug with a minimal
-reproducer (the `eapol_sniff.c` test program) and a patch.  The
-in-driver WPA2 path can stay as a fallback for offline operation
-or older Haiku releases.

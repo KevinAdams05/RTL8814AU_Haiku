@@ -5,7 +5,11 @@
 
 # rtl8814au (Unofficial) - Haiku Driver
 
-This is a driver for the Realtek rtl8814au series of USB wifi adapters. It is marked as "unoffical" because it is not developed my the Haiku maintainers/project team and there are no current plans to upstream into Haiku code. The driver will be distributed via a standalone package, or you can build for the source.
+This is a driver for the Realtek rtl8814au series of USB wifi adapters. It is marked as "unoffical" because it is not developed by the Haiku maintainers/project team. There are no current plans to upstream into Haiku code. The driver will be distributed via a standalone package, or you can build for the source.
+
+This is a native Haiku driver, not based on the FreeBSD compatibility layer. Realtek doesn't publish a driver datasheet for this chipset, so the Linux driver was used as a reference for things such as registers and init. However, the driver wasn't copied directly. The goal is a native "Haiku-first" development philosophy.
+
+Since this driver will be released as a standalone package we did not change any Haiku code. There are a couple things that could have been done on the OS level, but instead we had to do in the driver. This is outlined in more detail in the technical documentation.
 
 ---
 

@@ -164,10 +164,7 @@ Open work to get there:
     case the .hpkg downloads it from a known mirror at install time.
 4.  **HaikuPorts submission (later).**  Once stable, submitting a
     HaikuPorts recipe makes the driver `pkgman install`-able.
-5.  **Upstream submission to Haiku itself (much later, optional).**
-    The unofficial fork stays as the development tip; merging to
-    Haiku proper is a stretch goal that depends on community
-    interest and review.
+
 
 ## Diagnostic noise to clean up before 1.0
 
