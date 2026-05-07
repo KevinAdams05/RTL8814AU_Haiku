@@ -31,7 +31,20 @@ This driver was physically tested on the following devices:
 
 ## Documentation
 
-coming soon
+Detailed docs live in [docs/](docs/).  Highlights:
+
+- [Architecture overview](docs/architecture.md) — how the driver is organized, threading model, where to start reading
+- [In-driver WPA2-PSK](docs/wpa2-in-driver.md) — why we don't use `wpa_supplicant`, the in-kernel 4-way handshake design
+- [Hardware initialization](docs/hardware-init.md) — power-on, EFUSE, MAC init, firmware load, PHY config
+- [RX path](docs/rx-path.md) and [TX path](docs/tx-path.md) — frame conversion, EAPOL diversion, descriptor build
+- [Wi-Fi management](docs/wifi-management.md) — scanning, auth + assoc state machine, H2C/C2H mailbox
+- [Firmware](docs/firmware.md) — blob layout, IDDMA load procedure, the 8-byte trailer gotcha
+- [IOCTL reference](docs/ioctl-reference.md) — the 80211 IOC handlers and what userland calls them
+- [Building and deploying](docs/build-and-deploy.md) — cross-build recipe, deploy strategy, package gotchas
+- [Development history](docs/development-history.md) — chronological summary of milestones and dead ends
+- [Known issues and roadmap](docs/known-issues.md) — what's done, what's not, the path to a 1.0 release
+
+Diagrams in [docs/diagrams/](docs/diagrams/) — all SVG.
 
 ---
 

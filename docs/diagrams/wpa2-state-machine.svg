@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 580" font-family="Helvetica, Arial, sans-serif" font-size="13">
+	<defs>
+		<marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+			<path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+		</marker>
+		<style>
+			.title{font-weight:bold;font-size:14px}
+			.section{font-weight:bold;font-size:12px;fill:#666}
+			.muted{fill:#777;font-size:11px}
+			.state{fill:#e6f0ff;stroke:#1f5fc4;stroke-width:1.8;rx:8;ry:8}
+			.term{fill:#eaf6ea;stroke:#2f7a2f;stroke-width:1.8;rx:8;ry:8}
+			.action{font-style:italic;fill:#555;font-size:11px}
+			.flow{stroke:#333;stroke-width:1.5;fill:none}
+		</style>
+	</defs>
+
+	<text x="440" y="22" text-anchor="middle" class="title">In-driver WPA2-PSK 4-way handshake state machine</text>
+	<text x="440" y="40" text-anchor="middle" class="muted">fEapolState transitions; STA = us, AP = the access point</text>
+
+	<!-- Idle -->
+	<rect x="60" y="70" width="200" height="60" class="state"/>
+	<text x="160" y="92" text-anchor="middle" class="title">kEapolIdle</text>
+	<text x="160" y="110" text-anchor="middle" class="muted">no PMK, no handshake</text>
+
+	<!-- Trigger: IOC_HAIKU_JOIN with rich struct -->
+	<line x1="260" y1="100" x2="350" y2="100" class="flow" marker-end="url(#arrow)"/>
+	<text x="305" y="92" text-anchor="middle" class="action">wpa2_join</text>
+	<text x="305" y="120" text-anchor="middle" class="muted">IOC_HAIKU_JOIN(rich)</text>
+
+	<!-- WaitM1 -->
+	<rect x="350" y="70" width="200" height="60" class="state"/>
+	<text x="450" y="92" text-anchor="middle" class="title">kEapolWaitM1</text>
+	<text x="450" y="110" text-anchor="middle" class="muted">PMK derived (PBKDF2),</text>
+	<text x="450" y="123" text-anchor="middle" class="muted">_DoJoin running auth+assoc</text>
+
+	<!-- Side effect note for Idle -> WaitM1 -->
+	<text x="160" y="165" text-anchor="middle" class="action">PBKDF2(passphrase, SSID, 4096, 32) → fPmk</text>
+	<line x1="160" y1="155" x2="160" y2="135" class="flow" stroke-dasharray="2 2"/>
+
+	<!-- AP send M1 -->
+	<line x1="450" y1="130" x2="450" y2="190" class="flow" marker-end="url(#arrow)"/>
+	<text x="540" y="155" class="action">AP sends EAPOL-Key M1</text>
+	<text x="540" y="170" class="muted">(after assoc-resp)</text>
+
+	<!-- Process M1 -->
+	<rect x="290" y="190" width="320" height="100" class="state"/>
+	<text x="450" y="212" text-anchor="middle" class="title">_HandleEapolFrame: M1 branch</text>
+	<text x="450" y="232" text-anchor="middle" class="muted">capture ANonce + replay counter</text>
+	<text x="450" y="248" text-anchor="middle" class="muted">_GenerateSnonce → fSnonce</text>
+	<text x="450" y="264" text-anchor="middle" class="muted">PTK = prf_384(PMK, "Pairwise key expansion",</text>
+	<text x="450" y="278" text-anchor="middle" class="muted">     min(AA,SPA)||max(AA,SPA)||min(AN,SN)||max(AN,SN))</text>
+
+	<!-- Build M2 -->
+	<line x1="450" y1="290" x2="450" y2="320" class="flow" marker-end="url(#arrow)"/>
+	<rect x="290" y="320" width="320" height="60" class="state"/>
+	<text x="450" y="342" text-anchor="middle" class="title">build EAPOL-Key M2</text>
+	<text x="450" y="358" text-anchor="middle" class="muted">our SNonce + RSN IE in key data,</text>
+	<text x="450" y="372" text-anchor="middle" class="muted">MIC = hmac_sha1(KCK, M2)[0..15]</text>
+
+	<!-- TX M2 (planned) -->
+	<line x1="450" y1="380" x2="450" y2="410" class="flow" marker-end="url(#arrow)"/>
+	<rect x="290" y="410" width="320" height="40" class="state"/>
+	<text x="450" y="432" text-anchor="middle" class="muted">TX M2 via fTxPath as 802.11 data frame</text>
+
+	<!-- WaitM3 -->
+	<line x1="450" y1="450" x2="450" y2="480" class="flow" marker-end="url(#arrow)"/>
+	<rect x="350" y="480" width="200" height="60" class="state"/>
+	<text x="450" y="502" text-anchor="middle" class="title">kEapolWaitM3</text>
+	<text x="450" y="520" text-anchor="middle" class="muted">awaiting AP's M3 with</text>
+	<text x="450" y="533" text-anchor="middle" class="muted">encrypted GTK</text>
+
+	<!-- AP send M3 -->
+	<text x="615" y="510" class="action">AP sends EAPOL-Key M3</text>
+	<line x1="550" y1="510" x2="610" y2="510" class="flow" marker-end="url(#arrow)"/>
+
+	<!-- M3 processing -->
+	<rect x="610" y="475" width="240" height="70" class="state"/>
+	<text x="730" y="495" text-anchor="middle" class="title">M3: validate MIC,</text>
+	<text x="730" y="510" text-anchor="middle" class="muted">aes_unwrap(KEK, key_data) → GTK,</text>
+	<text x="730" y="524" text-anchor="middle" class="muted">build M4, TX, program CAM,</text>
+	<text x="730" y="538" text-anchor="middle" class="muted">enable CCMP in kRegSECCFG</text>
+
+	<!-- Done -->
+	<rect x="60" y="475" width="200" height="60" class="term"/>
+	<text x="160" y="497" text-anchor="middle" class="title">kEapolDone</text>
+	<text x="160" y="515" text-anchor="middle" class="muted">PTK + GTK in chip CAM,</text>
+	<text x="160" y="528" text-anchor="middle" class="muted">CCMP on, link encrypted</text>
+
+	<line x1="610" y1="510" x2="260" y2="505" class="flow" marker-end="url(#arrow)" stroke-dasharray="6 3"/>
+	<text x="430" y="498" text-anchor="middle" class="action">handshake complete</text>
+</svg>

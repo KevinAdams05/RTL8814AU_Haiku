@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 540" font-family="Helvetica, Arial, sans-serif" font-size="13">
+	<defs>
+		<marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+			<path d="M0,0 L0,6 L9,3 z" fill="#333"/>
+		</marker>
+		<marker id="arrowx" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+			<path d="M0,0 L0,6 L9,3 z" fill="#c33"/>
+		</marker>
+		<style>
+			.box{fill:#fff;stroke:#333;stroke-width:1.5;rx:5;ry:5}
+			.title{font-weight:bold;font-size:14px}
+			.section{font-weight:bold;font-size:12px;fill:#666}
+			.muted{fill:#777;font-size:11px}
+			.io{fill:#fff5e6;stroke:#cc7a00;stroke-width:1.5;rx:5;ry:5}
+			.kern{fill:#e6f0ff;stroke:#1f5fc4;stroke-width:1.5;rx:5;ry:5}
+			.user{fill:#eaf6ea;stroke:#2f7a2f;stroke-width:1.5;rx:5;ry:5}
+			.bad{fill:#ffe5e5;stroke:#c33;stroke-width:1.5;rx:5;ry:5}
+			.good{fill:#eaf6ea;stroke:#2f7a2f;stroke-width:1.5;rx:5;ry:5}
+			.flow{stroke:#333;stroke-width:1.5;fill:none}
+			.bflow{stroke:#c33;stroke-width:2;fill:none;stroke-dasharray:4 3}
+			.gflow{stroke:#2f7a2f;stroke-width:2;fill:none}
+		</style>
+	</defs>
+
+	<text x="440" y="22" text-anchor="middle" class="title">EAPOL diversion — why the in-driver WPA2 path bypasses Haiku's network stack</text>
+
+	<!-- AP source -->
+	<rect x="40" y="50" width="160" height="50" class="io"/>
+	<text x="120" y="73" text-anchor="middle" class="title">Access Point</text>
+	<text x="120" y="91" text-anchor="middle" class="muted">sends EAPOL-Key M1, M3</text>
+
+	<!-- Chip -->
+	<rect x="40" y="130" width="160" height="50" class="io"/>
+	<text x="120" y="153" text-anchor="middle" class="title">RTL8814AU chip</text>
+	<text x="120" y="171" text-anchor="middle" class="muted">RX → bulk-IN URB</text>
+
+	<line x1="120" y1="100" x2="120" y2="130" class="flow" marker-end="url(#arrow)"/>
+
+	<!-- _RxFrameReceived box (decision point) -->
+	<rect x="40" y="210" width="800" height="60" class="kern"/>
+	<text x="440" y="232" text-anchor="middle" class="title">_RxFrameReceived (USB bulk-IN callback)</text>
+	<text x="440" y="252" text-anchor="middle" class="muted">parses 802.11 header → checks LLC/SNAP → reads ethertype at llc[6..7]</text>
+
+	<line x1="120" y1="180" x2="120" y2="210" class="flow" marker-end="url(#arrow)"/>
+
+	<!-- Decision branches: ethertype check -->
+	<text x="285" y="295" text-anchor="middle" class="section">if ethertype != 0x888E (IP, ARP, etc.)</text>
+	<text x="630" y="295" text-anchor="middle" class="section">if ethertype == 0x888E (EAPOL)</text>
+
+	<!-- Bad path (left): ring buffer to Haiku stack -->
+	<rect x="80" y="320" width="410" height="60" class="bad"/>
+	<text x="285" y="342" text-anchor="middle" class="title">push to RX ring (data path)</text>
+	<text x="285" y="360" text-anchor="middle" class="muted">802.11 → ethernet conversion, fRxRing slot, fRxDataReady sem</text>
+
+	<line x1="285" y1="270" x2="285" y2="320" class="flow" marker-end="url(#arrow)"/>
+
+	<rect x="80" y="400" width="410" height="60" class="kern"/>
+	<text x="285" y="422" text-anchor="middle" class="title">Haiku network stack</text>
+	<text x="285" y="440" text-anchor="middle" class="muted">deframe → consumer_thread → handler dispatch</text>
+	<text x="285" y="455" text-anchor="middle" class="muted" fill="#c33">drops 0x888E silently — no userland packet socket gets it</text>
+
+	<line x1="285" y1="380" x2="285" y2="400" class="flow" marker-end="url(#arrow)"/>
+
+	<!-- Original (broken) flow: down to userland would-be wpa_supplicant -->
+	<rect x="80" y="480" width="410" height="40" class="bad" stroke-dasharray="4 3"/>
+	<text x="285" y="503" text-anchor="middle">wpa_supplicant l2_packet socket — never receives the frame</text>
+	<line x1="285" y1="460" x2="285" y2="480" class="bflow" marker-end="url(#arrowx)"/>
+
+	<!-- Good path (right): inbox to in-driver state machine -->
+	<rect x="510" y="320" width="330" height="60" class="good"/>
+	<text x="675" y="342" text-anchor="middle" class="title">copy to fEapolInbox under fLock</text>
+	<text x="675" y="360" text-anchor="middle" class="muted">single slot · senderMac + payload + length · release fEapolReady</text>
+
+	<line x1="675" y1="270" x2="675" y2="320" class="gflow" marker-end="url(#arrow)"/>
+
+	<rect x="510" y="400" width="330" height="60" class="good"/>
+	<text x="675" y="422" text-anchor="middle" class="title">EAPOL 4-way worker thread</text>
+	<text x="675" y="440" text-anchor="middle" class="muted">acquire fEapolReady → drain inbox →</text>
+	<text x="675" y="454" text-anchor="middle" class="muted">parse Key Info, advance state machine</text>
+
+	<line x1="675" y1="380" x2="675" y2="400" class="gflow" marker-end="url(#arrow)"/>
+
+	<rect x="510" y="480" width="330" height="40" class="good"/>
+	<text x="675" y="503" text-anchor="middle">M1 → derive PTK → build M2 → TX via fTxPath</text>
+	<line x1="675" y1="460" x2="675" y2="480" class="gflow" marker-end="url(#arrow)"/>
+</svg>
