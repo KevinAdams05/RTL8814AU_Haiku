@@ -116,16 +116,57 @@ PRs are welcome! However, please test all code changes on physical hardware befo
 
 ## Installation
 
-> **Status:** the standalone `.hpkg` build is planned but not yet published.
+### From a prebuilt `.hpkg`
 
-### Standalone `.hpkg` (planned)
+1. Download `rtl8814au-<version>-x86_64.hpkg` from the [Releases page](https://github.com/KevinAdams05/rtl8814au_unofficial/releases).
+2. Copy it into one of:
+   - `~/config/packages/` — installs only for your user (recommended)
+   - `/system/packages/` — installs system-wide (needs root)
+3. Reboot.  On boot, packagefs activates the package and the driver appears at `/dev/net/rtl8814au/0`.
+4. Join a network:
+   - **Open:** `ifconfig /dev/net/rtl8814au/0 join <SSID>`
+   - **WPA2-PSK (AES):** see [In-driver WPA2-PSK](docs/wpa2-in-driver.md) for the current workflow.  The standard Haiku `wpa_supplicant` flow does **not** work because of a Haiku stack bug with EAPOL delivery on AF_LINK; this driver runs the 4-way handshake in-kernel and uses an SW CCMP fallback for the data path.
 
-coming soon
-
+To uninstall, delete the `.hpkg` from the `packages/` directory and reboot.
 
 ### Building from source
 
-coming soon
+You need:
+- A working Haiku x86_64 source tree + cross-tools (see the [official build doc](https://www.haiku-os.org/development/build-haiku-from-source/)).
+- A Linux or Haiku machine to run the build on.
+- (Windows) a way to `ssh` and `scp` to that build machine.
+
+#### One-shot build via `build.ps1` (Windows host + Linux build server)
+
+The intended developer flow.  Edit `package/build.ps1`'s `$RemoteHost` / `$RemoteDir` / `$OutputDir` to match your environment, then:
+
+```powershell
+.\package\build.ps1
+```
+
+It will:
+1. `scp` the `src/`, `firmware/`, `package/`, and `LICENSE` to the build server.
+2. Run `package/build-hpkg.sh` over SSH, which stages the source into the Haiku tree, runs `jam -j4 rtl8814au`, and wraps the resulting kernel addon binary + firmware blob in a `.hpkg`.
+3. `scp` the produced `.hpkg` back to your `$OutputDir`.
+
+#### Manual build (on the build host directly)
+
+If you have the project tree available on the build host:
+
+```bash
+# On the build host, with HAIKU_BUILD pointing at your haiku checkout
+cd /path/to/this/repo
+bash package/build-hpkg.sh
+ls -lh build/rtl8814au-*.hpkg
+```
+
+Override the defaults via env vars if your Haiku tree lives elsewhere:
+
+```bash
+HAIKU_BUILD=/srv/haiku/src HAIKU_ARCH=x86_64 bash package/build-hpkg.sh
+```
+
+The build script copies the driver source into `$HAIKU_BUILD/src/add-ons/kernel/drivers/network/wlan/rtl8814au/` and the firmware blob into `$HAIKU_BUILD/data/system/data/firmware/rtl8814au/` so that the Haiku tree's existing `KernelAddon` jam machinery can link it.
 
 ---
 
