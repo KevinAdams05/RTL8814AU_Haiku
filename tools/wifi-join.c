@@ -1,0 +1,197 @@
+/*
+ * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ *
+ * wifi-join: bring up a WPA2-PSK network on the rtl8814au unofficial
+ * driver.
+ *
+ * Why this tool exists: Haiku's network stack does not deliver
+ * ethertype 0x888E (EAPOL) frames to AF_LINK packet sockets, so
+ * wpa_supplicant cannot run the WPA2 4-way handshake.  The rtl8814au
+ * driver works around this by running the handshake inside the
+ * kernel — but to do that it needs the network passphrase, and
+ * neither `ifconfig <dev> join SSID password` nor the Deskbar
+ * Network app ever delivers the passphrase to the driver.
+ *
+ * This tool fills that gap: it accepts SSID + passphrase on the
+ * command line and hands them to the driver via the driver-specific
+ * `IOC_HAIKU_JOIN` ioctl.  The driver runs PBKDF2, drives the full
+ * 4-way handshake, and installs the keys.  After this tool reports
+ * success, the network stack can be brought up over the link via
+ * `ifconfig`, `dhcpconfig`, or whatever else manages your IP config.
+ *
+ * The fd MUST remain open for the lifetime of the connection — the
+ * driver tears down its RX loop on the last `close()`.  This tool
+ * forks before exiting and the child holds the fd open indefinitely;
+ * killing the child (with `kill <PID>`) tells the driver to disconnect.
+ *
+ * Usage:
+ *   wifi-join <dev> <ssid> <passphrase> [bssid]
+ *     dev:        e.g. /dev/net/rtl8814au/0
+ *     ssid:       network name (1..32 chars)
+ *     passphrase: ASCII passphrase (8..63 chars)
+ *     bssid:      optional aa:bb:cc:dd:ee:ff; zeros = lookup by SSID
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/ioctl.h>
+#include <sys/sockio.h>
+#include <errno.h>
+
+
+/* Mirror of the driver-side definitions in WiFiIoctl.h.  Kept private
+ * here because the userland headers from /system/develop/headers
+ * don't ship driver-specific structs. */
+#ifndef IFNAMSIZ
+#	define IFNAMSIZ 32
+#endif
+
+#define SIOCS80211				(SIOCEND + 234)
+#define IEEE80211_IOC_HAIKU_JOIN	0x6002
+
+struct ieee80211req {
+	char			i_name[IFNAMSIZ];
+	unsigned short	i_type;
+	short			i_val;
+	unsigned short	i_len;
+	void*			i_data;
+};
+
+struct rtl_haiku_join_psk {
+	unsigned char	jp_bssid[6];
+	unsigned char	jp_ssid_len;
+	unsigned char	jp_pad;
+	unsigned char	jp_ssid[32];
+	unsigned char	jp_passphrase_len;
+	unsigned char	jp_pad2[3];
+	unsigned char	jp_passphrase[64];
+};
+
+
+static int
+parse_bssid(const char* s, unsigned char out[6])
+{
+	unsigned int b[6];
+	if (sscanf(s, "%x:%x:%x:%x:%x:%x",
+			&b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6)
+		return -1;
+	for (int i = 0; i < 6; i++) {
+		if (b[i] > 0xFF) return -1;
+		out[i] = (unsigned char)b[i];
+	}
+	return 0;
+}
+
+
+static void
+usage(const char* argv0)
+{
+	fprintf(stderr,
+		"usage: %s <dev> <ssid> <passphrase> [bssid]\n"
+		"  dev:        e.g. /dev/net/rtl8814au/0\n"
+		"  ssid:       1..32 chars\n"
+		"  passphrase: 8..63 ASCII chars\n"
+		"  bssid:      optional, aa:bb:cc:dd:ee:ff (zeros => lookup by SSID)\n"
+		"\n"
+		"After a successful join this tool forks into the background\n"
+		"and holds the device fd open so the connection stays alive.\n"
+		"To disconnect, kill the background process: `kill <pid>`.\n",
+		argv0);
+}
+
+
+int
+main(int argc, char** argv)
+{
+	if (argc < 4) {
+		usage(argv[0]);
+		return 1;
+	}
+	const char* dev = argv[1];
+	const char* ssid = argv[2];
+	const char* passphrase = argv[3];
+
+	struct rtl_haiku_join_psk req;
+	memset(&req, 0, sizeof(req));
+
+	size_t slen = strlen(ssid);
+	size_t plen = strlen(passphrase);
+	if (slen < 1 || slen > 32) {
+		fprintf(stderr, "bad ssid length (%zu): must be 1..32 chars\n", slen);
+		return 1;
+	}
+	if (plen < 8 || plen > 63) {
+		fprintf(stderr, "bad passphrase length (%zu): must be 8..63 chars\n",
+			plen);
+		return 1;
+	}
+	memcpy(req.jp_ssid, ssid, slen);
+	req.jp_ssid_len = (unsigned char)slen;
+	memcpy(req.jp_passphrase, passphrase, plen);
+	req.jp_passphrase_len = (unsigned char)plen;
+
+	if (argc >= 5) {
+		if (parse_bssid(argv[4], req.jp_bssid) < 0) {
+			fprintf(stderr, "bad bssid format: %s\n", argv[4]);
+			return 1;
+		}
+	}
+
+	int fd = open(dev, O_RDWR);
+	if (fd < 0) {
+		fprintf(stderr, "open %s: %s\n", dev, strerror(errno));
+		return 1;
+	}
+
+	struct ieee80211req ireq;
+	memset(&ireq, 0, sizeof(ireq));
+	strncpy(ireq.i_name, dev, IFNAMSIZ - 1);
+	ireq.i_type = IEEE80211_IOC_HAIKU_JOIN;
+	ireq.i_data = &req;
+	ireq.i_len = sizeof(req);
+
+	if (ioctl(fd, SIOCS80211, &ireq, sizeof(ireq)) < 0) {
+		fprintf(stderr, "SIOCS80211 IOC_HAIKU_JOIN: %s\n", strerror(errno));
+		close(fd);
+		return 1;
+	}
+
+	/* Fork into the background so the calling shell gets its prompt
+	 * back immediately — typical pattern: run wifi-join, then
+	 * ifconfig/dhcpconfig over the live link.  The child keeps the
+	 * fd open; closing it would tear down the in-driver RX loop and
+	 * end the session. */
+	pid_t pid = fork();
+	if (pid < 0) {
+		fprintf(stderr, "fork: %s\n", strerror(errno));
+		close(fd);
+		return 1;
+	}
+	if (pid > 0) {
+		/* Parent.  Report success + child pid and exit; the kernel
+		 * keeps the fd alive in the child. */
+		printf("wifi-join: handshake kicked off for SSID '%s' on %s\n",
+			ssid, dev);
+		printf("wifi-join: background pid %d holds the device open; "
+			"kill it to disconnect.\n", (int)pid);
+		printf("wifi-join: bring up IP next, e.g. `ifconfig %s auto-config`\n",
+			dev);
+		return 0;
+	}
+
+	/* Child.  Detach from controlling terminal and wait forever.  A
+	 * SIGTERM (default kill) cleanly closes the fd, which in turn
+	 * makes the driver disconnect. */
+	setsid();
+	signal(SIGHUP, SIG_IGN);
+	for (;;)
+		pause();
+
+	/* unreachable */
+	return 0;
+}

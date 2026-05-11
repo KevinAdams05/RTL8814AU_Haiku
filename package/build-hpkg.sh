@@ -26,9 +26,18 @@ GENERATED="$HAIKU_BUILD/generated.${HAIKU_ARCH}"
 HOST_TOOLS="$GENERATED/objects/linux/${HAIKU_ARCH}/release/tools"
 PACKAGE="$HOST_TOOLS/package/package"
 
+# Cross-compile bits for the userland helper (wifi-join).  Same recipe
+# as the in-tree Haiku app build — see reference_haiku_app_crossbuild.md
+# in the dev notes for the lib-path / startfile-search-path gymnastics.
+CROSS_BIN="$GENERATED/cross-tools-${HAIKU_ARCH}/bin"
+CROSS_CC="$CROSS_BIN/${HAIKU_ARCH}-unknown-haiku-gcc"
+HAIKU_DEVEL_LIB="$GENERATED/objects/haiku/${HAIKU_ARCH}/packaging/packages_build/regular/hpkg_-haiku_devel.hpkg/contents/develop/lib"
+HAIKU_RUNTIME_LIB="$GENERATED/objects/haiku/${HAIKU_ARCH}/packaging/packages_build/regular/hpkg_-haiku.hpkg/contents/lib"
+
 # Project paths
 PROJ="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$PROJ/src"
+TOOLS_SRC="$PROJ/tools"
 FIRMWARE_SRC="$PROJ/firmware"
 BUILD="$PROJ/build"
 PKG_ROOT="$BUILD/package_root"
@@ -80,18 +89,50 @@ if [ ! -f "$BUILT_BINARY" ]; then
 fi
 
 # ------------------------------------------------------------------
+# Build userland helper (wifi-join)
+# ------------------------------------------------------------------
+rm -rf "$BUILD"
+mkdir -p "$BUILD"
+if [ -f "$TOOLS_SRC/wifi-join.c" ]; then
+	echo "==> Building wifi-join userland helper..."
+	if [ ! -x "$CROSS_CC" ]; then
+		echo "ERROR: cross compiler not found at $CROSS_CC" >&2
+		exit 1
+	fi
+	mkdir -p "$BUILD/tools"
+	"$CROSS_CC" \
+		-I"$HAIKU_BUILD/headers" \
+		-I"$HAIKU_BUILD/headers/posix" \
+		-I"$HAIKU_BUILD/headers/os" \
+		-I"$HAIKU_BUILD/headers/os/support" \
+		-I"$HAIKU_BUILD/headers/os/kernel" \
+		-I"$HAIKU_BUILD/headers/config" \
+		-B"$HAIKU_DEVEL_LIB" \
+		-L"$HAIKU_DEVEL_LIB" -L"$HAIKU_RUNTIME_LIB" \
+		-Wl,-rpath-link,"$HAIKU_RUNTIME_LIB" \
+		-O2 -Wall \
+		"$TOOLS_SRC/wifi-join.c" \
+		-lroot -lnetwork \
+		-o "$BUILD/tools/wifi-join"
+fi
+
+# ------------------------------------------------------------------
 # Stage the package tree
 # ------------------------------------------------------------------
 echo "==> Staging package tree..."
-rm -rf "$BUILD"
-mkdir -p "$BUILD"
 mkdir -p "$PKG_ROOT/add-ons/kernel/drivers/bin"
 mkdir -p "$PKG_ROOT/add-ons/kernel/drivers/dev/net"
 mkdir -p "$PKG_ROOT/data/firmware/rtl8814au"
 mkdir -p "$PKG_ROOT/data/documentation/packages/rtl8814au"
+mkdir -p "$PKG_ROOT/bin"
 
 cp "$BUILT_BINARY" "$PKG_ROOT/add-ons/kernel/drivers/bin/rtl8814au"
 chmod +x "$PKG_ROOT/add-ons/kernel/drivers/bin/rtl8814au"
+
+if [ -f "$BUILD/tools/wifi-join" ]; then
+	cp "$BUILD/tools/wifi-join" "$PKG_ROOT/bin/wifi-join"
+	chmod +x "$PKG_ROOT/bin/wifi-join"
+fi
 
 # Haiku's driver lookup walks dev/net/<name> and expects each entry to
 # be a symlink to the actual binary under bin/.  Relative path so the

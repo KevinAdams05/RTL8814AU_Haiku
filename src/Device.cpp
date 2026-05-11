@@ -3423,8 +3423,19 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			fM1ReplayCounter = (fM1ReplayCounter << 8) | body[5 + i];
 
 		if (!fPmkValid) {
-			dprintf(RTL8814AU_DRIVER_NAME ": M1 received but no PMK — "
-				"call IOC_HAIKU_JOIN with rtl_haiku_join_psk first\n");
+			// AP retries M1 on a 0.5s..few-second cadence when the
+			// supplicant goes silent.  Logging every retry pegs the
+			// syslog daemon and has triggered the BFS acquire_vnode
+			// race in the past (see developer_notes.md).  Rate-limit
+			// to the first occurrence per association.
+			static bool sLoggedOnce = false;
+			if (!sLoggedOnce) {
+				sLoggedOnce = true;
+				dprintf(RTL8814AU_DRIVER_NAME ": M1 received but no PMK"
+					" — invoke wifi-join with the WPA2 passphrase"
+					" (Deskbar / wpa_supplicant cannot deliver it via"
+					" AF_LINK on Haiku)\n");
+			}
 			return;
 		}
 

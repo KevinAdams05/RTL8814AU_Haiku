@@ -8,6 +8,11 @@ build/
 # kind of thing that should ship in the distributable repo.
 developer_notes.md
 
+# build.ps1 has Kevin's specific paths baked in (build server,
+# storage01 share) — keep it local; users with a Haiku source tree
+# run package/build-hpkg.sh directly anyway.
+package/build.ps1
+
 # Local backup / editor noise.
 *~
 *.bak

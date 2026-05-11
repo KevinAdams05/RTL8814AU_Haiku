@@ -1,5 +1,5 @@
 name			rtl8814au
-version			0.1.0-1
+version			0.1.1-1
 architecture	x86_64
 summary			"RTL8814AU USB WiFi driver (unofficial)"
 
@@ -14,6 +14,14 @@ completing WPA2 association).  CCMP encrypt/decrypt for the data path is
 performed in software inside the driver — the chip's HW crypto engine
 refuses to engage on Haiku and the SW fallback is what makes WPA2 work
 end-to-end.
+
+To join a WPA2-PSK network, run the bundled `wifi-join` tool — neither
+`ifconfig <dev> join SSID password` nor the Deskbar Network app can
+deliver the passphrase to the driver, so the helper is currently the
+only path that completes the handshake:
+
+  wifi-join /dev/net/rtl8814au/0 <ssid> <passphrase>
+  ifconfig /dev/net/rtl8814au/0 auto-config
 
 This driver is NOT part of the official Haiku distribution.  It is
 developed independently and shipped as a standalone package.  Bug reports
@@ -31,7 +39,8 @@ copyrights {
 }
 
 provides {
-	rtl8814au = 0.1.0
+	rtl8814au = 0.1.1
+	cmd:wifi_join = 0.1.1
 }
 
 requires {
