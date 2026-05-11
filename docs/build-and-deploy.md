@@ -3,165 +3,114 @@
 
 # Building and deploying
 
-The driver currently builds inside a full Haiku source tree as a kernel
-add-on, cross-compiled from a Linux host.  A standalone build that
-doesn't require the Haiku source is on the roadmap (see
-[known-issues.md](known-issues.md)).
+The rtl8814au driver is a Haiku kernel addon.  It is built on a Haiku
+machine against a Haiku source tree, then packaged as a standalone
+`.hpkg` that can be dropped into `~/config/packages/` and activated
+on reboot.
 
-## Build server setup
+If you just want to install the driver, see [Installation](../README.md#installation)
+in the top-level README — you can grab a prebuilt `.hpkg` from the
+[Releases page](https://github.com/KevinAdams05/rtl8814au_unofficial/releases)
+without ever building locally.
 
-We develop on a Linux host with a Haiku source checkout and the Haiku
-cross-tools:
+This document is for people who want to compile from source.
 
-```
-~/haiku-build/haiku/                        # Haiku source tree
-~/haiku-build/haiku/generated.x86_64/       # build output
-~/haiku-build/haiku/generated.x86_64/cross-tools-x86_64/bin/
-                                             # cross-compiler
-```
+## Prerequisites
 
-Driver source lives at:
+You need:
 
-```
-src/add-ons/kernel/drivers/network/wlan/rtl8814au/
-   Driver.cpp / Device.cpp / RegisterIO.cpp / Firmware.cpp
-   EfuseReader.cpp / PhyConfig.cpp / TxPath.cpp / RxPath.cpp
-   WiFiManagement.cpp / WPA2Crypto.cpp
-   WiFiIoctl.h / Device.h / WPA2Crypto.h / RTL8814AU.h
-   Jamfile
-```
+- A Haiku x86_64 system with a few hundred MB of free disk space.
+- A Haiku source tree at some path `$HAIKU_TOP` (e.g. `~/haiku-build/haiku`).
+- A configured generated directory inside that source tree (e.g.
+  `~/haiku-build/haiku/generated.x86_64/`), produced via the standard
+  `configure --build-cross-tools x86_64` dance from the
+  [official Haiku build docs](https://www.haiku-os.org/development/build-haiku-from-source/).
+- A checkout of this repo somewhere convenient (e.g.
+  `~/projects/rtl8814au_unofficial/`).
 
-Once the standalone build lands, this layout will move to the project
-repo (`C:\Code\Haiku\rtl8814au\src\` or similar) and ship as a
-`.hpkg` plus build instructions.
+The build does not need any external dependencies — the Haiku tree's
+own `jam` and cross-tools handle everything.
 
-## Building the driver
-
-From the build server:
+## Source layout
 
 ```
-cd ~/haiku-build/haiku/generated.x86_64
-jam -q -j8 rtl8814au
+rtl8814au_unofficial/
+├── src/                    # driver source code
+│   ├── Jamfile             # KernelAddon target
+│   ├── Driver.cpp / Device.cpp / RegisterIO.cpp / Firmware.cpp
+│   ├── EfuseReader.cpp / PhyConfig.cpp / TxPath.cpp / RxPath.cpp
+│   ├── WiFiManagement.cpp / WPA2Crypto.cpp
+│   ├── *.h
+│   └── PhyRegTables.h
+├── firmware/
+│   └── rtl8814aufw.bin     # Lexra 3081 MCU firmware blob
+├── package/
+│   ├── PackageInfo         # .hpkg manifest
+│   └── build-hpkg.sh       # build + package script
+├── docs/                   # documentation (you are here)
+├── LICENSE                 # MIT
+└── README.md
 ```
 
-Output: `objects/haiku/x86_64/release/add-ons/kernel/drivers/network/wlan/rtl8814au/rtl8814au` (~150 KB binary).
+## Building the .hpkg
 
-## Deploying to the test box
+From the project root, with `$HAIKU_TOP` set to your Haiku source tree:
 
-The test box is a separate Haiku machine accessed by SSH key auth.
-
-```
-scp <build-server>:.../rtl8814au \
-    user@<test-box>:/boot/home/config/non-packaged/add-ons/kernel/drivers/bin/rtl8814au
-ssh user@<test-box> '/boot/home/reboot.sh'
+```sh
+HAIKU_BUILD=$HAIKU_TOP bash package/build-hpkg.sh
 ```
 
-The kernel's directory watcher does **not** swap a live driver — even
-after dropping a new binary, the in-memory module stays old.  Reboot is
-the reliable way to load a new driver build.
+What it does:
 
-### Driver location priorities
+1. Copies `src/*.cpp`, `src/*.h`, and `src/Jamfile` into
+   `$HAIKU_TOP/src/add-ons/kernel/drivers/network/wlan/rtl8814au/`,
+   wiping any stale files there.
+2. Copies `firmware/rtl8814aufw.bin` into
+   `$HAIKU_TOP/data/system/data/firmware/rtl8814au/`.
+3. Runs `jam -q -j4 rtl8814au` from `$HAIKU_TOP/generated.x86_64/`.
+4. Stages the resulting kernel addon binary, firmware blob, and
+   `LICENSE` into a `package_root/` tree with the standard Haiku
+   layout (`add-ons/kernel/drivers/bin/...`, `data/firmware/...`,
+   etc).
+5. Invokes the `package` tool from the Haiku build's `objects/.../tools/`
+   directory to produce
+   `build/rtl8814au-<version>-<arch>.hpkg`.
 
-Haiku looks for kernel drivers at three priority levels:
+If your Haiku tree lives at the default
+(`$HOME/haiku-build/haiku`), `HAIKU_BUILD` doesn't need to be set:
 
-| Priority | Path |
-|---|---|
-| 2 (wins) | `/boot/home/config/non-packaged/add-ons/kernel/drivers/bin/rtl8814au` |
-| 0 | `/boot/system/non-packaged/add-ons/kernel/drivers/bin/rtl8814au` |
-| 0 | `/boot/system/add-ons/kernel/drivers/bin/rtl8814au` (packagefs, read-only) |
-
-The symlink `dev/net/rtl8814au -> ../../bin/rtl8814au` must exist
-alongside the binary in the same priority path or the driver won't be
-published as a network device.
-
-> **Gotcha:** if both the priority-2 binary and the read-only packagefs
-> binary are present, the priority-2 wins on most boots — but not all.
-> When the older packagefs driver wins (e.g., it claimed the USB device
-> first during enumeration), the new code doesn't run.  Either bump the
-> haiku.hpkg version (instructions below) or remove the old non-packaged
-> copies before iterating.
-
-## Cross-building userland tools
-
-Tools (`wpa2_join`, `eapol_sniff`) are cross-built using the same Haiku
-cross-compiler.  Recipe:
-
-```bash
-HAIKU=~/haiku-build/haiku
-GEN=$HAIKU/generated.x86_64
-CC=$GEN/cross-tools-x86_64/bin/x86_64-unknown-haiku-gcc
-DEVEL_LIB=$GEN/objects/haiku/x86_64/packaging/packages_build/regular/hpkg_-haiku_devel.hpkg/contents/develop/lib
-RUNTIME_LIB=$GEN/objects/haiku/x86_64/packaging/packages_build/regular/hpkg_-haiku.hpkg/contents/lib
-
-$CC -o wpa2_join wpa2_join.c \
-    -I$HAIKU/headers \
-    -I$HAIKU/headers/posix \
-    -I$HAIKU/headers/os \
-    -I$HAIKU/headers/os/support \
-    -I$HAIKU/headers/os/kernel \
-    -I$HAIKU/headers/config \
-    -B$DEVEL_LIB -L$DEVEL_LIB -L$RUNTIME_LIB \
-    -Wl,-rpath-link,$RUNTIME_LIB \
-    -lroot -lnetwork
+```sh
+bash package/build-hpkg.sh
 ```
 
-Notes:
+The build script's first few lines list every env var it honors;
+`HAIKU_BUILD` and `HAIKU_ARCH` are the only two you might care about.
 
-- `-B"$DEVEL_LIB"` is **not** the same as `-L"$DEVEL_LIB"`.  The cross
-  compiler's spec file looks for CRT files (`crti.o`, `start_dyn.o`)
-  via the *startfile* search path which `-B` extends and `-L` doesn't.
-- The DEVEL_LIB / RUNTIME_LIB split is deliberate: `develop/lib/`
-  contains symlinks like `libbe.so → ../../lib/libbe.so` which only
-  resolve at install time.  We need the actual `.so` files at link
-  time, hence linking against `RUNTIME_LIB` directly.
-- `-lnetwork` is required for `socket`, `bind`, `recvfrom`, etc.
-  `-lroot` for `ioctl`, `strerror`.
+## Installing the .hpkg you just built
 
-## Updating the packagefs haiku.hpkg (when bumping versions)
+Copy it into a `packages/` directory packagefs watches:
 
-Sometimes the right move is to rebuild `haiku.hpkg` with the new
-driver baked in, replacing the read-only packagefs copy.  The dance:
-
-```
-# 1. Commit the driver change (so the Haiku revision is clean).
-# 2. Force re-derive the revision string:
-rm generated.x86_64/build/haiku-revision \
-   generated.x86_64/build/last-built-revision
-
-# 3. Build:
-jam -q haiku.hpkg
-
-# 4. Push to test box:
-ssh user@<test-box> 'rm /boot/system/packages/haiku-OLD.hpkg'
-scp .../haiku.hpkg user@<test-box>:/boot/system/packages/haiku-NEW.hpkg
-
-# 5. Activate the new one in the package list:
-ssh user@<test-box> \
-    'sed -i s/haiku-OLD/haiku-NEW/ \
-     /boot/system/packages/administrative/activated-packages'
-
-# 6. Reboot.
+```sh
+cp build/rtl8814au-0.1.0-1-x86_64.hpkg ~/config/packages/
 ```
 
-> **DANGER:** `/boot` on a typical Haiku test box is small (~1.5 GB).
-> Trying to copy a new `haiku.hpkg` (~39 MB) while the old one is still
-> there can fail with "No space left on device" and leave a partial
-> file that puts packagefs in a degraded state.  Always delete the old
-> hpkg first.
+User-level (`~/config/packages/`) is preferred over system-level
+(`/system/packages/`) — no root needed, and uninstall is just deleting
+the file.
 
-## Future: standalone .hpkg
+Reboot once.  On the way back up, packagefs activates the package and
+the kernel scans `/system/add-ons/kernel/drivers/` (which now includes
+our binary via the package's overlay).  `ls /dev/net/rtl8814au/`
+should show a slot (e.g. `0`) for each connected adapter.
 
-The release plan is to publish the driver as a self-contained `.hpkg`
-that doesn't require the Haiku source tree.  Approximate layout:
+To uninstall, delete the `.hpkg` from the `packages/` directory and
+reboot.
 
-```
-rtl8814au_unofficial-X.Y.Z.hpkg
-   add-ons/kernel/drivers/bin/rtl8814au
-   add-ons/kernel/drivers/dev/net/rtl8814au -> ../../bin/rtl8814au
-   bin/wpa2_join
-   data/firmware/rtl8814au/rtl8814aufw.bin
-```
+## Iterating during development
 
-See [known-issues.md](known-issues.md) for the open work to get there
-(packaging script, firmware redistribution license review, version
-discipline, `pkgman`-installable upload).
+The .hpkg flow is the right thing for installs but slow for tight
+edit-build-test cycles.  See [developer_notes.md](../developer_notes.md)
+(not shipped in the repo) for the fast-path workflow that drops the
+freshly-built kernel addon directly into
+`/boot/home/config/non-packaged/add-ons/kernel/drivers/bin/rtl8814au`,
+bypassing the package step.

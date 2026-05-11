@@ -5,7 +5,7 @@
 
 # rtl8814au (Unofficial) - Haiku Driver
 
-This is a driver for the Realtek rtl8814au series of USB wifi adapters. It is marked as "unoffical" because it is not developed by the Haiku maintainers/project team. There are no current plans to upstream into Haiku code. The driver will be distributed via a standalone package, or you can build for the source.
+This is a driver for the Realtek rtl8814au series of USB wifi adapters. It is marked as "unofficial" because it is not developed by the Haiku maintainers/project team. There are no current plans to upstream into Haiku code. The driver is distributed as a standalone package, or you can build it from source.
 
 This is a native Haiku driver, not based on the FreeBSD compatibility layer. Realtek doesn't publish a driver datasheet for this chipset, so the Linux driver was used as a reference for things such as registers and init. However, the driver wasn't copied directly. The goal is a native "Haiku-first" development philosophy.
 
@@ -45,8 +45,6 @@ Detailed docs live in [docs/](docs/).  Highlights:
 - [Firmware](docs/firmware.md) — blob layout, IDDMA load procedure, the 8-byte trailer gotcha
 - [IOCTL reference](docs/ioctl-reference.md) — the 80211 IOC handlers and what userland calls them
 - [Building and deploying](docs/build-and-deploy.md) — cross-build recipe, deploy strategy, package gotchas
-- [Development history](docs/development-history.md) — chronological summary of milestones and dead ends
-- [Known issues and roadmap](docs/known-issues.md) — what's done, what's not, the path to a 1.0 release
 
 Diagrams in [docs/diagrams/](docs/diagrams/) — all SVG.
 
@@ -131,48 +129,51 @@ To uninstall, delete the `.hpkg` from the `packages/` directory and reboot.
 
 ### Building from source
 
-You need:
-- A working Haiku x86_64 source tree + cross-tools (see the [official build doc](https://www.haiku-os.org/development/build-haiku-from-source/)).
-- A Linux or Haiku machine to run the build on.
-- (Windows) a way to `ssh` and `scp` to that build machine.
+You need a Haiku x86_64 machine with:
 
-#### One-shot build via `build.ps1` (Windows host + Linux build server)
+- A configured Haiku source tree with cross-tools built — follow the
+  [official Haiku build doc](https://www.haiku-os.org/development/build-haiku-from-source/)
+  for the `configure --build-cross-tools x86_64` setup.
+- A checkout of this repo.
 
-The intended developer flow.  Edit `package/build.ps1`'s `$RemoteHost` / `$RemoteDir` / `$OutputDir` to match your environment, then:
-
-```powershell
-.\package\build.ps1
-```
-
-It will:
-1. `scp` the `src/`, `firmware/`, `package/`, and `LICENSE` to the build server.
-2. Run `package/build-hpkg.sh` over SSH, which stages the source into the Haiku tree, runs `jam -j4 rtl8814au`, and wraps the resulting kernel addon binary + firmware blob in a `.hpkg`.
-3. `scp` the produced `.hpkg` back to your `$OutputDir`.
-
-#### Manual build (on the build host directly)
-
-If you have the project tree available on the build host:
-
-```bash
-# On the build host, with HAIKU_BUILD pointing at your haiku checkout
-cd /path/to/this/repo
-bash package/build-hpkg.sh
+```sh
+# From the project root, with HAIKU_BUILD pointing at your haiku tree
+# (defaults to ~/haiku-build/haiku if unset)
+HAIKU_BUILD=$HOME/haiku-build/haiku bash package/build-hpkg.sh
 ls -lh build/rtl8814au-*.hpkg
 ```
 
-Override the defaults via env vars if your Haiku tree lives elsewhere:
+The script copies our `src/*` into the Haiku tree's
+`src/add-ons/kernel/drivers/network/wlan/rtl8814au/`, copies the
+firmware blob into `data/system/data/firmware/rtl8814au/`, runs
+`jam -q -j4 rtl8814au` from the `generated.x86_64/` directory, and
+wraps the kernel addon + firmware blob + LICENSE into the .hpkg.
 
-```bash
-HAIKU_BUILD=/srv/haiku/src HAIKU_ARCH=x86_64 bash package/build-hpkg.sh
-```
+To install the .hpkg you just built, drop it into
+`~/config/packages/` and reboot — same flow as a prebuilt download.
 
-The build script copies the driver source into `$HAIKU_BUILD/src/add-ons/kernel/drivers/network/wlan/rtl8814au/` and the firmware blob into `$HAIKU_BUILD/data/system/data/firmware/rtl8814au/` so that the Haiku tree's existing `KernelAddon` jam machinery can link it.
+See [docs/build-and-deploy.md](docs/build-and-deploy.md) for more
+detail.
 
 ---
 
 ## Source Material
-coming soon
 
+This is a from-scratch Haiku driver, but the registers, init
+sequences, and firmware-load procedure are unrecognizable without
+public reference work.  The most useful sources during development
+were:
+
+- **morrownr's Linux 8814au fork** — `github.com/morrownr/8814au`.
+  The cold-start register replay and the firmware-load procedure
+  are derived from observation of this driver in action via USB
+  packet captures.  Logic only, never copied code (see
+  [docs/architecture.md](docs/architecture.md)).
+- **`rtwn`** — the FreeBSD Realtek WiFi driver
+  (`src/sys/dev/rtwn/`).  Used as a sanity check for register
+  semantics and the security CAM programming pattern.
+- **IEEE 802.11-2012** — the spec.  Most of the WPA2 4-way handshake
+  and CCMP encryption code comes straight out of §11.4.
 
 ---
 

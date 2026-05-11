@@ -46,10 +46,16 @@ small amount of shared state.  Threads:
 | **EAPOL 4-way handshake worker** | Drains `fEapolInbox`, runs the in-driver WPA2 state machine | `fEapolReady` released by `_RxFrameReceived` when ethertype is 0x888E |
 
 The two USB callbacks run in the USB stack's context — they must not
-block on synchronous control transfers.  Anything that needs to do a
-control transfer (programming the chip CAM after a handshake completes,
-sending H2C commands) is handed off to the post-assoc worker or the
-EAPOL worker via a semaphore.
+block on synchronous control transfers.  Anything that needs to do
+a control transfer (programming the chip CAM after a handshake
+completes, sending H2C commands) is handed off to the post-assoc
+worker or the EAPOL worker via a semaphore.
+
+SW CCMP encrypt + decrypt for the data path run inline in the TX
+and RX callbacks since both are bounded work (~150 ns/AES-block on
+modern x86) and a context-switch would dwarf the cost.  See
+[wpa2-in-driver.md](wpa2-in-driver.md) for why the data path
+encrypts in software rather than in the chip's HW crypto engine.
 
 ## State machine
 
@@ -71,19 +77,20 @@ The driver exposes itself through the standard Haiku character-device
 interface plus the freebsd_wlan-style 802.11 IOCs.  See
 [ioctl-reference.md](ioctl-reference.md) for the per-IOC behavior.
 
-The two callers we deal with are:
+The callers we deal with are:
 
-- **Userland tools** (`ifconfig`, our own `wpa2_join`) — open
-  `/dev/net/rtl8814au/0` directly and issue `SIOCS80211` / `SIOCG80211`
-  ioctls on that fd.
+- **Userland tools** (`ifconfig`, and a small helper that issues the
+  rich `IOC_HAIKU_JOIN` for WPA2-PSK setup) — open
+  `/dev/net/rtl8814au/0` directly and issue `SIOCS80211` /
+  `SIOCG80211` ioctls on that fd.
 - **`wpa_supplicant`** via Haiku's `net_server` — issues the same
-  ioctls but goes through the `freebsd_wlan` userland glue.  We support
-  enough of its init sequence that it doesn't bail (`IOC_ROAMING`,
-  `IOC_PRIVACY`, `IOC_WPA`, `IOC_DEVCAPS`, `SIOCSIFMEDIA`...), but the
-  4-way handshake itself is **not** done via `wpa_supplicant` because
-  Haiku's network stack drops EAPOL frames before they reach
-  `wpa_supplicant`'s `AF_LINK` packet socket.  See
-  [wpa2-in-driver.md](wpa2-in-driver.md).
+  ioctls but goes through the `freebsd_wlan` userland glue.  The
+  driver supports enough of its init sequence that it doesn't bail
+  (`IOC_ROAMING`, `IOC_PRIVACY`, `IOC_WPA`, `IOC_DEVCAPS`,
+  `SIOCSIFMEDIA`...), but the 4-way handshake itself is **not** done
+  via `wpa_supplicant` because Haiku's network stack drops EAPOL
+  frames before they reach `wpa_supplicant`'s `AF_LINK` packet
+  socket.  See [wpa2-in-driver.md](wpa2-in-driver.md).
 
 ## Why not use the FreeBSD `net80211` compat layer?
 

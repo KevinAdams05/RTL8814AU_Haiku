@@ -48,7 +48,7 @@ decoded map):
 | 0x00E | antenna config | bitmask of which RF paths are wired (this hardware = `12` = paths C+D) |
 | 0x010 | RFE type | board variant index, drives RFE pinmux choice |
 | 0x100 | thermal calibration | currently unused |
-| 0x0D8..0x0DD | MAC address | ours: `2c:4d:54:cb:6c:fd` |
+| 0x0D8..0x0DD | MAC address | per-device, e.g. `2c:4d:54:cb:6c:fd` |
 
 ## MAC initialization
 
@@ -70,12 +70,14 @@ The big function.  Three phases:
 1.  **BB unlock** — set `REG_SYS_CFG3+2` BIT 1 (`FEN_BB_GLB_RSTn`).
     Without this, every BB-region register write to 0x800–0x1FFF is
     silently dropped by the chip even though the bus reports success.
-    See [development-history.md](development-history.md) for why this
-    cost us a week.
+    Not documented anywhere — found by replaying a working USB
+    packet capture and watching for the difference between "register
+    writes ignored" and "register writes land".
 2.  **Cold-start replay** — write the 3914 BB/AGC/RF table entries
-    morrownr's driver writes during cold-start.  This replaces the
-    hand-derived `PhyRegTables.h` we tried first; the trace replay
-    works first try, the hand-derived didn't.
+    morrownr's Linux driver writes during cold-start.  The flat
+    replay is more reliable than a hand-derived register table
+    because we don't have the Realtek datasheet and the table
+    relationships are not all obvious from the reference driver.
 3.  **IQ calibration** — runs the chip's auto-cal sequence on all 4
     RF paths.  Verifies by reading back `REG_IQK_RPT*`.
 
@@ -90,9 +92,11 @@ visibility into beacons + probes for scan results without a separate
 
 ## What's *not* configured
 
-- **Hardware CCMP** — `kRegSECCFG` is left at default (no encryption).
-  The in-driver WPA2 path will program this when the 4-way handshake
-  completes.  See [wpa2-in-driver.md](wpa2-in-driver.md).
+- **Hardware CCMP** — `kRegSECCFG` is left at `0` (no chip-side
+  encryption).  The chip's HW crypto engine refused to engage for
+  our setup despite a chip-CAM-correct programming, so AES-CCMP
+  runs in software on the host instead.  See
+  [wpa2-in-driver.md](wpa2-in-driver.md) for the full SW CCMP story.
 - **A-MPDU aggregation** — currently disabled (`kTxDescAGGEn = 0`
   on data frames).  The morrownr driver has fairly aggressive AMPDU
   but tuning it requires more chip docs than we have today.

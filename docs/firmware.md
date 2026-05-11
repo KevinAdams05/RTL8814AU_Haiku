@@ -9,34 +9,19 @@ loaded by the host driver at startup.  The firmware blob ships as
 
 ## Blob layout
 
-```
-+---------------------------------+   offset 0
-| 12-byte header                  |
-|   sig:    uint16   = 0x8814     |
-|   ver:    uint16                |
-|   rsvd:   uint16                |
-|   dmemSz: uint16   (5112)       |
-|   iramSz: uint32   (61712)      |
-+---------------------------------+   offset 12
-| DMEM bytes (5112 bytes)         |
-+---------------------------------+
-| DMEM 8-byte XOR trailer         |
-+---------------------------------+   offset 12 + 5120
-| IRAM bytes (61712 bytes)        |
-+---------------------------------+
-| IRAM 8-byte XOR trailer         |
-+---------------------------------+   end-of-file
-```
+![firmware blob layout](diagrams/firmware-blob.svg)
 
-> **The 8-byte trailers per section are real bytes in the file but
-> NOT counted in the section sizes the header reports.**  The driver
-> must extend `dmem_size` and `iram_size` by 8 each before it tells
-> the chip how many bytes to expect via IDDMA.  Without this, the
-> chip's checksum poll fails and `CPU_DL_READY` never asserts.
+The 12-byte header declares two image sizes — DMEM (5112 bytes) and
+IRAM (61712 bytes) — but each image is followed in the file by an
+8-byte XOR trailer that is **not** included in the header's stated
+size.  The driver must extend `dmem_size` and `iram_size` by 8 each
+before telling the chip how many bytes to expect via IDDMA.  Without
+this, the chip's checksum poll fails and `CPU_DL_READY` never
+asserts.
 
 This was the primary bring-up gotcha — the morrownr Linux reference
-driver hides this in a helper that adds the 8 bytes implicitly.  We
-hit it as `firmware load failed: timed out` for hours of debugging.
+driver hides it inside a helper that adds the 8 bytes implicitly, so
+it isn't visible in any obvious place in the reference code.
 
 ## IDDMA load procedure
 
@@ -80,25 +65,15 @@ mailbox protocol:
   endpoint as 4+N-byte messages.  We listen for them in
   `WiFiManagement.cpp` but currently don't dispatch on most.
 
-The firmware also handles per-packet TX rate selection, AMPDU
-aggregation, and CCMP encryption once the security CAM is programmed
-— so we don't software-encrypt data frames; we just plumb plaintext
-in and out.
+The firmware also handles per-packet TX rate selection and AMPDU
+aggregation.  CCMP encryption is **not** performed by the firmware
+in this driver — the chip's hardware crypto engine declined to engage
+for our SECCFG / CAM programming despite matching the morrownr
+Linux reference, so the data path runs AES-CCMP in software on the
+host instead.  See [wpa2-in-driver.md](wpa2-in-driver.md) for the
+full story.
 
-## Reference
-
-The 23,787-packet `morrownr-coldstart.pcap` USB capture from a
-working Linux Mint install on `DevHaikuBox` is the source of
-truth for any unclear sequence.  Extract writes with:
-
-```
-tshark -r /tmp/morrownr-coldstart.pcap \
-    -Y 'usb.setup.bRequest == 5 and usb.bmRequestType == 0x40' \
-    -T fields -e frame.number -e usb.setup.wValue -e usb.setup.wLength \
-        -e usb.data_fragment > /tmp/cold_writes.txt
-
-# look up specific registers (data is little-endian)
-grep '0x0808' /tmp/cold_writes.txt    # OFDMCCK_EN over time
-grep '0x0a04' /tmp/cold_writes.txt    # CCK_RX_PATH
-grep '0x1002' /tmp/cold_writes.txt    # BB reset/clock
-```
+The security CAM is still programmed (CAM[1] = GTK with the group
+flag, CAM[4] = pairwise TK) — harmless when SECCFG=0, and useful
+future-proofing if a chip configuration we haven't found turns out
+to make the HW engine cooperate.

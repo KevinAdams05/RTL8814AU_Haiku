@@ -40,7 +40,7 @@ selects the operation.
 | 16 | `IEEE80211_IOC_ROAMING` | S/G | state-backed (`fRoaming`) |
 | 17 | `IEEE80211_IOC_PRIVACY` | S/G | state-backed (`fPrivacy`).  When non-zero, `_SendAssocRequest` sets the Privacy bit in the cap-info field |
 | 18 | `IEEE80211_IOC_DROPUNENCRYPTED` | S/G | state-backed (`fDropUnencrypted`); chip drops are implicit once CCMP is on |
-| 19 | `IEEE80211_IOC_WPAKEY` | S | stub; logs the key.  Real implementation pending (see [known-issues.md](known-issues.md)). |
+| 19 | `IEEE80211_IOC_WPAKEY` | S | accept (key install for WPA2-PSK happens in-driver from `IOC_HAIKU_JOIN`'s rich payload; this ioctl is from the wpa_supplicant path, which doesn't complete on Haiku). |
 | 20 | `IEEE80211_IOC_DELKEY` | S | accept; nothing to delete in current state |
 | 21 | `IEEE80211_IOC_MLME` | S | parses `ieee80211req_mlme`, dispatches on `im_op`: ASSOC → calls `_DoJoin`; DEAUTH/DISASSOC → resets state, calls `WiFiManager::Disconnect` |
 | 25 | `IEEE80211_IOC_COUNTERMEASURES` | S | accept; we don't do TKIP |
@@ -90,16 +90,22 @@ When the AP later sends EAPOL-Key M1, the EAPOL worker thread picks
 up from `kEapolWaitM1` and runs the rest of the 4-way handshake —
 see [wpa2-in-driver.md](wpa2-in-driver.md).
 
-## Userland tools that drive these IOCs
+## Callers of this IOC interface
 
 - **`ifconfig`** — open networks via `ifconfig <dev> join <ssid>`.
   Goes through `IOC_SSID` + `IOC_HAIKU_JOIN` (zero-len) for open
   networks.
 - **`wpa_supplicant`** (BApplication, launched by net_server) —
   drives the full freebsd_wlan ioctl set: ROAMING, PRIVACY, WPA,
-  DEVCAPS, AUTHMODE, DROPUNENCRYPTED, APPIE, MLME ASSOC, etc.  We
-  support its init through the IOC layer but the EAPOL handshake
-  never completes via wpa_supplicant due to a Haiku stack bug.
-- **`wpa2_join`** (ours) — issues a single
-  `SIOCS80211 IOC_HAIKU_JOIN` with the rich struct, used to drive
-  the in-driver WPA2 path.
+  DEVCAPS, AUTHMODE, DROPUNENCRYPTED, APPIE, MLME ASSOC, etc.  The
+  driver supports its init through the IOC layer, but the EAPOL
+  handshake itself never completes via wpa_supplicant on Haiku — a
+  stack-level issue with EAPOL delivery on AF_LINK prevents the
+  4-way handshake from running through userland.  See
+  [wpa2-in-driver.md](wpa2-in-driver.md).
+- **In-driver WPA2 path** — when userland (currently a small helper
+  tool, eventually network preferences when this lands officially)
+  issues `SIOCS80211 IOC_HAIKU_JOIN` with the rich
+  `rtl_haiku_join_psk` payload (SSID + passphrase + BSSID), the
+  driver runs PBKDF2 + the entire 4-way handshake itself, bypassing
+  wpa_supplicant and the broken AF_LINK delivery path entirely.

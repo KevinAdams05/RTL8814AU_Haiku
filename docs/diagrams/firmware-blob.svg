@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 460" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13">
+  <style>
+    .box  { fill: #f6f8fa; stroke: #444; stroke-width: 1.2; }
+    .hdr  { fill: #e7eef7; stroke: #2c5aa0; stroke-width: 1.4; }
+    .body { fill: #fffdf2; stroke: #444; stroke-width: 1.2; }
+    .trailer { fill: #fae1c3; stroke: #b05b1f; stroke-width: 1.4; }
+    .lbl  { fill: #222; }
+    .small { font-size: 11px; fill: #555; }
+    .off  { font-size: 11px; fill: #4a4a4a; font-family: 'Menlo','Consolas',monospace; }
+    .mono { font-family: 'Menlo','Consolas',monospace; }
+    .ann  { font-size: 11px; fill: #b05b1f; font-style: italic; }
+  </style>
+
+  <!-- Title -->
+  <text x="20" y="28" font-size="15" font-weight="600" fill="#1a1a1a">rtl8814aufw.bin layout</text>
+  <text x="20" y="46" class="small">Two MCU images preceded by a 12-byte header; each image has a hidden 8-byte XOR trailer not counted in the header sizes.</text>
+
+  <!-- Header block -->
+  <rect class="hdr" x="120" y="70" width="420" height="64" rx="3"/>
+  <text x="330" y="92" text-anchor="middle" font-weight="600">12-byte header</text>
+  <text x="330" y="112" text-anchor="middle" class="mono small">sig=0x8814  ver  rsvd  dmemSz  iramSz</text>
+  <text x="330" y="128" text-anchor="middle" class="small">uint16  uint16  uint16  uint16  uint32</text>
+  <text x="568" y="76" class="off">offset 0</text>
+  <text x="568" y="138" class="off">offset 12</text>
+
+  <!-- DMEM bytes -->
+  <rect class="body" x="120" y="142" width="420" height="80" rx="3"/>
+  <text x="330" y="172" text-anchor="middle" font-weight="600">DMEM bytes</text>
+  <text x="330" y="192" text-anchor="middle" class="mono small">dmemSz = 5112 bytes</text>
+  <text x="330" y="208" text-anchor="middle" class="ann">→ pushed via IDDMA to MCU data memory</text>
+
+  <!-- DMEM trailer -->
+  <rect class="trailer" x="120" y="222" width="420" height="36" rx="3"/>
+  <text x="330" y="244" text-anchor="middle" font-weight="600">DMEM 8-byte XOR trailer</text>
+  <text x="568" y="228" class="off">+ 5120</text>
+
+  <!-- IRAM bytes -->
+  <rect class="body" x="120" y="266" width="420" height="100" rx="3"/>
+  <text x="330" y="298" text-anchor="middle" font-weight="600">IRAM bytes</text>
+  <text x="330" y="318" text-anchor="middle" class="mono small">iramSz = 61712 bytes</text>
+  <text x="330" y="338" text-anchor="middle" class="ann">→ pushed via IDDMA to MCU instruction memory</text>
+
+  <!-- IRAM trailer -->
+  <rect class="trailer" x="120" y="366" width="420" height="36" rx="3"/>
+  <text x="330" y="388" text-anchor="middle" font-weight="600">IRAM 8-byte XOR trailer</text>
+  <text x="568" y="402" class="off">end-of-file</text>
+
+  <!-- Caption explaining trailer gotcha -->
+  <rect x="120" y="416" width="420" height="34" fill="#fff5e1" stroke="#b05b1f" stroke-width="1"/>
+  <text x="330" y="436" text-anchor="middle" class="small" fill="#7a4012">
+    The 8-byte trailers are real bytes in the file but NOT counted in the header sizes —
+  </text>
+  <text x="330" y="448" text-anchor="middle" class="small" fill="#7a4012">
+    extend dmemSz and iramSz by 8 each before telling the chip how many bytes to expect.
+  </text>
+</svg>

@@ -9,33 +9,32 @@ in `WiFiManagement.cpp` plus the join state machine in `Device.cpp`.
 
 ## Scanning
 
-```
-ifconfig <dev> scan ── SIOCS80211 IOC_SCAN_REQ ── _DoScanRequest
-                                                      │
-                                                      v
-                                       WiFiManager::StartScan
-                                                      │
-                              ┌───────────────────────┼─────────────┐
-                              v                       v             v
-                       purge stale BSS list      send H2C        spawn scan-
-                                                 IOC_SCAN_EN     notifier
-                                                                 thread
-                                                                 (8s timeout)
-```
+![scan flow](diagrams/scan-flow.svg)
+
+When userland issues `ifconfig <dev> scan`, the driver receives
+`SIOCS80211 IOC_SCAN_REQ` and calls `_DoScanRequest`, which delegates
+to `WiFiManager::StartScan`.  That fans out three things in parallel:
+
+1. Purge stale entries from the BSS list (anything older than the
+   previous scan).
+2. Send an `IOC_SCAN_EN` H2C command to the firmware to start the
+   active scan.
+3. Spawn a one-shot scan-notifier thread with an 8-second timeout.
 
 Beacons and probe-responses arrive while scanning is in progress.
 `_RxFrameReceived` dispatches them to `_ParseBeaconOrProbe` which
 adds entries to `fBssList` (max 64 BSSes, oldest entries purged).
 
-After 8 seconds — or sooner if the firmware emits a `kC2H_ScanComplete`
-event — the scan-notifier thread fires `B_NETWORK_WLAN_SCANNED` on
-the network monitor port.  Userland can then fetch results via
-`SIOCG80211 IOC_SCAN_RESULTS`.
+After 8 seconds — or sooner if the firmware emits a
+`kC2H_ScanComplete` event — the scan-notifier thread fires
+`B_NETWORK_WLAN_SCANNED` on the network monitor port.  Userland
+can then fetch results via `SIOCG80211 IOC_SCAN_RESULTS`.
 
-The firmware-side scan completion (kC2H_ScanComplete) doesn't
-actually fire on this hardware in our setup — possibly because we
-haven't programmed the chip's WPS/SCAN state correctly.  The 8-sec
-fallback covers that.
+The firmware-side scan completion (`kC2H_ScanComplete`) doesn't
+fire reliably on the 8814AU — possibly because the WPS/SCAN-state
+H2C bookkeeping the chip expects isn't documented and we haven't
+reverse-engineered enough of it from the Linux reference.  The
+8-second host-side fallback covers that.
 
 ## Join state machine
 
@@ -92,9 +91,10 @@ Body: auth_alg=0, auth_seq=1, status=0
 - Supported Rates IE: 1, 2, 5.5, 11, 6, 9, 12, 18 Mbps (with the
   4 mandatory rates marked basic)
 - Extended Supported Rates IE: 24, 36, 48, 54 Mbps
-- RSN IE if `fWpaIeLength > 0` (set via `IOC_APPIE` from
-  wpa_supplicant, or in the future from the in-driver WPA2 path
-  when we synthesize the IE ourselves)
+- RSN IE if `fWpaIeLength > 0` — set via either `IOC_APPIE` (the
+  wpa_supplicant code path; doesn't actually drive the handshake on
+  Haiku, but does deposit the IE), or synthesized in-driver by the
+  in-driver WPA2 path when `IOC_HAIKU_JOIN` is invoked with a PMK
 
 `_HandleAssocResponse` reads cap-info, status, AID:
 
@@ -133,9 +133,10 @@ and on each release issues the H2C sequence:
 3.  MEDIA_STATUS_RPT H2C (cmd 0x01): connect=1, MACID=0.
 
 After that, the chip is fully ready to TX/RX user data.  The TX
-path uses MACID=1 by convention (a workaround for the firmware
-stripping data frames sent on MACID=0 in some builds; see
-commit `d37adb45ea` for details).
+path uses MACID=1 by convention — the firmware silently drops
+data frames sent on MACID=0 in some builds, and aligning the TX
+descriptor's MACID with the RA_INFO slot is the documented Realtek
+practice across rtwn and the morrownr Linux driver.
 
 ## H2C / C2H mailbox
 
@@ -160,8 +161,7 @@ the device.
 
 ## Disconnection
 
-`WiFiManager::Disconnect` clears state, resets `fJoinState =
-kJoinIdle`, and (in the future) sends a deauth frame to the AP.
-Currently we leave the AP to time us out, which usually takes a few
-seconds.  Improving this is on the roadmap — see
-[known-issues.md](known-issues.md).
+`WiFiManager::Disconnect` clears state and resets `fJoinState =
+kJoinIdle`.  The driver does not currently send an explicit deauth
+frame to the AP; the AP times us out instead, which usually takes a
+few seconds.

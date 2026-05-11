@@ -3,6 +3,11 @@
 build/
 *.hpkg
 
+# Developer-local notes — see developer_notes.md.  Holds build-server
+# paths, debug session traces, and the wpa2_join test helper; not the
+# kind of thing that should ship in the distributable repo.
+developer_notes.md
+
 # Local backup / editor noise.
 *~
 *.bak

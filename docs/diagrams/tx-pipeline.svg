@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13">
+  <style>
+    .box     { fill: #f6f8fa; stroke: #444; stroke-width: 1.2; }
+    .stack   { fill: #e7eef7; stroke: #2c5aa0; stroke-width: 1.4; }
+    .device  { fill: #fffdf2; stroke: #b08020; stroke-width: 1.4; }
+    .crypto  { fill: #f0e7f5; stroke: #6f3997; stroke-width: 1.4; }
+    .txpath  { fill: #e7f5ea; stroke: #2c8a4a; stroke-width: 1.4; }
+    .chip    { fill: #ffe1e1; stroke: #9a3030; stroke-width: 1.4; }
+    .small   { font-size: 11px; fill: #555; }
+    .arrow   { fill: none; stroke: #444; stroke-width: 1.4; }
+    .note    { font-size: 11px; fill: #6a4080; font-style: italic; }
+  </style>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#444"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="28" font-size="15" font-weight="600">TX pipeline</text>
+  <text x="20" y="46" class="small">From the Haiku network stack down to the chip's USB bulk-OUT endpoints.</text>
+
+  <!-- network stack -->
+  <rect class="stack" x="320" y="72" width="260" height="46" rx="3"/>
+  <text x="450" y="96" text-anchor="middle" font-weight="600">Haiku network stack</text>
+  <text x="450" y="112" text-anchor="middle" class="small">hands us an ethernet frame</text>
+
+  <!-- Device::Write -->
+  <rect class="device" x="320" y="142" width="260" height="46" rx="3"/>
+  <text x="450" y="166" text-anchor="middle" font-weight="600">Device::Write</text>
+  <text x="450" y="182" text-anchor="middle" class="small">check fJoinState, parse eth header</text>
+
+  <!-- eth -> 802.11 conversion -->
+  <rect class="device" x="320" y="212" width="260" height="54" rx="3"/>
+  <text x="450" y="234" text-anchor="middle" font-weight="600">eth → 802.11 + LLC/SNAP</text>
+  <text x="450" y="250" text-anchor="middle" class="small">Addr1 = BSSID,  Addr2 = our MAC,</text>
+  <text x="450" y="262" text-anchor="middle" class="small">Addr3 = real DA,  LLC = AA AA 03…</text>
+
+  <!-- SW CCMP encrypt (conditional) -->
+  <rect class="crypto" x="220" y="288" width="460" height="64" rx="3"/>
+  <text x="450" y="310" text-anchor="middle" font-weight="600">SW CCMP encrypt (if fCcmpEnabled)</text>
+  <text x="450" y="328" text-anchor="middle" class="small">wpa2_crypto::ccmp_encrypt with PTK[32..47] (TK)</text>
+  <text x="450" y="344" text-anchor="middle" class="small">+ CCMP IV header + MIC, set Protected bit in FC</text>
+
+  <!-- branch label for EAPOL skip -->
+  <path class="arrow" d="M 220 320 L 130 320 L 130 384" marker-end="url(#arr)" stroke-dasharray="4 3"/>
+  <rect class="device" x="50" y="384" width="160" height="44" rx="3"/>
+  <text x="130" y="406" text-anchor="middle" font-weight="600">EAPOL</text>
+  <text x="130" y="420" text-anchor="middle" class="small">always sent in clear</text>
+  <text x="130" y="376" text-anchor="middle" class="note">(ethertype 0x888E)</text>
+
+  <!-- fTxPath::Transmit -->
+  <rect class="txpath" x="320" y="384" width="260" height="56" rx="3"/>
+  <text x="450" y="406" text-anchor="middle" font-weight="600">fTxPath::Transmit</text>
+  <text x="450" y="422" text-anchor="middle" class="small">select bulk-OUT pipe based on queue</text>
+  <text x="450" y="436" text-anchor="middle" class="small">(BE / MGT / VO / HQ)</text>
+
+  <!-- BuildDescriptor -->
+  <rect class="txpath" x="320" y="460" width="260" height="48" rx="3"/>
+  <text x="450" y="482" text-anchor="middle" font-weight="600">_BuildDescriptor</text>
+  <text x="450" y="498" text-anchor="middle" class="small">32-byte chip TX descriptor (SecType = None)</text>
+
+  <!-- USB submit -->
+  <rect class="txpath" x="320" y="528" width="260" height="40" rx="3"/>
+  <text x="450" y="552" text-anchor="middle" font-weight="600">USB bulk-OUT submit → chip → air</text>
+
+  <!-- mgmt frame origin sidebar -->
+  <rect class="device" x="700" y="142" width="180" height="124" rx="3"/>
+  <text x="790" y="164" text-anchor="middle" font-weight="600">In-driver mgmt</text>
+  <text x="790" y="182" text-anchor="middle" class="small">_SendAuthRequest</text>
+  <text x="790" y="198" text-anchor="middle" class="small">_SendAssocRequest</text>
+  <text x="790" y="214" text-anchor="middle" class="small">_TxEapolDataFrame</text>
+  <text x="790" y="232" text-anchor="middle" class="small">(M2 / M4 handshake)</text>
+  <text x="790" y="252" text-anchor="middle" class="note">build 802.11 directly,</text>
+  <text x="790" y="262" text-anchor="middle" class="note">go straight to fTxPath</text>
+
+  <!-- arrows -->
+  <path class="arrow" d="M 450 118 L 450 142" marker-end="url(#arr)"/>
+  <path class="arrow" d="M 450 188 L 450 212" marker-end="url(#arr)"/>
+  <path class="arrow" d="M 450 266 L 450 288" marker-end="url(#arr)"/>
+  <path class="arrow" d="M 450 352 L 450 384" marker-end="url(#arr)"/>
+  <path class="arrow" d="M 450 440 L 450 460" marker-end="url(#arr)"/>
+  <path class="arrow" d="M 450 508 L 450 528" marker-end="url(#arr)"/>
+
+  <!-- mgmt sidebar arrow into fTxPath -->
+  <path class="arrow" d="M 700 410 L 580 410" marker-end="url(#arr)"/>
+</svg>
