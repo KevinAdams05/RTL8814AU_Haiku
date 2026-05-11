@@ -1,0 +1,43 @@
+name			rtl8814au
+version			0.1.0-1
+architecture	x86_64
+summary			"RTL8814AU USB WiFi driver (unofficial)"
+
+description		"Native Haiku kernel driver for USB WiFi adapters based on
+the Realtek RTL8814AU chipset (4x4 802.11ac, used in adapters like the
+ASUS USB-AC68 and Edimax EW-7833UAC).
+
+Supports open and WPA2-PSK (AES/CCMP) networks via an in-driver 4-way
+handshake (the standard Haiku wpa_supplicant path has a stack-level issue
+with EAPOL delivery on AF_LINK that prevents conventional drivers from
+completing WPA2 association).  CCMP encrypt/decrypt for the data path is
+performed in software inside the driver — the chip's HW crypto engine
+refuses to engage on Haiku and the SW fallback is what makes WPA2 work
+end-to-end.
+
+This driver is NOT part of the official Haiku distribution.  It is
+developed independently and shipped as a standalone package.  Bug reports
+welcome at https://github.com/KevinAdams05/rtl8814au_unofficial/issues."
+
+packager		"Kevin Adams <kevinadams05@gmail.com>"
+vendor			"Kevin Adams"
+
+licenses {
+	"MIT"
+}
+
+copyrights {
+	"2026 Kevin Adams"
+}
+
+provides {
+	rtl8814au = 0.1.0
+}
+
+requires {
+	haiku >= r1~beta5
+}
+
+urls {
+	"https://github.com/KevinAdams05/rtl8814au_unofficial"
+}

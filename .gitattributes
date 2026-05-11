@@ -1,0 +1,19 @@
+# Force LF endings on source + scripts.  Builds run on a Linux server, and
+# CRLF in shell scripts or C++ source has bitten cross-platform projects
+# before — keep everything LF and let Git convert in-place on checkout.
+
+*.cpp text eol=lf
+*.h   text eol=lf
+*.c   text eol=lf
+*.sh  text eol=lf
+Jamfile text eol=lf
+PackageInfo text eol=lf
+
+# Markdown and PowerShell scripts stay native on Windows since editors
+# behave better with CRLF there.
+*.ps1 text
+*.md  text
+
+# Binary blobs — don't touch.
+*.bin binary
+*.svg binary
