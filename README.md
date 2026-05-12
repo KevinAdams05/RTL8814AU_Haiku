@@ -121,9 +121,7 @@ PRs are welcome! However, please test all code changes on physical hardware befo
    - `~/config/packages/` — installs only for your user (recommended)
    - `/system/packages/` — installs system-wide (needs root)
 3. Reboot.  On boot, packagefs activates the package and the driver appears at `/dev/net/rtl8814au/0`.
-4. Join a network:
-   - **Open:** `ifconfig /dev/net/rtl8814au/0 join <SSID>`
-   - **WPA2-PSK (AES):** see [In-driver WPA2-PSK](docs/wpa2-in-driver.md) for the current workflow.  The standard Haiku `wpa_supplicant` flow does **not** work because of a Haiku stack bug with EAPOL delivery on AF_LINK; this driver runs the 4-way handshake in-kernel and uses an SW CCMP fallback for the data path.
+4. Connect to a network — see the [How to Use](#how-to-use) section below.
 
 To uninstall, delete the `.hpkg` from the `packages/` directory and reboot.
 
@@ -154,6 +152,111 @@ To install the .hpkg you just built, drop it into
 
 See [docs/build-and-deploy.md](docs/build-and-deploy.md) for more
 detail.
+
+---
+
+## How to Use
+
+Once the package is installed and you've rebooted, the device shows
+up as `/dev/net/rtl8814au/0` (or `/1`, `/2`, ... if you have more
+than one).  Verify with:
+
+```
+ifconfig /dev/net/rtl8814au/0
+```
+
+You should see `Hardware type: Ethernet, Address: <your MAC>` and
+the interface marked `up broadcast`.
+
+### Scan for networks
+
+```
+ifconfig /dev/net/rtl8814au/0 scan
+```
+
+Returns the BSS list — SSIDs, signal strengths, security types.
+
+### Join an open network
+
+Use Haiku's standard `ifconfig` flow.  No special tools needed:
+
+```
+ifconfig /dev/net/rtl8814au/0 join <SSID>
+ifconfig /dev/net/rtl8814au/0 auto-config
+```
+
+The Deskbar Network app also works for open networks.
+
+### Join a WPA2-PSK network
+
+> ⚠️  **The Deskbar Network app and `ifconfig join SSID password`
+> currently do NOT work for WPA2 networks on this driver.**  Use the
+> bundled `wifi-join` helper below.  See
+> [the "Why" section](#why-doesnt-the-deskbar-app-work-for-wpa2) for
+> background.
+
+```
+wifi-join /dev/net/rtl8814au/0 <SSID> <passphrase>
+ifconfig /dev/net/rtl8814au/0 auto-config
+```
+
+`wifi-join` runs the WPA2-PSK 4-way handshake against the AP, then
+forks into the background and keeps the device fd open so the
+connection stays alive.  It prints the background process ID; the
+connection lives until that pid dies.
+
+Example:
+
+```
+$ wifi-join /dev/net/rtl8814au/0 MyHomeWiFi 'super secret pw'
+wifi-join: handshake kicked off for SSID 'MyHomeWiFi' on /dev/net/rtl8814au/0
+wifi-join: background pid 1234 holds the device open; kill it to disconnect.
+wifi-join: bring up IP next, e.g. `ifconfig /dev/net/rtl8814au/0 auto-config`
+
+$ ifconfig /dev/net/rtl8814au/0 auto-config
+$ ping -c 3 192.168.1.1
+PING 192.168.1.1 (192.168.1.1): 56 data bytes
+64 bytes from 192.168.1.1: icmp_seq=0 ttl=64 time=0.402 ms
+...
+```
+
+### Disconnect
+
+Kill the background `wifi-join` process:
+
+```
+kill <pid>
+```
+
+This closes the device fd, which tells the driver to tear down the
+link.
+
+### Reconnect after reboot
+
+There is no auto-reconnect yet.  After every reboot you need to run
+`wifi-join` again.  A simple workaround if you want it to happen
+automatically: add the command to a user boot launch script at
+`~/config/settings/boot/launch/`.
+
+### Why doesn't the Deskbar app work for WPA2?
+
+This driver runs the WPA2 4-way handshake **inside the kernel
+driver** rather than letting Haiku's `wpa_supplicant` do it.  The
+reason is a Haiku kernel bug: EAPOL frames (the bytes that carry the
+4-way handshake) are not delivered from the network stack to
+userland `AF_LINK` packet sockets, so `wpa_supplicant` never sees
+them and the handshake stalls.
+
+This is an upstream Haiku issue — fixing it would help every Wi-Fi
+driver, not just this one — but it's out of scope for an unofficial
+driver package.  Until the kernel fix lands, the driver bypasses
+`wpa_supplicant` entirely by running the handshake itself.  The
+catch is that nobody on the Haiku side passes the network
+passphrase to the driver, so we ship the `wifi-join` userland helper
+to fill that gap.
+
+See [docs/wpa2-in-driver.md](docs/wpa2-in-driver.md) for the full
+design.
 
 ---
 
