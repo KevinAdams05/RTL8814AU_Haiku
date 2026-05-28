@@ -73,6 +73,17 @@ mkdir -p "$HAIKU_DRIVER_DIR"
 find "$HAIKU_DRIVER_DIR" -maxdepth 1 -type f \( -name '*.cpp' -o -name '*.h' -o -name 'Jamfile' \) -delete
 cp "$SRC"/*.cpp "$SRC"/*.h "$SRC"/Jamfile "$HAIKU_DRIVER_DIR"/
 
+# Ensure the parent wlan Jamfile descends into our staged subdir.  Our
+# standalone repo dropped rtl8814au from the upstream image defs so the
+# SubInclude line was removed too; the build still needs jam to walk
+# in here, so add the line locally on the build server if missing.
+WLAN_JAMFILE="$HAIKU_BUILD/src/add-ons/kernel/drivers/network/wlan/Jamfile"
+if [ -f "$WLAN_JAMFILE" ] && ! grep -q 'SubInclude HAIKU_TOP .* rtl8814au' "$WLAN_JAMFILE"; then
+	echo "==> Adding SubInclude for rtl8814au to $WLAN_JAMFILE"
+	echo "SubInclude HAIKU_TOP src add-ons kernel drivers network wlan rtl8814au ;" \
+		>> "$WLAN_JAMFILE"
+fi
+
 echo "==> Staging firmware into $HAIKU_FIRMWARE_DIR"
 mkdir -p "$HAIKU_FIRMWARE_DIR"
 cp "$FIRMWARE_SRC"/rtl8814aufw.bin "$HAIKU_FIRMWARE_DIR"/

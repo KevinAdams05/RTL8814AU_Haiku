@@ -2473,8 +2473,13 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 		}
 	}
 
+	// Data path: use OFDM 24 Mbps (matches the link speed the chip
+	// reports via ifconfig).  CCK 1 Mbps here causes multi-second
+	// per-packet latency because USE_RATE forces the chip to honor
+	// whatever we pass.  Mgmt/EAPOL frames stay at 1 Mbps — they're
+	// infrequent and legacy rates are universally supported.
 	status_t status = device->fTxPath->Transmit(frame,
-		txFrameLen, kTxQueueBE, kRateCCK1, 0,
+		txFrameLen, kTxQueueBE, kRateOFDM24, 0,
 		kSecurityNone, isBroadcast);
 
 	if (status != B_OK)

@@ -36,21 +36,26 @@
 
 
 class RTL8814AURegisterIO;
+class RTL8814AUTxPath;
 
 
 // Per-transfer tracking structure. One of these is allocated for each
 // in-flight USB bulk OUT transfer.
 struct TxTransfer {
-	uint8*		buffer;			// Pre-allocated USB transfer buffer
-	uint32		bufferSize;		// Size of the allocated buffer
-	bool		inUse;			// Whether this transfer is currently in-flight
-	sem_id		completionSem;	// Signaled when the transfer completes
+	uint8*			buffer;			// Pre-allocated USB transfer buffer
+	uint32			bufferSize;		// Size of the allocated buffer
+	bool			inUse;			// Whether this transfer is currently in-flight
+	sem_id			completionSem;	// Signaled when the transfer completes
+	RTL8814AUTxPath* owner;			// Back-pointer for the static USB callback
+	uint32			pipeIndex;		// Pipe this slot belongs to (0..N-1)
 };
 
 // Maximum number of simultaneous in-flight TX transfers per queue.
 // Keeps memory usage bounded while allowing enough pipelining to
-// saturate USB bandwidth.
-static const uint32 kTxTransfersPerQueue = 4;
+// saturate USB bandwidth.  16 per pipe (× 3 pipes × ~1.6 KB =
+// ~80 KB total) gives ample headroom for a ping flood or DHCP
+// burst without ever hitting the queue-full path.
+static const uint32 kTxTransfersPerQueue = 16;
 static const uint32 kTxTotalTransfers
 	= kTxTransfersPerQueue * kBulkOutEndpointCount;
 
@@ -152,6 +157,13 @@ private:
 
 	// Synchronization
 	mutex						fLock;
+
+	// Per-pipe "a slot was freed" semaphore.  Signaled by _TxCallback
+	// every time a transfer completes; Transmit() acquires it when the
+	// pipe has no free slot.  Signaling all pipes via one sem per pipe
+	// avoids the lost-wakeup bug where waiting on one specific slot's
+	// completion sem misses completions on the other slots.
+	sem_id						fPipeSlotFree[kBulkOutEndpointCount];
 
 	// TX sequence number — incremented for each frame sent
 	uint16						fSequenceNumber;

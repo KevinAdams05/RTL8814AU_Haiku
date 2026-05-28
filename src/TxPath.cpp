@@ -56,6 +56,9 @@ RTL8814AUTxPath::RTL8814AUTxPath(RTL8814AURegisterIO* registerIO,
 	memcpy(fBulkOut, bulkOut, sizeof(fBulkOut));
 	mutex_init(&fLock, "rtl8814au:tx");
 
+	for (uint32 p = 0; p < kBulkOutEndpointCount; p++)
+		fPipeSlotFree[p] = -1;
+
 	// Allocate transfer buffers and semaphores for each slot
 	for (uint32 i = 0; i < kTxTotalTransfers; i++) {
 		fTransfers[i].buffer = new(std::nothrow) uint8[kUsbTxBufferSize];
@@ -65,10 +68,24 @@ RTL8814AUTxPath::RTL8814AUTxPath(RTL8814AURegisterIO* registerIO,
 		}
 		fTransfers[i].bufferSize = kUsbTxBufferSize;
 		fTransfers[i].inUse = false;
+		fTransfers[i].owner = this;
+		fTransfers[i].pipeIndex = i / kTxTransfersPerQueue;
 
 		fTransfers[i].completionSem = create_sem(0, "rtl8814au:tx_done");
 		if (fTransfers[i].completionSem < 0) {
 			fInitStatus = fTransfers[i].completionSem;
+			return;
+		}
+	}
+
+	// Per-pipe "any slot freed" semaphore.  Released on each TX
+	// completion; Transmit() waits on it when the pipe has no free
+	// slot.  Counting semantics don't matter — waiters re-scan
+	// _FindFreeTransfer after every wake.
+	for (uint32 p = 0; p < kBulkOutEndpointCount; p++) {
+		fPipeSlotFree[p] = create_sem(0, "rtl8814au:tx_pipe_free");
+		if (fPipeSlotFree[p] < 0) {
+			fInitStatus = fPipeSlotFree[p];
 			return;
 		}
 	}
@@ -88,6 +105,11 @@ RTL8814AUTxPath::~RTL8814AUTxPath()
 		fTransfers[i].buffer = NULL;
 		if (fTransfers[i].completionSem >= 0)
 			delete_sem(fTransfers[i].completionSem);
+	}
+
+	for (uint32 p = 0; p < kBulkOutEndpointCount; p++) {
+		if (fPipeSlotFree[p] >= 0)
+			delete_sem(fPipeSlotFree[p]);
 	}
 
 	mutex_destroy(&fLock);
@@ -126,32 +148,42 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 
 	uint32 pipeIndex = _QueueToPipeIndex(queueSelect);
 
-	// Find a free transfer buffer for this pipe
+	// Find a free transfer buffer for this pipe.  Loop until either we
+	// claim a slot or a hard deadline expires.  Waiting on the per-pipe
+	// fPipeSlotFree sem (signaled on every TX completion for the pipe)
+	// avoids the lost-wakeup bug where waiting on one specific slot's
+	// sem misses completions on the other slots.
+	const bigtime_t kTxWaitDeadline = system_time() + 2000000;	// 2s
+	bool warnedFull = false;
+	int32 transferIndex;
 	MutexLocker locker(fLock);
+	while (true) {
+		transferIndex = _FindFreeTransfer(pipeIndex);
+		if (transferIndex >= 0)
+			break;
 
-	int32 transferIndex = _FindFreeTransfer(pipeIndex);
-	if (transferIndex < 0) {
-		// All buffers in use — release the lock and wait for one to complete.
-		// We wait on the first transfer slot for this pipe.
-		uint32 firstSlot = pipeIndex * kTxTransfersPerQueue;
-		locker.Unlock();
-
-		dprintf(RTL8814AU_DRIVER_NAME ": TX queue %u full, waiting\n",
-			pipeIndex);
-		status_t status = acquire_sem_etc(fTransfers[firstSlot].completionSem,
-			1, B_RELATIVE_TIMEOUT, 1000000);	// 1 second timeout
-		if (status != B_OK) {
-			dprintf(RTL8814AU_DRIVER_NAME ": TX wait timed out\n");
+		const bigtime_t now = system_time();
+		if (now >= kTxWaitDeadline) {
+			dprintf(RTL8814AU_DRIVER_NAME ": TX wait timed out on pipe %u\n",
+				(unsigned)pipeIndex);
 			fFramesFailed++;
 			return B_TIMED_OUT;
 		}
 
-		locker.Lock();
-		transferIndex = _FindFreeTransfer(pipeIndex);
-		if (transferIndex < 0) {
-			fFramesFailed++;
-			return B_BUSY;
+		if (!warnedFull) {
+			dprintf(RTL8814AU_DRIVER_NAME ": TX queue %u full, waiting\n",
+				(unsigned)pipeIndex);
+			warnedFull = true;
 		}
+
+		locker.Unlock();
+		// Drain any stale tokens so the next acquire actually blocks for
+		// a fresh completion, then wait briefly.  Spurious wakes are fine
+		// — the loop re-scans _FindFreeTransfer.
+		acquire_sem_etc(fPipeSlotFree[pipeIndex], 1,
+			B_RELATIVE_TIMEOUT | B_CAN_INTERRUPT,
+			kTxWaitDeadline - now);
+		locker.Lock();
 	}
 
 	TxTransfer* transfer = &fTransfers[transferIndex];
@@ -549,9 +581,20 @@ RTL8814AUTxPath::_TxCallback(void* cookie, status_t status, void* data,
 			strerror(status));
 	}
 
-	// Release the transfer slot so it can be reused
-	transfer->inUse = false;
+	RTL8814AUTxPath* self = transfer->owner;
+	const uint32 pipeIndex = transfer->pipeIndex;
 
-	// Signal any thread waiting for a free buffer
+	// Release the transfer slot under fLock so _FindFreeTransfer in
+	// Transmit() always sees a consistent inUse view.
+	{
+		MutexLocker locker(self->fLock);
+		transfer->inUse = false;
+		self->fFramesSent++;
+	}
+
+	// Wake the synchronous firmware-load path (per-transfer sem) AND
+	// any Transmit() waiter blocked on the per-pipe slot-free sem.
 	release_sem_etc(transfer->completionSem, 1, B_DO_NOT_RESCHEDULE);
+	release_sem_etc(self->fPipeSlotFree[pipeIndex], 1,
+		B_DO_NOT_RESCHEDULE);
 }
