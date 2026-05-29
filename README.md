@@ -233,10 +233,37 @@ link.
 
 ### Reconnect after reboot
 
-There is no auto-reconnect yet.  After every reboot you need to run
-`wifi-join` again.  A simple workaround if you want it to happen
-automatically: add the command to a user boot launch script at
-`~/config/settings/boot/launch/`.
+Haiku does not currently auto-connect to a saved WiFi network at
+boot.  After every reboot you need to run `wifi-join` again.
+
+This is **not specific to this driver** — the same limitation
+affects every WiFi driver on Haiku (the `iprowifi4965` and
+`rtl8188ee` user threads converge on the same workaround).  The
+underlying issue is in `net_server` / `wpa_supplicant` /
+`wireless_networks` persistence, well outside this driver's scope.
+See the Haiku forum discussion at
+[Wi-Fi auto connect after boot](https://discuss.haiku-os.org/t/wi-fi-auto-connect-after-boot/13156)
+for the current state of community workarounds and upstream activity.
+
+**Workaround** — add the join + auto-config commands to
+`~/config/settings/boot/UserBootscript` so they run at every login:
+
+```sh
+# At the bottom of ~/config/settings/boot/UserBootscript
+
+# Bring down ethernet first if you only want WiFi
+# ifconfig /dev/net/<your_ethernet>/0 down
+
+# Connect WiFi and request DHCP
+wifi-join /dev/net/rtl8814au/0 'YourSSID' 'YourPassphrase'
+ifconfig /dev/net/rtl8814au/0 auto-config
+```
+
+The passphrase is in plaintext in this file — protect it accordingly
+(`chmod 600 ~/config/settings/boot/UserBootscript`).  Equivalent
+behavior can also be achieved by dropping an executable shell script
+into the per-user-launch directory at `~/config/settings/boot/launch/`
+if you prefer to keep boot commands separated by purpose.
 
 ### Why doesn't the Deskbar app work for WPA2?
 
