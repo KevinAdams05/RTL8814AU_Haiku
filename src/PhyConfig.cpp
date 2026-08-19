@@ -238,22 +238,6 @@ RTL8814AUPhyConfig::SetChannel(uint8 channel, ChannelBandwidth bandwidth)
 			kBBAgcTableSelectMask, _AgcTableForChannel(channel));
 	}
 
-	// Read back one channel per 5 GHz sub-band edge we actually care
-	// about, rather than all 28, so a sweep stays readable.
-	if (channel == 36 || channel == 149) {
-		dprintf(RTL8814AU_DRIVER_NAME ": ch %u txpower A=%u B=%u C=%u "
-			"D=%u\n", channel, (unsigned)_GetTxPowerIndex(0, channel),
-			(unsigned)_GetTxPowerIndex(1, channel),
-			(unsigned)_GetTxPowerIndex(2, channel),
-			(unsigned)_GetTxPowerIndex(3, channel));
-		dprintf(RTL8814AU_DRIVER_NAME ": ch %u regs: FC_AREA=0x%08"
-			B_PRIx32 " AGC_SEL=0x%08" B_PRIx32 " RF18[A]=0x%05"
-			B_PRIx32 " RFE_A=0x%08" B_PRIx32 "\n", channel,
-			fRegisterIO->Read32(kRegBBFcArea),
-			fRegisterIO->Read32(kRegBBAgcTableSelect),
-			_ReadRF(0, kRfRegChannelStandalone),
-			fRegisterIO->Read32(kRegBBRfePinmux0));
-	}
 
 	// Configure bandwidth in the baseband registers
 	status_t status = _SetBandwidth(bandwidth);
@@ -358,19 +342,6 @@ RTL8814AUPhyConfig::_SwitchBand(ChannelBand band)
 	//    reference programs generic per-band values; ours are tuned for
 	//    this dongle's actual antenna wiring (paths C+D per EFUSE) and
 	//    overwriting them would regress the working 2.4 GHz path.
-
-	// Read back what actually landed.  BB writes on this chip have a
-	// history of being silently dropped, so a band switch that only
-	// *claims* to have happened is worth nothing.
-	dprintf(RTL8814AU_DRIVER_NAME ": band regs: SYSCFG3[0x1002]=0x%02x "
-		"CCK_CHECK=0x%02x OFDMCCK_EN=0x%08" B_PRIx32 " AGC_SEL=0x%08"
-		B_PRIx32 " CCK_TX=0x%08" B_PRIx32 " RFE_A=0x%08" B_PRIx32 "\n",
-		(unsigned)fRegisterIO->Read8(0x1002),
-		(unsigned)fRegisterIO->Read8(kRegBBCckCheck),
-		fRegisterIO->Read32(kRegBBOfdmCckEn),
-		fRegisterIO->Read32(kRegBBAgcTableSelect),
-		fRegisterIO->Read32(kRegBBCckTxOnly),
-		fRegisterIO->Read32(kRegBBRfePinmux0));
 
 	return B_OK;
 }
@@ -674,40 +645,6 @@ RTL8814AUPhyConfig::_SetTxPower()
 				"invalid (0x%02x), using default 0x%02x\n",
 				(unsigned)path, (unsigned)group, (unsigned)index,
 				(unsigned)fTxPowerIndex[path][group]);
-		}
-	}
-
-	// Dump the reference driver's power-gain block as this dongle actually
-	// has it programmed, so the group offsets above can be checked against
-	// real data rather than assumed.
-	if (efuseMap != NULL) {
-		for (uint32 path = 0; path < kRfPathCount; path++) {
-			uint16 base = kEfuseTxPwrBase + path * kEfuseTxPwrPathStride;
-			if (base + kEfuseTxPwrPathStride > kEfuseMapSize)
-				break;
-
-			dprintf(RTL8814AU_DRIVER_NAME ": EFUSE pwr path %u @0x%03x: "
-				"2G %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x"
-				" | 5G %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x "
-				"%02x %02x %02x %02x\n", (unsigned)path, (unsigned)base,
-				efuseMap[base + 0], efuseMap[base + 1], efuseMap[base + 2],
-				efuseMap[base + 3], efuseMap[base + 4], efuseMap[base + 5],
-				efuseMap[base + 6], efuseMap[base + 7], efuseMap[base + 8],
-				efuseMap[base + 9], efuseMap[base + 10],
-				efuseMap[base + kEfuseTxPwr5GInPath + 0],
-				efuseMap[base + kEfuseTxPwr5GInPath + 1],
-				efuseMap[base + kEfuseTxPwr5GInPath + 2],
-				efuseMap[base + kEfuseTxPwr5GInPath + 3],
-				efuseMap[base + kEfuseTxPwr5GInPath + 4],
-				efuseMap[base + kEfuseTxPwr5GInPath + 5],
-				efuseMap[base + kEfuseTxPwr5GInPath + 6],
-				efuseMap[base + kEfuseTxPwr5GInPath + 7],
-				efuseMap[base + kEfuseTxPwr5GInPath + 8],
-				efuseMap[base + kEfuseTxPwr5GInPath + 9],
-				efuseMap[base + kEfuseTxPwr5GInPath + 10],
-				efuseMap[base + kEfuseTxPwr5GInPath + 11],
-				efuseMap[base + kEfuseTxPwr5GInPath + 12],
-				efuseMap[base + kEfuseTxPwr5GInPath + 13]);
 		}
 	}
 

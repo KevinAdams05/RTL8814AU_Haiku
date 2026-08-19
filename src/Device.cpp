@@ -820,33 +820,9 @@ RTL8814AUDevice::_InitMAC()
 		| kRCR_HTC_LOC_CTRL
 		| kRCR_APP_PHYST_RXFF | kRCR_APP_ICV | kRCR_APP_MIC;
 
-	// Promiscuous is deliberately NOT set here.  It was set temporarily to
-	// establish whether unicast was demodulable at all; the answer came
-	// from elsewhere — we receive unicast auth and assoc responses — so it
-	// is not needed and only adds RX load.
-
+	// Promiscuous is deliberately NOT set here: we receive unicast auth and
+	// assoc responses without it, so it would only add RX load.
 	fRegisterIO->Write32(kRegRCR, rxFilter);
-
-	// Read it straight back: the value seen at [after-trx-config] was
-	// 0xf400600e, which is missing ADF and carries the chip's default
-	// upper bits rather than what we asked for.
-	dprintf(RTL8814AU_DRIVER_NAME ": RCR wrote 0x%08" B_PRIx32
-		" read 0x%08" B_PRIx32 "\n", rxFilter,
-		fRegisterIO->Read32(kRegRCR));
-
-	// And confirm the chip agrees with us about our own MAC — the address
-	// filter compares against this register, so a mismatch here would
-	// drop every unicast frame addressed to us.
-	dprintf(RTL8814AU_DRIVER_NAME ": MAC ours %02x:%02x:%02x:%02x:%02x:%02x"
-		" chip %02x:%02x:%02x:%02x:%02x:%02x\n",
-		fMacAddress[0], fMacAddress[1], fMacAddress[2],
-		fMacAddress[3], fMacAddress[4], fMacAddress[5],
-		fRegisterIO->Read8(kRegMAC_ADDR + 0),
-		fRegisterIO->Read8(kRegMAC_ADDR + 1),
-		fRegisterIO->Read8(kRegMAC_ADDR + 2),
-		fRegisterIO->Read8(kRegMAC_ADDR + 3),
-		fRegisterIO->Read8(kRegMAC_ADDR + 4),
-		fRegisterIO->Read8(kRegMAC_ADDR + 5));
 
 	// Enable DMA engines
 	status = _EnableDMA();
@@ -2746,29 +2722,12 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 				frameData[27], frameData[28], frameData[29],
 				frameData[30], frameData[31]);
 		}
-		// Log every unicast data frame we see, whoever it is addressed
-		// to.  With the promiscuous diagnostic active, other stations'
-		// traffic showing up here proves unicast is demodulable and the
-		// address filter was the problem; nothing showing up proves the
-		// opposite.  Addr1 tells us whether any of it is for us.
+		// Unicast is counted, not logged per frame: the heartbeat below
+		// carries the total, and a unicast count that stays at zero while
+		// broadcast climbs is the interesting signal.
 		static uint32 sDataUnicast = 0;
-		static uint32 sUnicastLogged = 0;
-		if (!bcast) {
+		if (!bcast)
 			sDataUnicast++;
-			if (sUnicastLogged < 20) {
-				sUnicastLogged++;
-				bool toUs = memcmp(&frameData[4],
-					device->fMacAddress, 6) == 0;
-				dprintf(RTL8814AU_DRIVER_NAME ": RX unicast #%u toUs=%d "
-					"prot=%d a1=%02x:%02x:%02x:%02x:%02x:%02x "
-					"a2=%02x:%02x:%02x:%02x:%02x:%02x\n",
-					(unsigned)sDataUnicast, toUs ? 1 : 0, prot ? 1 : 0,
-					frameData[4], frameData[5], frameData[6],
-					frameData[7], frameData[8], frameData[9],
-					frameData[10], frameData[11], frameData[12],
-					frameData[13], frameData[14], frameData[15]);
-			}
-		}
 
 		if ((sDataTotal & 0xFF) == 0) {
 			dprintf(RTL8814AU_DRIVER_NAME ": data RX heartbeat: "
@@ -3227,20 +3186,6 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 	dprintf(RTL8814AU_DRIVER_NAME ": MSR before=0x%02x after=0x%02x"
 		" (want 0x%02x)\n", msrBefore, msrAfter, kMSR_Infra);
 
-	// The access point drops us from its client table shortly after
-	// associating, which is what happens to a station that never ACKs.
-	// Hardware generates the ACK, so if it is not going out the fault is
-	// in the response rate set or the response timing — neither of which
-	// this driver ever writes; both come from the cold-start replay, so
-	// read them back rather than assume.
-	dprintf(RTL8814AU_DRIVER_NAME ": response path: RRSR=0x%08" B_PRIx32
-		" TXPAUSE=0x%02x SIFS_CTX=0x%04x SIFS_TRX=0x%04x "
-		"RESP_SIFS=0x%04x\n",
-		fRegisterIO->Read32(kRegRRSR),
-		(unsigned)fRegisterIO->Read8(kRegTxPause),
-		(unsigned)fRegisterIO->Read16(kRegSIFS_CTX),
-		(unsigned)fRegisterIO->Read16(kRegSIFS_TRX),
-		(unsigned)fRegisterIO->Read16(0x063E));
 
 	// Set chip BSSID register so MAC frame filter accepts AP traffic
 	for (uint32 i = 0; i < 6; i++)
@@ -3388,10 +3333,6 @@ RTL8814AUDevice::_HandleAuthResponse(const uint8* frame, uint32 length)
 	uint16 authSeq = frame[26] | (frame[27] << 8);
 	uint16 statusCode = frame[28] | (frame[29] << 8);
 
-	// fc1 bit 3 is Retry.  If the access point is retransmitting these,
-	// it is not hearing our ACK — which is the whole question.
-	dprintf(RTL8814AU_DRIVER_NAME ": RX auth response fc1=0x%02x retry=%d\n",
-		frame[1], (frame[1] & 0x08) != 0 ? 1 : 0);
 	dprintf(RTL8814AU_DRIVER_NAME ": RX auth response alg=%u seq=%u "
 		"status=%u\n", (unsigned)authAlg, (unsigned)authSeq,
 		(unsigned)statusCode);
@@ -3426,8 +3367,6 @@ RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
 	uint16 statusCode = frame[26] | (frame[27] << 8);
 	uint16 aid = (frame[28] | (frame[29] << 8)) & 0x3FFF;
 
-	dprintf(RTL8814AU_DRIVER_NAME ": RX assoc response fc1=0x%02x retry=%d\n",
-		frame[1], (frame[1] & 0x08) != 0 ? 1 : 0);
 	dprintf(RTL8814AU_DRIVER_NAME ": RX assoc response cap=0x%04x "
 		"status=%u aid=%u\n", (unsigned)capability,
 		(unsigned)statusCode, (unsigned)aid);
