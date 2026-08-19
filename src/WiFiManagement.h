@@ -52,6 +52,12 @@ static const uint32 kMaxSSIDLength = 32;
 // Maximum length of a raw scan result IE (Information Element) block
 static const uint32 kMaxIELength = 768;
 
+// How long to sit on each channel during a scan sweep.  Beacons are
+// typically sent every 100 ms, so a passive listen has to dwell longer
+// than that to reliably hear one.  Times the 42 channels we sweep, this
+// puts a full scan at roughly five seconds.
+static const bigtime_t kScanDwellTime = 120000;
+
 // How long a scan may stay in progress before StartScan treats it as
 // finished and starts a new one anyway.  Comfortably longer than the
 // notifier's own 8-second wait, so this only fires if the notifier
@@ -146,11 +152,11 @@ public:
 	// the scan-done C2H event arrives.
 	status_t					WaitForScanComplete(bigtime_t timeout);
 
-	// Force the scan state back to idle.  The firmware's
-	// kC2H_ScanComplete is the only thing that clears kWiFiStateScanning
-	// on its own, and it never arrives, so whoever waited on the scan
-	// must call this when the wait ends — otherwise every later
-	// StartScan is rejected with B_BUSY for the rest of the boot.
+	// Force the scan state back to idle and wake anyone waiting on the
+	// scan.  The firmware's kC2H_ScanComplete is the only other thing
+	// that clears kWiFiStateScanning, and it never arrives, so whoever
+	// drives the scan must call this when it finishes — otherwise every
+	// later StartScan is rejected with B_BUSY for the rest of the boot.
 	void						FinishScan();
 
 	// Check if a scan is currently in progress.

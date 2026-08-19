@@ -144,6 +144,11 @@ private:
 	static int32				_ScanNotifierThreadEntry(void* arg);
 	void						_ScanNotifierLoop();
 
+	// Host-driven channel sweep behind a scan.  Hops the chip across the
+	// supported channels and dwells on each long enough to hear a beacon;
+	// the firmware neither sweeps on its own nor reports when it has.
+	void						_ScanSweep();
+
 	// Cleanup
 	void						_Shutdown();
 

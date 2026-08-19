@@ -1794,33 +1794,104 @@ RTL8814AUDevice::_ScanNotifierThreadEntry(void* arg)
 }
 
 
-/*! Wait for the firmware's scan-done event then publish a
-    B_NETWORK_WLAN_SCANNED notification on the userland-visible
-    network monitor port.
+/*! Sweep the supported channels to collect beacons, then publish a
+    B_NETWORK_WLAN_SCANNED notification on the userland-visible network
+    monitor port.
 
-    A 30-second cap protects against a wedged firmware never sending
-    the C2H event — we still clear fScanNotifierThread so a future
-    scan request can spawn a new notifier.
+    We drive the sweep ourselves rather than leaving it to the firmware.
+    _SendScanCommand can only pass a channel list to the firmware when it
+    fits the H2C payload (four channels), so the full list takes the
+    "firmware scans all supported channels" path — and the firmware never
+    sweeps, nor does it ever send the kC2H_ScanComplete that would tell us
+    it had.  The chip simply stayed on whatever channel it was left on,
+    which meant we only ever harvested 2.4 GHz channel 1 and could not see
+    a 5 GHz network at all.
+
+    Runs on its own kernel thread, which is what makes this safe: setting
+    a channel is a long series of USB register writes (RF synthesizer per
+    path, plus band-specific AGC tables and per-channel TX power on a band
+    switch) and must not happen on the USB callback thread.
+*/
+void
+RTL8814AUDevice::_ScanSweep()
+{
+	if (fPhyConfig == NULL) {
+		dprintf(RTL8814AU_DRIVER_NAME ": scan-sweep: no PHY, "
+			"harvesting the current channel only\n");
+		snooze(kScanDwellTime);
+		return;
+	}
+
+	// Never sweep out from under an established link — hopping away from
+	// the AP's channel would drop the connection to collect beacons.
+	if (fWiFiManager != NULL
+		&& fWiFiManager->State() == kWiFiStateConnected) {
+		dprintf(RTL8814AU_DRIVER_NAME ": scan-sweep: connected, staying "
+			"on channel %u and reporting the cached BSS list\n",
+			fPhyConfig->CurrentChannel());
+		return;
+	}
+
+	uint8 returnChannel = fPhyConfig->CurrentChannel();
+	bigtime_t startedAt = system_time();
+	uint32 visited = 0;
+
+	for (uint32 band = 0; band < 2; band++) {
+		const uint8* channels = (band == 0)
+			? kChannelList2G : kChannelList5G;
+		uint32 count = (band == 0)
+			? sizeof(kChannelList2G) : sizeof(kChannelList5G);
+
+		for (uint32 i = 0; i < count; i++) {
+			if (fRemoved)
+				return;
+
+			status_t status = fPhyConfig->SetChannel(channels[i],
+				kBandwidth20MHz);
+			if (status != B_OK) {
+				dprintf(RTL8814AU_DRIVER_NAME ": scan-sweep: channel %u "
+					"failed: %s\n", channels[i], strerror(status));
+				continue;
+			}
+
+			visited++;
+
+			// Listen. Beacons arriving now land in the BSS list through
+			// the normal RX path, same as they always did — the only
+			// thing that changes is which channel we're hearing.
+			snooze(kScanDwellTime);
+		}
+	}
+
+	dprintf(RTL8814AU_DRIVER_NAME ": scan-sweep: %" B_PRIu32 " channels "
+		"in %" B_PRIdBIGTIME " ms\n", visited,
+		(system_time() - startedAt) / 1000);
+
+	// Put the chip back where we found it so an unrelated join doesn't
+	// inherit whatever channel the sweep happened to end on.
+	if (returnChannel != 0 && !fRemoved)
+		fPhyConfig->SetChannel(returnChannel, kBandwidth20MHz);
+}
+
+
+/*! Run a scan to completion, then publish a B_NETWORK_WLAN_SCANNED
+    notification on the userland-visible network monitor port.
+
+    The notification matters beyond ifconfig: without it wpa_supplicant
+    blocks forever waiting for scan results before driving association.
 */
 void
 RTL8814AUDevice::_ScanNotifierLoop()
 {
-	dprintf(RTL8814AU_DRIVER_NAME ": scan-notifier: waiting up to 8s "
-		"for firmware C2H scan-complete\n");
-	// Wait for the firmware-issued kC2H_ScanComplete; it's likely never
-	// going to arrive because our firmware-glue for that event is still
-	// stubbed.  After 8 seconds we fall through and fire B_NETWORK_WLAN_SCANNED
-	// regardless — by then `_ParseBeaconOrProbe` has populated fBssList
-	// from passively-received beacons, which is what userland consumes.
-	// Without this, wpa_supplicant blocks forever waiting for the scan
-	// notification before driving WPA2 association.
-	if (fWiFiManager != NULL && !fRemoved) {
-		fWiFiManager->WaitForScanComplete(8LL * 1000 * 1000);
-		// However that wait ended, the scan is over as far as we're
-		// concerned.  Clear the scanning state here or it never gets
-		// cleared at all, and every later scan fails with B_BUSY.
+	if (!fRemoved)
+		_ScanSweep();
+
+	// The sweep *is* the scan, so declare it finished rather than waiting
+	// out a firmware event that never comes.  This also clears the
+	// scanning state — miss it and fState stays kWiFiStateScanning for
+	// the rest of the boot and every later scan fails with B_BUSY.
+	if (fWiFiManager != NULL)
 		fWiFiManager->FinishScan();
-	}
 
 	if (gNotificationModule != NULL && !fRemoved) {
 		// Build the device path matching what wpa_supplicant expects.

@@ -196,6 +196,13 @@ RTL8814AUWiFiManager::StartScan(const uint8* channelList,
 	fScanStartTime = system_time();
 	locker.Unlock();
 
+	// Drain any left-over count from the previous scan's completion, so
+	// this scan's waiters block until *this* scan finishes rather than
+	// returning immediately on a stale release.
+	while (acquire_sem_etc(fScanCompleteSem, 1, B_RELATIVE_TIMEOUT, 0)
+			== B_OK) {
+	}
+
 	// If no channel list provided, scan all channels
 	if (channelList == NULL || channelCount == 0) {
 		// Build a combined channel list from 2.4 GHz and 5 GHz
@@ -717,7 +724,7 @@ RTL8814AUWiFiManager::WaitForScanComplete(bigtime_t timeout)
 }
 
 
-/*! Force the scan state back to idle.
+/*! Force the scan state back to idle and wake anyone waiting on it.
 
     _HandleScanComplete is the only other thing that clears
     kWiFiStateScanning, and it runs from the firmware's kC2H_ScanComplete
@@ -739,6 +746,13 @@ RTL8814AUWiFiManager::FinishScan()
 		return;
 
 	fState = kWiFiStateDisconnected;
+	locker.Unlock();
+
+	// Same B_RELEASE_ALL as _HandleScanComplete: there can be more than
+	// one waiter when the ioctl path spawns a notifier alongside an
+	// in-driver caller.
+	release_sem_etc(fScanCompleteSem, 1,
+		B_DO_NOT_RESCHEDULE | B_RELEASE_ALL);
 }
 
 
