@@ -3333,17 +3333,33 @@ RTL8814AUDevice::_SendAssocRequest()
 	frame[i++] = 0x0C; frame[i++] = 0x12;	// 6, 9
 	frame[i++] = 0x18; frame[i++] = 0x24;	// 12, 18
 
-	// Extended Supported Rates IE — 24, 36, 48, 54 Mbps
+	// RSN IE (WPA2, element 48) — verbatim from IOC_APPIE.  fWpaIe already
+	// includes the IE header (id 0x30 + length), so just memcpy.
+	//
+	// This has to come BEFORE the Extended Supported Rates IE (element 50).
+	// Information elements go in ascending element-ID order, and emitting
+	// 50 before 48 broke association in two different ways depending on how
+	// forgiving the access point was: a phone hotspot dropped the assoc
+	// request outright and never answered, while a home router associated us
+	// with status 0 and then never started the 4-way handshake — it had
+	// stopped parsing at the out-of-order element, so it never saw the RSN
+	// IE and treated us as a non-RSN station.  That second failure looks
+	// exactly like "the access point associates us and then ignores us",
+	// which is a long way from the real cause.
+	bool haveRsnIe = fWpaIeLength > 0
+		&& i + fWpaIeLength + 6 <= sizeof(frame);
+	if (haveRsnIe) {
+		memcpy(frame + i, fWpaIe, fWpaIeLength);
+		i += fWpaIeLength;
+	}
+
+	// Extended Supported Rates IE (element 50) — 24, 36, 48, 54 Mbps
 	frame[i++] = 50;	// IE id
 	frame[i++] = 4;
 	frame[i++] = 0x30; frame[i++] = 0x48;
 	frame[i++] = 0x60; frame[i++] = 0x6C;
 
-	// RSN IE (WPA2) — verbatim from IOC_APPIE.  fWpaIe already includes
-	// the IE header (id 0x30 + length), so just memcpy.
-	if (fWpaIeLength > 0 && i + fWpaIeLength <= sizeof(frame)) {
-		memcpy(frame + i, fWpaIe, fWpaIeLength);
-		i += fWpaIeLength;
+	if (haveRsnIe) {
 		dprintf(RTL8814AU_DRIVER_NAME ": TX assoc request (WPA2) "
 			"len=%u, with %u-byte RSN IE\n",
 			(unsigned)i, (unsigned)fWpaIeLength);
