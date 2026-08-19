@@ -468,20 +468,23 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// without that, frames TX'd with MACID 0 are silently dropped by
 	// the chip's MAC scheduler.  rate_id=8 indexes the chip's default
 	// rate set which covers OFDM 6-54 Mbps.
-	// Every frame goes out on MACID 1, because MACID 1 is the only one we
-	// ever configure: _DoPostAssocSetup sends RA_INFO for MACID 1 and for
-	// nothing else.  The comment above has always said data frames use
-	// MACID 1 for exactly this reason, but the code only forced it for the
-	// management queue and left data frames on whatever the caller passed,
-	// which is 0 everywhere.  So management frames — auth and assoc — went
-	// out on a configured MACID and worked, while every data frame,
-	// including the EAPOL M2 that carries the four-way handshake, went out
-	// on an unconfigured one and was discarded by the MAC scheduler after
-	// the chip had accepted it and drained its queue.  That is why a
-	// successful USB completion and an empty TX queue could sit alongside
-	// an access point that never saw the frame.
-	uint8 effectiveMacID = macID == 0 ? 1 : macID;
+	// Management frames go out on MACID 1; data frames go out on whatever
+	// the caller passed, which is 0.
+	//
+	// The comment above claims data frames should use MACID 1 too, on the
+	// grounds that MACID 0 has no rate-adaptation table and the scheduler
+	// discards it.  That claim is wrong, and it was tested: forcing data
+	// frames onto MACID 1 stopped DHCP working on an open network that had
+	// completed DHCP moments earlier on MACID 0 — no address, nothing
+	// received.  Whatever RA_INFO does for MACID 1, data frames need
+	// MACID 0, so leave them there.  It did not help the EAPOL handshake
+	// either, which is what prompted trying it.
+	uint8 effectiveMacID = macID;
 	uint32 rateID = 8;	// chip's default rate set, OFDM 6-54 Mbps
+	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
+		if (effectiveMacID == 0)
+			effectiveMacID = 1;
+	}
 
 	// DWORD 1: MACID, queue select, rate ID, security type
 	uint32 dword1 = (effectiveMacID & kTxDescMACID_Mask)
