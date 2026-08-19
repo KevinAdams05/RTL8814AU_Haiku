@@ -3696,6 +3696,34 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		dprintf(RTL8814AU_DRIVER_NAME ": built M2 (%u bytes)\n",
 			(unsigned)m2Len);
 
+		// Dump the ANonce and the finished M2 so the whole derivation can
+		// be recomputed off-box and compared: the PMK follows from the
+		// passphrase and SSID, the PTK from the PMK plus both MACs and
+		// both nonces, and the MIC from the KCK over these exact bytes
+		// with the MIC field zeroed.  The AP keeps retransmitting M1,
+		// which means it is rejecting this frame, and this says whether
+		// the fault is ours.  No key material is logged — everything here
+		// is already on the air in the clear.
+		{
+			char line[160];
+			uint32 pos = 0;
+			for (uint32 b = 0; b < 32; b++)
+				pos += snprintf(line + pos, sizeof(line) - pos, "%02x",
+					fAnonce[b]);
+			dprintf(RTL8814AU_DRIVER_NAME ": ANONCE %s\n", line);
+
+			for (uint32 chunk = 0; chunk * 48 < m2Len; chunk++) {
+				pos = 0;
+				for (uint32 b = chunk * 48;
+						b < m2Len && b < (chunk + 1) * 48; b++) {
+					pos += snprintf(line + pos, sizeof(line) - pos, "%02x",
+						m2[b]);
+				}
+				dprintf(RTL8814AU_DRIVER_NAME ": M2[%u] %s\n",
+					(unsigned)(chunk * 48), line);
+			}
+		}
+
 		// Wrap M2 in an 802.11 data frame + LLC/SNAP and TX it.  Layout
 		// matches the eth -> 802.11 conversion in Write() except the
 		// ethertype is fixed (EAPOL = 0x888E) and we splice the EAPOL
