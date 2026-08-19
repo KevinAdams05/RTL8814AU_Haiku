@@ -3729,6 +3729,9 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		// ethertype is fixed (EAPOL = 0x888E) and we splice the EAPOL
 		// bytes directly without going through the data ring.  Protected
 		// bit stays clear because the chip has no keys yet.
+		uint16 emptyBefore = fTxPath != NULL
+			? fTxPath->ReadTxQueueEmpty() : 0;
+
 		status_t txStatus = _TxEapolDataFrame(senderMac, m2, m2Len);
 		if (txStatus != B_OK) {
 			dprintf(RTL8814AU_DRIVER_NAME ": M2 TX failed: %s\n",
@@ -3737,9 +3740,26 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			return;
 		}
 
+		// Did the chip actually put it on the air?  A successful submit
+		// only proves the USB stack took the frame.  If the queue was empty
+		// before and is still non-empty a few milliseconds later, the frame
+		// is stuck in the chip's packet buffer — which is the difference
+		// between "we never delivered it" and "the chip will not send it".
+		// This runs on the EAPOL worker thread, so register reads are safe.
+		if (fTxPath != NULL) {
+			snooze(5000);
+			uint16 emptyAfter = fTxPath->ReadTxQueueEmpty();
+			snooze(20000);
+			uint16 emptySettled = fTxPath->ReadTxQueueEmpty();
+			dprintf(RTL8814AU_DRIVER_NAME ": M2 queue-empty before=0x%04x "
+				"after5ms=0x%04x after25ms=0x%04x\n",
+				(unsigned)emptyBefore, (unsigned)emptyAfter,
+				(unsigned)emptySettled);
+		}
+
 		fEapolState = kEapolWaitM3;
 		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> WaitM3 "
-			"(M2 sent on-air)\n");
+			"(M2 handed to the chip)\n");
 		return;
 	}
 

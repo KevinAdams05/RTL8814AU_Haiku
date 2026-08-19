@@ -67,6 +67,7 @@ RTL8814AUTxPath::RTL8814AUTxPath(RTL8814AURegisterIO* registerIO,
 			return;
 		}
 		fTransfers[i].bufferSize = kUsbTxBufferSize;
+		fTransfers[i].submitLength = 0;
 		fTransfers[i].inUse = false;
 		fTransfers[i].owner = this;
 		fTransfers[i].pipeIndex = i / kTxTransfersPerQueue;
@@ -328,6 +329,8 @@ RTL8814AUTxPath::SendFirmwareChunk(const uint8* data, uint32 length)
 			B_RELATIVE_TIMEOUT, 0);
 	}
 
+	transfer->submitLength = totalLength;
+
 	locker.Unlock();
 
 	status_t status = fUSBModule->queue_bulk(fBulkOut[pipeIndex],
@@ -465,17 +468,20 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// without that, frames TX'd with MACID 0 are silently dropped by
 	// the chip's MAC scheduler.  rate_id=8 indexes the chip's default
 	// rate set which covers OFDM 6-54 Mbps.
-	uint8 effectiveMacID = macID;
-	uint32 rateID = 0;
-	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
-		if (effectiveMacID == 0)
-			effectiveMacID = 1;
-		rateID = 8;
-	} else {
-		// Data frames: MACID=0 is the AP we're connected to (configured
-		// via the post-assoc RA_INFO H2C).  rate_id=8 = OFDM rate group.
-		rateID = 8;
-	}
+	// Every frame goes out on MACID 1, because MACID 1 is the only one we
+	// ever configure: _DoPostAssocSetup sends RA_INFO for MACID 1 and for
+	// nothing else.  The comment above has always said data frames use
+	// MACID 1 for exactly this reason, but the code only forced it for the
+	// management queue and left data frames on whatever the caller passed,
+	// which is 0 everywhere.  So management frames — auth and assoc — went
+	// out on a configured MACID and worked, while every data frame,
+	// including the EAPOL M2 that carries the four-way handshake, went out
+	// on an unconfigured one and was discarded by the MAC scheduler after
+	// the chip had accepted it and drained its queue.  That is why a
+	// successful USB completion and an empty TX queue could sit alongside
+	// an access point that never saw the frame.
+	uint8 effectiveMacID = macID == 0 ? 1 : macID;
+	uint32 rateID = 8;	// chip's default rate set, OFDM 6-54 Mbps
 
 	// DWORD 1: MACID, queue select, rate ID, security type
 	uint32 dword1 = (effectiveMacID & kTxDescMACID_Mask)
@@ -560,6 +566,24 @@ RTL8814AUTxPath::_QueueToPipeIndex(TxQueueSelect queue)
 }
 
 
+/*! Read the chip's per-queue TX "empty" flags.
+
+    Bit set means that queue has drained.  If a queue stays non-empty after
+    a frame was submitted and its USB completion reported success, the frame
+    is sitting in the chip's packet buffer and the MAC is not transmitting
+    it — which distinguishes "we never delivered it to the chip" from "the
+    chip has it and will not send it".
+*/
+uint16
+RTL8814AUTxPath::ReadTxQueueEmpty()
+{
+	if (fRegisterIO == NULL)
+		return 0;
+
+	return fRegisterIO->Read16(kRegTxPktEmpty);
+}
+
+
 /*! Search for a free transfer slot among the slots allocated to the
     given pipe index. Each pipe has kTxTransfersPerQueue dedicated slots.
 
@@ -593,6 +617,25 @@ RTL8814AUTxPath::_TxCallback(void* cookie, status_t status, void* data,
 	TxTransfer* transfer = static_cast<TxTransfer*>(cookie);
 	if (transfer == NULL)
 		return;
+
+	// A successful queue_bulk only means the USB stack accepted the
+	// submission.  This is where we find out whether the write actually
+	// completed, and completely — a short write would leave the chip with a
+	// truncated frame it can never put on the air, which is one explanation
+	// for large frames vanishing while small ones get through.
+	{
+		static uint32 sLogged = 0;
+		bool bad = status != B_OK
+			|| actualLength != (size_t)transfer->submitLength;
+		if (bad || sLogged < 12) {
+			if (!bad)
+				sLogged++;
+			dprintf(RTL8814AU_DRIVER_NAME ": TX done pipe=%" B_PRIu32
+				" status=%s actual=%" B_PRIuSIZE "/%" B_PRIu32 "%s\n",
+				transfer->pipeIndex, strerror(status), actualLength,
+				transfer->submitLength, bad ? "  <-- SHORT/FAILED" : "");
+		}
+	}
 
 	if (status != B_OK) {
 		dprintf(RTL8814AU_DRIVER_NAME ": TX callback error: %s\n",

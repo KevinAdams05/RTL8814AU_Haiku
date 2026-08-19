@@ -456,6 +456,12 @@ static const uint8 kAutoLLTTrigger			= (1 << 0);
 static const uint32 kAutoLLTPollAttempts	= 200;
 static const bigtime_t kAutoLLTPollDelay	= 50000;	// 50 ms between polls
 static const uint16 kRegTxDmaStatus			= 0x0210;
+
+// Per-queue "this TX queue is empty" flags.  Reading this after a submit
+// says whether the MAC actually drained the frame out of its packet buffer
+// and put it on the air, which is the one thing a successful queue_bulk
+// does not tell us.
+static const uint16 kRegTxPktEmpty			= 0x041A;
 static const uint16 kRegRQPN_NPQ			= 0x0214;
 
 // 8814A-specific page-allocation registers.  Unlike the older 8192-series

@@ -48,6 +48,8 @@ struct TxTransfer {
 	sem_id			completionSem;	// Signaled when the transfer completes
 	RTL8814AUTxPath* owner;			// Back-pointer for the static USB callback
 	uint32			pipeIndex;		// Pipe this slot belongs to (0..N-1)
+	uint32			submitLength;	// Bytes handed to queue_bulk, so the
+									// completion can report a short write
 };
 
 // Maximum number of simultaneous in-flight TX transfers per queue.
@@ -72,6 +74,12 @@ public:
 	// Post-construction check — returns B_OK if transfer buffers
 	// were allocated and semaphores created successfully.
 	status_t					InitCheck() const { return fInitStatus; }
+
+	// Read the chip's per-queue "empty" flags.  A queue that never goes
+	// empty after a submit means the MAC is holding the frame in its packet
+	// buffer rather than putting it on the air — which is exactly what a
+	// successful queue_bulk cannot tell us.
+	uint16						ReadTxQueueEmpty();
 
 	// Transmit a single frame. Builds the TX descriptor, selects the
 	// appropriate bulk OUT endpoint, and submits the USB transfer.
