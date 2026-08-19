@@ -21,6 +21,7 @@ For *using* the driver, see the [top-level README](../README.md).
 | [tx-path.md](tx-path.md) | Write() entry, ethernet → 802.11 conversion, SW CCMP encrypt, descriptor build, queue selection |
 | [wifi-management.md](wifi-management.md) | Scan flow, join state machine, MLME, the Haiku ioctl glue |
 | [phy-channel-and-band.md](phy-channel-and-band.md) | RF register access (the two routes), what a channel change entails, the 2.4/5 GHz band switch |
+| [wpa-supplicant-and-deskbar.md](wpa-supplicant-and-deskbar.md) | What it takes to connect from the Deskbar: the net_server/wpa_supplicant chain, the net80211 ioctl contract, how EAPOL really reaches userland, and why the in-driver handshake blocks it |
 | [wpa2-in-driver.md](wpa2-in-driver.md) | The in-driver WPA2-PSK implementation — why we don't use wpa_supplicant, why we don't use the chip's HW crypto, the 4-way handshake state machine, SW CCMP |
 | [ioctl-reference.md](ioctl-reference.md) | Quick reference for SIOCS80211 / SIOCG80211 IOC handlers and what userland calls them |
 | [build-and-deploy.md](build-and-deploy.md) | Building the .hpkg on a Haiku machine, installing it, fast-path edit-build-test iteration |
@@ -41,6 +42,7 @@ in any browser.
 | [tx-pipeline.svg](diagrams/tx-pipeline.svg) | TX flow from the Haiku network stack through SW CCMP encrypt to the chip |
 | [scan-flow.svg](diagrams/scan-flow.svg) | `ifconfig scan` walk-through from userland to `B_NETWORK_WLAN_SCANNED` |
 | [rf-register-access.svg](diagrams/rf-register-access.svg) | The separate write (3-wire LSSI) and read (direct-mapped window) routes to an RF register |
+| [deskbar-to-driver.svg](diagrams/deskbar-to-driver.svg) | Deskbar to driver: commands down through net_server and wpa_supplicant, events back up, and where it currently breaks |
 
 ## Conventions
 

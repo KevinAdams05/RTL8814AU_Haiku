@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 660" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13">
+  <style>
+    .box    { fill: #f6f8fa; stroke: #444; stroke-width: 1.2; }
+    .ui     { fill: #f0e7f5; stroke: #6f3997; stroke-width: 1.4; }
+    .server { fill: #e7eef7; stroke: #2c5aa0; stroke-width: 1.4; }
+    .supp   { fill: #fffdf2; stroke: #b08020; stroke-width: 1.4; }
+    .drv    { fill: #e7f5ea; stroke: #2c8a4a; stroke-width: 1.4; }
+    .bad    { fill: #f7e8e8; stroke: #9a3030; stroke-width: 1.4; }
+    .small  { font-size: 11px; fill: #555; }
+    .mono   { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; }
+    .arrow  { fill: none; stroke: #444; stroke-width: 1.4; }
+    .evt    { fill: none; stroke: #2c8a4a; stroke-width: 1.4; stroke-dasharray: 5 3; }
+  </style>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#444"/>
+    </marker>
+    <marker id="arrg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2c8a4a"/>
+    </marker>
+  </defs>
+
+  <text x="20" y="28" font-size="15" font-weight="600">Deskbar to driver: how a Haiku Wi-Fi join is supposed to work</text>
+  <text x="20" y="46" class="small">Solid = commands downward. Dashed green = events upward. Both directions must work or the join stalls silently.</text>
+
+  <!-- UI layer -->
+  <rect class="ui" x="40" y="70" width="360" height="58" rx="3"/>
+  <text x="220" y="90" text-anchor="middle" font-weight="600">Deskbar replicant / Network preflet</text>
+  <text x="220" y="107" text-anchor="middle" class="small">lists networks, only for devices where</text>
+  <text x="220" y="121" text-anchor="middle" class="mono">BNetworkDevice::IsWireless() == true</text>
+
+  <rect class="box" x="470" y="70" width="390" height="58" rx="3"/>
+  <text x="665" y="90" text-anchor="middle" font-weight="600">the wireless test is just the media type</text>
+  <text x="665" y="108" text-anchor="middle" class="mono">IFM_TYPE(Media()) == IFM_IEEE80211</text>
+  <text x="665" y="122" text-anchor="middle" class="small">driver answers ETHER_GET_LINK_STATE with IFM_IEEE80211</text>
+
+  <path class="arrow" d="M 220 128 L 220 168" marker-end="url(#arr)"/>
+  <text x="232" y="152" class="mono">BNetworkDevice::JoinNetwork()</text>
+
+  <!-- net_server -->
+  <rect class="server" x="40" y="168" width="360" height="72" rx="3"/>
+  <text x="220" y="188" text-anchor="middle" font-weight="600">net_server</text>
+  <text x="220" y="206" text-anchor="middle" class="mono">NetServer::_JoinNetwork()</text>
+  <text x="220" y="223" text-anchor="middle" class="small">launches the supplicant if not running, then always</text>
+  <text x="220" y="236" text-anchor="middle" class="small">defers to it — even for networks it could join itself</text>
+
+  <path class="arrow" d="M 220 240 L 220 280" marker-end="url(#arr)"/>
+  <text x="232" y="264" class="mono">BMessage kMsgWPAJoinNetwork</text>
+
+  <!-- wpa_supplicant -->
+  <rect class="supp" x="40" y="280" width="360" height="86" rx="3"/>
+  <text x="220" y="300" text-anchor="middle" font-weight="600">wpa_supplicant (a BApplication)</text>
+  <text x="220" y="317" text-anchor="middle" class="small">built CONFIG_DRIVER_BSD=y + CONFIG_L2_PACKET=haiku</text>
+  <text x="220" y="334" text-anchor="middle" class="small">so it drives the driver through FreeBSD net80211</text>
+  <text x="220" y="351" text-anchor="middle" class="small">ioctls, and runs the 4-way handshake itself</text>
+
+  <path class="arrow" d="M 220 366 L 220 406" marker-end="url(#arr)"/>
+  <text x="232" y="384" class="mono">SIOCS80211 / SIOCG80211</text>
+  <text x="232" y="398" class="small">MLME, WPAKEY, APPIE, SSID, BSSID, …</text>
+
+  <!-- driver -->
+  <rect class="drv" x="40" y="406" width="360" height="72" rx="3"/>
+  <text x="220" y="426" text-anchor="middle" font-weight="600">rtl8814au driver</text>
+  <text x="220" y="444" text-anchor="middle" class="small">associates, installs keys, moves frames</text>
+  <text x="220" y="462" text-anchor="middle" class="small">no ioctl gaps observed in a live attempt</text>
+
+  <!-- EAPOL path -->
+  <rect class="supp" x="470" y="280" width="390" height="112" rx="3"/>
+  <text x="665" y="300" text-anchor="middle" font-weight="600">EAPOL delivery — verified working</text>
+  <text x="665" y="318" text-anchor="middle" class="mono">socket(AF_LINK, SOCK_DGRAM, 0)</text>
+  <text x="665" y="333" text-anchor="middle" class="mono">SIOCGIFADDR -&gt; sockaddr_dl (sdl_type must be IFT_ETHER)</text>
+  <text x="665" y="348" text-anchor="middle" class="mono">sdl_e_type = htons(0x888E); bind()</text>
+  <text x="665" y="366" text-anchor="middle" class="small">stack registers a device handler for</text>
+  <text x="665" y="380" text-anchor="middle" class="mono">B_NET_FRAME_TYPE(IFT_ETHER, 0x888E)</text>
+
+  <path class="arrow" d="M 470 336 L 405 336" marker-end="url(#arr)"/>
+
+  <!-- events up -->
+  <rect class="drv" x="470" y="406" width="390" height="86" rx="3"/>
+  <text x="665" y="426" text-anchor="middle" font-weight="600">events the driver must publish</text>
+  <text x="665" y="444" text-anchor="middle" class="mono">B_NETWORK_WLAN_SCANNED -&gt; EVENT_SCAN_RESULTS</text>
+  <text x="665" y="460" text-anchor="middle" class="mono">B_NETWORK_WLAN_JOINED  -&gt; EVENT_ASSOC</text>
+  <text x="665" y="476" text-anchor="middle" class="mono">B_NETWORK_WLAN_LEFT    -&gt; EVENT_DISASSOC</text>
+
+  <path class="evt" d="M 400 442 L 465 442" marker-end="url(#arrg)"/>
+  <path class="evt" d="M 665 406 L 665 372" marker-end="url(#arrg)"/>
+
+  <!-- the real blocker -->
+  <rect class="bad" x="40" y="512" width="820" height="120" rx="3"/>
+  <text x="56" y="533" font-weight="600" fill="#9a3030">Where it actually breaks today — and it is not any of the above</text>
+  <text x="56" y="553" class="small">The access point associates us (assoc status 0, aid assigned) and then sends only group-addressed traffic. Every frame we</text>
+  <text x="56" y="568" class="small">receive from it is bcast; we have never received one unicast frame addressed to us. EAPOL M1 is unicast, so it never arrives —</text>
+  <text x="56" y="583" class="small">which starves both the in-driver handshake and wpa_supplicant equally. A bind to 0x888E succeeds and then simply sits idle.</text>
+  <text x="56" y="603" class="small">Second, independent problem: the driver runs its own WPA2 handshake, so when wpa_supplicant issues its normal</text>
+  <text x="56" y="618" class="small">reset-then-configure sequence (DEAUTH, clear IEs, WPA=0) the driver ignores it as hostile. The two fight each other.</text>
+</svg>
