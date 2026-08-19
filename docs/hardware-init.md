@@ -81,6 +81,13 @@ The big function.  Three phases:
 3.  **IQ calibration** — runs the chip's auto-cal sequence on all 4
     RF paths.  Verifies by reading back `REG_IQK_RPT*`.
 
+Note that phase 2 applies RF table entries through `_WriteRF`, so it
+depends on the RF write route being correct.  It was not, for most of this
+driver's history: writes landed on an address that quietly discarded them,
+which meant the RF tables never took and the chip never left channel 1.
+See [phy-channel-and-band.md](phy-channel-and-band.md) for the two
+different routes to an RF register and why a mistake there is silent.
+
 ## RX subtype filter
 
 After PHY init the chip needs to be told which 802.11 subtypes to

@@ -21,7 +21,7 @@ piece of state:
 |---|---|
 | `Driver.cpp` | Kernel entry points (`init_driver`, `publish_devices`, `find_device`).  USB device-add hook claims the chip and creates a `RTL8814AUDevice`. |
 | `Device.cpp / Device.h` | The whole-device class — owns USB endpoints, hardware state, the RX ring, and all the kernel threads.  Most logic lives here. |
-| `RegisterIO.cpp` | Read/Write 8/16/32-bit MAC, BB, and RF registers via USB control transfers.  Single point of contact with the chip's register bus. |
+| `RegisterIO.cpp` | Read/Write 8/16/32-bit MAC, BB, and RF registers via USB control transfers.  Single point of contact with the chip's register bus.  RF registers are not directly addressable here — see [phy-channel-and-band.md](phy-channel-and-band.md). |
 | `Firmware.cpp` | Loads the 8814AU firmware blob (`rtl8814aufw.bin`) into the chip's MCU via IDDMA.  See [firmware.md](firmware.md). |
 | `EfuseReader.cpp` | Reads the chip's electronic fuses (PROM equivalent) — MAC address, antenna config, RFE type, etc. |
 | `PhyConfig.cpp` | BB / RF / AGC table replay (cold-start sequence borrowed from morrownr/8814au), channel select, IQ calibration. |

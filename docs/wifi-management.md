@@ -13,28 +13,58 @@ in `WiFiManagement.cpp` plus the join state machine in `Device.cpp`.
 
 When userland issues `ifconfig <dev> scan`, the driver receives
 `SIOCS80211 IOC_SCAN_REQ` and calls `_DoScanRequest`, which delegates
-to `WiFiManager::StartScan`.  That fans out three things in parallel:
+to `WiFiManager::StartScan`.  That does three things:
 
 1. Purge stale entries from the BSS list (anything older than the
    previous scan).
-2. Send an `IOC_SCAN_EN` H2C command to the firmware to start the
-   active scan.
-3. Spawn a one-shot scan-notifier thread with an 8-second timeout.
+2. Send an `IOC_SCAN_EN` H2C command to the firmware.
+3. Spawn a one-shot scan-notifier thread, which performs the scan.
 
-Beacons and probe-responses arrive while scanning is in progress.
-`_RxFrameReceived` dispatches them to `_ParseBeaconOrProbe` which
-adds entries to `fBssList` (max 64 BSSes, oldest entries purged).
+**The host drives the channel sweep, not the firmware.**
+`_SendScanCommand` can only pass a channel list to the firmware when the
+list fits the six-byte H2C payload, which is four channels; the real
+42-channel list therefore takes the `payload[1] = 0` "firmware scans all
+supported channels" path.  The firmware does not sweep, and never sends
+the `kC2H_ScanComplete` that would claim it had.  Left to itself the chip
+simply stays on whatever channel it was on.
 
-After 8 seconds — or sooner if the firmware emits a
-`kC2H_ScanComplete` event — the scan-notifier thread fires
-`B_NETWORK_WLAN_SCANNED` on the network monitor port.  Userland
-can then fetch results via `SIOCG80211 IOC_SCAN_RESULTS`.
+So `Device::_ScanSweep` hops the chip across `kChannelList2G` followed by
+`kChannelList5G`, dwelling `kScanDwellTime` (120 ms) on each — longer than
+the usual 100 ms beacon interval, so a passive listen reliably hears one.
+A full 42-channel sweep takes about 5.6 seconds.  Beacons and probe
+responses arrive through the normal RX path throughout:
+`_RxFrameReceived` dispatches them to `_ParseBeaconOrProbe`, which adds
+entries to `fBssList` (max 64 BSSes, oldest purged).  The only thing the
+sweep changes is which channel we are listening to.
 
-The firmware-side scan completion (`kC2H_ScanComplete`) doesn't
-fire reliably on the 8814AU — possibly because the WPS/SCAN-state
-H2C bookkeeping the chip expects isn't documented and we haven't
-reverse-engineered enough of it from the Linux reference.  The
-8-second host-side fallback covers that.
+The sweep runs on the notifier thread deliberately.  Setting a channel is
+a long series of USB register writes — the RF synthesizer on all four
+paths, plus band-specific AGC tables, RFE routing and per-channel TX power
+on a band change — and must not run on the USB callback thread.
+
+Two guards:
+
+- It refuses to sweep while connected.  Hopping away from the AP's
+  channel to collect beacons would drop the link.
+- It restores the pre-scan channel afterwards, so an unrelated join does
+  not inherit wherever the sweep happened to end.
+
+When the sweep finishes, the notifier calls `WiFiManager::FinishScan` and
+fires `B_NETWORK_WLAN_SCANNED` on the network monitor port.  Userland then
+fetches results via `SIOCG80211 IOC_SCAN_RESULTS`.
+
+`FinishScan` is not optional bookkeeping.  `StartScan` sets the state to
+`kWiFiStateScanning`, and the only other thing that clears it is
+`_HandleScanComplete`, which runs off the firmware event that never
+arrives.  Without `FinishScan` the state stuck for the rest of the boot,
+so exactly **one scan per boot** ever ran and every later one returned
+`B_BUSY` — and because joining resolves the SSID through `FindBssBySsid`,
+any AP that was not beaconing during that single window could not be
+joined until the machine was rebooted.  `StartScan` additionally treats a
+scan still in progress after `kScanStaleTimeout` (15 s) as finished, in
+case a notifier dies without calling `FinishScan`, and drains the
+completion semaphore so this scan's waiters cannot return early on the
+previous scan's release.
 
 ## Join state machine
 
@@ -149,7 +179,7 @@ We handle a few C2H types:
 
 | Event | Behavior |
 |---|---|
-| `kC2H_ScanComplete` | release the scan-done sem so the notifier fires (currently never seen in practice — fallback timeout covers it) |
+| `kC2H_ScanComplete` | release the scan-done sem so the notifier fires.  **Never observed on this chip** — the host-driven sweep in `_ScanSweep` is what actually completes a scan, and `FinishScan` clears the state. |
 | `kC2H_ConnectionStatus` | log; eventually drives reconnect logic |
 | `kC2H_RateAdaptive` | log only |
 | `kC2H_TxReport` | log only |

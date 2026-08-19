@@ -1,6 +1,15 @@
 >[!NOTE]
 >An LLM was used to aid in development of this code.
 
+>[!WARNING]
+>This is very alpha version code, it is not fully working yet!
+>It does connect to DHCP, get an IP, and can ping! But it's not done yet.
+>
+>Current state in short: scanning works across both bands, and WPA2-PSK
+>association, DHCP and ping work on **2.4 GHz**.  5 GHz networks are now
+>visible to a scan, but associating over 5 GHz has not been tested.
+>TCP-heavy traffic (for example browsing in WebPositive) does not work yet.
+
 **Bug reports (please attach listdev output, syslog and/or screenshots) and PRs welcome! See "Logging Bugs / How to Help" section below**
 
 # rtl8814au (Unofficial) - Haiku Driver
@@ -175,6 +184,16 @@ ifconfig /dev/net/rtl8814au/0 scan
 ```
 
 Returns the BSS list — SSIDs, signal strengths, security types.
+
+A scan sweeps all 42 supported channels across both bands and takes about
+5.6 seconds, so the results of the scan you just asked for may land just
+after the command returns — run it twice if the network you want is not
+listed yet.  The sweep is driven by the driver rather than the chip's
+firmware, which does not sweep on its own.
+
+Scanning is skipped while connected, since hopping away from the access
+point's channel to collect beacons would drop the link.  Disconnect first
+if you need fresh results.
 
 ### Join an open network
 
