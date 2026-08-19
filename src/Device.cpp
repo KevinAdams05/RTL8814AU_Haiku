@@ -2631,7 +2631,9 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		static uint32 sMgmtTick = 0;
 		if (++sMgmtTick >= 5000) {
 			sMgmtTick = 0;
-			dprintf(RTL8814AU_DRIVER_NAME ": mgmt subtypes: beacon(8)=%u probe(5)=%u auth(11)=%u assoc(1)=%u disasoc(10)=%u fromTarget=%u\n",
+			dprintf(RTL8814AU_DRIVER_NAME ": mgmt subtypes: beacon(8)=%u "
+				"probe(5)=%u auth(11)=%u assoc(1)=%u disasoc(10)=%u "
+				"fromTarget=%u\n",
 				(unsigned)sMgmtStats[8], (unsigned)sMgmtStats[5],
 				(unsigned)sMgmtStats[11], (unsigned)sMgmtStats[1],
 				(unsigned)sMgmtStats[10], (unsigned)sTargetBeacons);
