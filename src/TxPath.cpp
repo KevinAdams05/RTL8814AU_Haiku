@@ -202,8 +202,26 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 	status_t status = fUSBModule->queue_bulk(fBulkOut[pipeIndex],
 		transfer->buffer, totalLength, _TxCallback, transfer);
 	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": queue_bulk failed for TX: %s\n",
-			strerror(status));
+		// Everything the USB stack could be objecting to.  queue_bulk
+		// returning B_BAD_VALUE on a pipe that has already carried
+		// traffic is the interesting case: it says the submission itself
+		// is malformed rather than the link being busy.  Count in-use
+		// slots too, since a slot that is handed out while still queued
+		// would produce exactly this.
+		uint32 inUseCount = 0;
+		uint32 base = pipeIndex * kTxTransfersPerQueue;
+		for (uint32 i = 0; i < kTxTransfersPerQueue; i++) {
+			if (fTransfers[base + i].inUse)
+				inUseCount++;
+		}
+
+		dprintf(RTL8814AU_DRIVER_NAME ": queue_bulk failed for TX: %s "
+			"(pipe=%u handle=%p slot=%" B_PRId32 " len=%" B_PRIu32
+			" frame=%" B_PRIu32 " inUse=%" B_PRIu32 "/%" B_PRIu32
+			" buf=%p)\n", strerror(status), (unsigned)pipeIndex,
+			(void*)(addr_t)fBulkOut[pipeIndex], transferIndex,
+			totalLength, frameLength, inUseCount,
+			(uint32)kTxTransfersPerQueue, transfer->buffer);
 		MutexLocker relock(fLock);
 		transfer->inUse = false;
 		fFramesFailed++;
