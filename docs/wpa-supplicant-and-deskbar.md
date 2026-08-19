@@ -144,15 +144,30 @@ This driver already publishes `SCANNED` and `JOINED` in that format.
 Two independent problems, and the first one is not about wpa_supplicant at
 all.
 
-**The access point never sends us unicast.** It associates us — assoc
-response status 0 with an AID — and then sends only group-addressed
-traffic. Across a full association attempt, every frame received from the
-AP was `bcast=1`; not one unicast frame addressed to us has ever arrived.
-EAPOL M1 is unicast, so it never comes, and that starves the in-driver
-handshake and wpa_supplicant identically. This is the real blocker, it is
-in the receive path, and it is tracked in
-[phy-channel-and-band.md](phy-channel-and-band.md) alongside the other
-receive work.
+**The four-way handshake does not complete.** This used to read "the access
+point never sends us unicast", which was true of the evidence at the time and
+is no longer true: with the assoc request's IEs put in the right order, M1
+arrives, passes the addressed-to-us check, and the driver derives a PTK and
+sends M2. The access point then keeps retransmitting M1, so it is not
+accepting our reply. Whatever starves the in-driver handshake starves
+wpa_supplicant identically, so this blocks the Deskbar route too. Tracked in
+[wpa2-in-driver.md](wpa2-in-driver.md).
+
+**net_server undoes its own join.** Joining an open network has to go through
+net_server, because there is no passphrase for `wifi-join` to take. Doing so
+associates and then immediately tears the association down:
+
+```
+IOC_MLME op=1(ASSOC)  reason=0  mac=…
+IOC_MLME op=3(DEAUTH) reason=3  mac=…
+```
+
+Reason 3 is `IEEE80211_REASON_AUTH_LEAVE`, which is what
+`NetServer::_LeaveNetwork` sends — and it still happens with wpa_supplicant
+killed outright, so this is net_server itself, not the supplicant. The
+practical effect is that the open-network path cannot hold an association,
+which is worth knowing before blaming the driver's transmit path for a failed
+DHCP.
 
 **The in-driver handshake fights the supplicant.** wpa_supplicant opens by
 resetting driver state — `IOC_MLME` DEAUTH, clear the IEs, `IOC_WPA` 0 —

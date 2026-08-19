@@ -31,35 +31,45 @@ successfully drives the driver to associate and the AP issues an AID.
 
 What never works is the EAPOL layer.
 
-### What we proved
+### What we thought we proved — and why it was wrong
 
-A small standalone test program that does exactly what
-`l2_packet_haiku.c` does:
+**This section used to claim that Haiku cannot deliver ethertype 0x888E to
+userland, and that the in-driver handshake exists to work around a kernel
+bug. That claim is false.** It is left here, corrected, because the wrong
+version shaped this driver's whole design and someone will otherwise
+re-derive it.
 
-```c
-int s = socket(AF_LINK, SOCK_DGRAM, 0);
-ioctl(s, SIOCGIFADDR, &req);          // -> link addr
-((sockaddr_dl*)&req.ifr_addr)->sdl_e_type = htons(0x888E);
-bind(s, &linkAddr, sizeof(linkAddr)); // succeeds
-recvfrom(s, ...);                      // hangs forever
+The original test bound an `AF_LINK` socket to 0x888E exactly as
+`l2_packet_haiku.c` does, and `recvfrom` never returned. That was read as
+"the frames go missing between `device_consumer_thread` and the registered
+handler". Re-testing the same thing says otherwise:
+
+```
+sa_len=40 sdl_family=4 sdl_index=7 sdl_type=6 (IFT_ETHER=6) sdl_alen=6
+bind(0x888E): OK -- stack accepted an EAPOL handler registration
 ```
 
-The bind succeeds, the kernel registers our handler in
-`interface->receive_funcs` for `B_NET_FRAME_TYPE(IFT_ETHER, 0x888E)`,
-the chip receives EAPOL frames, the RX path delivers them to the
-network stack, and `ifconfig` increments its RX packet counter.
-But `recvfrom` never returns and `tcpdump` (which uses the same path)
-sees nothing either.
+The bind succeeds and the stack really does register a handler for
+`B_NET_FRAME_TYPE(IFT_ETHER, 0x888E)`. The delivery path is sound and
+entirely driver-agnostic — `ethernet_deframe` tags every frame with
+`sdl_e_type`, the reader thread deframes before enqueueing, and the consumer
+thread dispatches on that key. `recvfrom` returned nothing because **no
+EAPOL frame was arriving at the time**, which is a different problem
+entirely and is still open (see the status section below).
 
-The frames go missing somewhere between
-`device_consumer_thread` enqueuing them and the registered handler
-running — ethertype 0x888E doesn't reach userland on Haiku via the
-`AF_LINK` path.
+Two silent ways that test can fail regardless of the stack, both of which
+produce a bind that reports success and then receives nothing:
 
-Fixing the kernel is a real Haiku bug worth addressing, but it's out
-of scope for an unofficial standalone .hpkg driver.  The driver works
-around it: run the handshake in-kernel, never let an EAPOL frame
-touch userland.
+- `LinkProtocol::Bind` applies `ntohs()` to `sdl_e_type`, so the caller must
+  pass **network** byte order. Host order binds `0x8E88` and matches nothing.
+- If `sdl_type` is left 0, `Bind` registers **no handler at all** and still
+  returns `B_OK`. Take the `sockaddr_dl` from `SIOCGIFADDR`; never build it
+  by hand.
+
+See [wpa-supplicant-and-deskbar.md](wpa-supplicant-and-deskbar.md) for the
+full path through the stack and for what it would take to hand the handshake
+back to `wpa_supplicant` — which is also the only route to connecting from
+the Deskbar.
 
 ## Why not hardware CCMP?
 
@@ -256,3 +266,103 @@ uint64       fTxPnGroup;           // (unused in STA mode)
 
 The inbox is single-slot because the handshake is strictly
 one-message-at-a-time per peer and we have only one BSS to talk to.
+
+
+## Two requirements that are easy to get wrong, and cost a day each
+
+### Information elements go in ascending element-ID order
+
+The assoc request must emit its IEs in ascending element-ID order: SSID (0),
+Supported Rates (1), **RSN (48)**, Extended Supported Rates (50). Emitting
+50 before 48 broke association in two different ways depending on how strict
+the access point was, and neither looked like an ordering problem:
+
+- A phone hotspot **dropped the assoc request outright** — no assoc response
+  at all, no deauth, nothing on the air.
+- A home router **accepted it, replied status 0 with an AID, and then ignored
+  us forever.** It had stopped parsing at the out-of-order element, never saw
+  the RSN IE, concluded we were a non-RSN station, and so never sent M1. It
+  never deauthed us either, because from its side nothing was wrong.
+
+That second failure presents as "we associate and the access point then
+ignores us", which sends you looking at receive filters, MAC registers and
+crypto — none of which are wrong. The way to find it is to associate to the
+**same** access point twice, once open and once with WPA2. If open works and
+WPA2 does not, the fault is in the assoc request, not in receive.
+
+### Management and EAPOL frames must be checked as addressed to us
+
+`RCR` has `AMF` set, so the chip delivers **every** management frame on the
+channel — including the auth and assoc responses the access point sends to
+its other stations. A handler that checks only `addr2 == BSSID` will happily
+accept someone else's success:
+
+```c
+if (memcmp(frame + 10, fJoinBssid, 6) != 0)   // from our AP
+    return;
+if (memcmp(frame + 4, fMacAddress, 6) != 0)   // ...and to US
+    return;
+```
+
+Without the second check a busy access point makes the driver believe it
+authenticated and associated when its own request never got through. The
+give-away is the **AID changing between runs** — we saw 45, 46, 17, then 1,
+which were other stations' AIDs. The same applies to the EAPOL diversion:
+handshake frames are always unicast to us, and adopting another station's M1
+would derive a PTK against the wrong ANonce.
+
+## Verifying the handshake arithmetic off-box
+
+When the access point rejects M2, the useful question is whether our
+arithmetic is wrong or our frame never arrived. The whole derivation can be
+checked away from the driver, because everything it depends on is either
+known or sent in the clear. Log the ANonce and the finished M2 in hex, then:
+
+1. `PMK = pbkdf2_hmac('sha1', passphrase, ssid, 4096, 32)`
+2. `PTK = PRF-384(PMK, "Pairwise key expansion",
+   min(AA,SPA) || max(AA,SPA) || min(ANonce,SNonce) || max(ANonce,SNonce))`
+   — 76 bytes of data, SNonce read out of M2 at offset 17
+3. `MIC = HMAC-SHA1(PTK[0:16], M2 with the MIC field zeroed)[0:16]`
+   and compare against M2 offsets 81..96
+
+Done for a real handshake, every part matched: EAPOL header, `keyInfo`
+`0x010a`, key length 0, the replay counter echo, the SNonce, `keyDataLen` 22
+and a valid CCMP/CCMP/PSK RSN IE in key data, and the MIC. **So the crypto
+and the M2 builder are not where to look.** No key material needs logging for
+this — the ANonce and M2 both travel in the clear during a normal handshake.
+
+## Status
+
+Working: association (genuinely — verified with the addressed-to-us checks
+in place, AID stable), M1 receipt, PTK derivation, and M2 construction and
+transmission.
+
+**Not working: the access point does not accept M2.** It keeps retransmitting
+M1. M2 is byte-perfect, the USB write completes in full, and the chip drains
+its TX queue, so the frame reaches the chip and the chip believes it sent it.
+What has not been established is whether it reaches the air.
+
+An over-the-air capture is the outstanding measurement, and the first attempt
+was inconclusive: a monitor elsewhere in the house recorded 74,000 packets
+from 373 distinct transmitters and **nothing at all from this machine**, which
+would be damning except that the access point demonstrably answers our auth
+and assoc — it cannot reply to frames it never received. So the monitor was
+simply out of our range. A useful capture needs the monitor beside the machine
+under test, and needs a control: confirm the auth and assoc frames appear
+before drawing any conclusion about M2.
+
+### The test access points are not equivalent — this matters
+
+- **The phone hotspot is a very weak transmitter.** Measured at **-86 dBm
+  with a bad FCS from eight feet away**, where a phone should be nearer -45.
+  It sends M1 and ignores our M2, but on a link that marginal, "ignored" and
+  "never received" are indistinguishable. It also auto-disables on inactivity
+  and re-randomises its BSSID across restarts. Convenient for A/B testing
+  open versus WPA2 on the same radio; a poor choice for anything where signal
+  quality is a variable.
+- **The home router is strong** (-62 dBm at the same monitor) but
+  **associates us and never sends M1 at all** — a different failure, and one
+  that is at least not explainable by link margin.
+
+Any conclusion drawn from one of these alone should be checked against the
+other, and ideally against a third, stronger access point.
