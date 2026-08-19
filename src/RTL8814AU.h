@@ -584,6 +584,12 @@ static const uint16 kRegBKParams			= 0x040C;
 
 static const uint16 kRegSpecSIFS			= 0x0428;
 static const uint16 kRegMacSpecSIFS			= 0x042C;
+// Response Rate Set.  The MAC picks the rate for hardware-generated
+// responses (ACK, CTS) out of this.  If it does not offer a rate the
+// current band can carry, the chip cannot ACK, and an access point that
+// gets no ACK drops the station from its table.
+static const uint16 kRegRRSR				= 0x0440;
+
 static const uint16 kRegSIFS_CTX			= 0x0514;
 static const uint16 kRegSIFS_TRX			= 0x0516;
 

@@ -645,6 +645,26 @@ RTL8814AUWiFiManager::_SendMediaStatusCommand(bool connected)
 }
 
 
+/*! Take the firmware out of power save, and keep it out.
+
+    This had never been called.  The firmware therefore ran in whatever
+    power mode it defaults to after loading, and in a power-saving mode it
+    sets the Power Management bit in frames it transmits on our behalf — no
+    matter that the driver builds its own frames with that bit clear.  An
+    access point seeing PM set does the correct thing for a sleeping
+    station: it buffers unicast traffic and only announces it in the TIM,
+    waiting for a PS-Poll that this driver never sends.  Group-addressed
+    traffic keeps flowing after each DTIM, so receive looks healthy while
+    every unicast frame — including the EAPOL M1 that starts the 4-way
+    handshake — waits at the access point forever.
+*/
+status_t
+RTL8814AUWiFiManager::SetActivePowerMode()
+{
+	return _SendSetPowerModeCommand(0);
+}
+
+
 /*! Send a power mode command to the firmware.
 
     \param mode  0 = active, 1 = low power (LPS), 2 = inactive (IPS)

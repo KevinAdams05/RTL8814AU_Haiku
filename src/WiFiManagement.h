@@ -152,6 +152,13 @@ public:
 	// the scan-done C2H event arrives.
 	status_t					WaitForScanComplete(bigtime_t timeout);
 
+	// Take the firmware out of power save.  Nothing ever asked for this,
+	// so the firmware sat in whatever mode it defaults to — and in a power
+	// saving mode it sets the PM bit in our outgoing frames itself, which
+	// tells the access point to buffer our unicast traffic instead of
+	// delivering it.
+	status_t					SetActivePowerMode();
+
 	// Force the scan state back to idle and wake anyone waiting on the
 	// scan.  The firmware's kC2H_ScanComplete is the only other thing
 	// that clears kWiFiStateScanning, and it never arrives, so whoever

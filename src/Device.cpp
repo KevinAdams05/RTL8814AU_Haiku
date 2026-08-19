@@ -550,6 +550,14 @@ RTL8814AUDevice::_InitHardware()
 				strerror(status));
 			return status;
 		}
+
+		// NOT taking the firmware out of power save here, tempting as it
+		// is: an H2C mailbox command this early in _HardwareInit hangs
+		// device initialisation, and since the network stack brings
+		// interfaces up during boot, that hangs the boot.  Confirmed the
+		// hard way — the box had to be recovered over IPMI.  The post-assoc
+		// worker does it instead, from a context where synchronous USB
+		// control transfers are safe.
 	}
 
 	fJoinState = kJoinIdle;
@@ -812,12 +820,10 @@ RTL8814AUDevice::_InitMAC()
 		| kRCR_HTC_LOC_CTRL
 		| kRCR_APP_PHYST_RXFF | kRCR_APP_ICV | kRCR_APP_MIC;
 
-	// DIAGNOSTIC, REMOVE: accept every frame regardless of address, to
-	// find out whether unicast is demodulable at all.  We associate fine
-	// and then only ever receive group-addressed frames, so either the
-	// chip's address filter is rejecting our unicast or nothing unicast is
-	// being demodulated.  Promiscuous separates the two.
-	rxFilter |= kRCR_AAP;
+	// Promiscuous is deliberately NOT set here.  It was set temporarily to
+	// establish whether unicast was demodulable at all; the answer came
+	// from elsewhere — we receive unicast auth and assoc responses — so it
+	// is not needed and only adds RX load.
 
 	fRegisterIO->Write32(kRegRCR, rxFilter);
 
@@ -2647,6 +2653,22 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		// In a busy environment with ~20 networks beaconing, mgmt
 		// frames arrive at ~50/sec.  Log every 5000 frames (~every
 		// 100 sec) so this stays a heartbeat, not a fire hose.
+		// Deauth (12) and disassoc (10) carry a two-byte reason code after
+		// the header, and they are the access point telling us why it threw
+		// us out.  Nothing logged these before, so a deauth mid-handshake
+		// was invisible — which matters a great deal when the symptom is
+		// "the access point stops talking to us".
+		if ((frameSubtype == 12 || frameSubtype == 10)
+			&& frameLength >= 26) {
+			bool toUs = memcmp(&frameData[4], device->fMacAddress, 6) == 0;
+			dprintf(RTL8814AU_DRIVER_NAME ": RX %s toUs=%d reason=%u "
+				"from=%02x:%02x:%02x:%02x:%02x:%02x\n",
+				frameSubtype == 12 ? "DEAUTH" : "DISASSOC", toUs ? 1 : 0,
+				(unsigned)(frameData[24] | (frameData[25] << 8)),
+				frameData[10], frameData[11], frameData[12],
+				frameData[13], frameData[14], frameData[15]);
+		}
+
 		// Beacons from the BSSID we are trying to join, counted
 		// separately.  This is the control for a failed association: if
 		// this climbs, the chip is parked on the right channel and RX
@@ -2662,10 +2684,11 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 			sMgmtTick = 0;
 			dprintf(RTL8814AU_DRIVER_NAME ": mgmt subtypes: beacon(8)=%u "
 				"probe(5)=%u auth(11)=%u assoc(1)=%u disasoc(10)=%u "
-				"fromTarget=%u\n",
+				"deauth(12)=%u fromTarget=%u\n",
 				(unsigned)sMgmtStats[8], (unsigned)sMgmtStats[5],
 				(unsigned)sMgmtStats[11], (unsigned)sMgmtStats[1],
-				(unsigned)sMgmtStats[10], (unsigned)sTargetBeacons);
+				(unsigned)sMgmtStats[10], (unsigned)sMgmtStats[12],
+				(unsigned)sTargetBeacons);
 		}
 		// Management frames:
 		//   8 = beacon, 5 = probe-resp -> BSS list
@@ -3204,6 +3227,21 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 	dprintf(RTL8814AU_DRIVER_NAME ": MSR before=0x%02x after=0x%02x"
 		" (want 0x%02x)\n", msrBefore, msrAfter, kMSR_Infra);
 
+	// The access point drops us from its client table shortly after
+	// associating, which is what happens to a station that never ACKs.
+	// Hardware generates the ACK, so if it is not going out the fault is
+	// in the response rate set or the response timing — neither of which
+	// this driver ever writes; both come from the cold-start replay, so
+	// read them back rather than assume.
+	dprintf(RTL8814AU_DRIVER_NAME ": response path: RRSR=0x%08" B_PRIx32
+		" TXPAUSE=0x%02x SIFS_CTX=0x%04x SIFS_TRX=0x%04x "
+		"RESP_SIFS=0x%04x\n",
+		fRegisterIO->Read32(kRegRRSR),
+		(unsigned)fRegisterIO->Read8(kRegTxPause),
+		(unsigned)fRegisterIO->Read16(kRegSIFS_CTX),
+		(unsigned)fRegisterIO->Read16(kRegSIFS_TRX),
+		(unsigned)fRegisterIO->Read16(0x063E));
+
 	// Set chip BSSID register so MAC frame filter accepts AP traffic
 	for (uint32 i = 0; i < 6; i++)
 		fRegisterIO->Write8(kRegBSSID + i, bssid[i]);
@@ -3334,6 +3372,10 @@ RTL8814AUDevice::_HandleAuthResponse(const uint8* frame, uint32 length)
 	uint16 authSeq = frame[26] | (frame[27] << 8);
 	uint16 statusCode = frame[28] | (frame[29] << 8);
 
+	// fc1 bit 3 is Retry.  If the access point is retransmitting these,
+	// it is not hearing our ACK — which is the whole question.
+	dprintf(RTL8814AU_DRIVER_NAME ": RX auth response fc1=0x%02x retry=%d\n",
+		frame[1], (frame[1] & 0x08) != 0 ? 1 : 0);
 	dprintf(RTL8814AU_DRIVER_NAME ": RX auth response alg=%u seq=%u "
 		"status=%u\n", (unsigned)authAlg, (unsigned)authSeq,
 		(unsigned)statusCode);
@@ -3368,6 +3410,8 @@ RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
 	uint16 statusCode = frame[26] | (frame[27] << 8);
 	uint16 aid = (frame[28] | (frame[29] << 8)) & 0x3FFF;
 
+	dprintf(RTL8814AU_DRIVER_NAME ": RX assoc response fc1=0x%02x retry=%d\n",
+		frame[1], (frame[1] & 0x08) != 0 ? 1 : 0);
 	dprintf(RTL8814AU_DRIVER_NAME ": RX assoc response cap=0x%04x "
 		"status=%u aid=%u\n", (unsigned)capability,
 		(unsigned)statusCode, (unsigned)aid);
@@ -4212,6 +4256,15 @@ RTL8814AUDevice::_PostAssocLoop()
 			break;
 		if (fRemoved)
 			continue;
+		// Out of power save first.  If the firmware is asleep in any sense
+		// the access point buffers our unicast rather than sending it, and
+		// the handshake below can never start.
+		if (fWiFiManager != NULL) {
+			status_t powerStatus = fWiFiManager->SetActivePowerMode();
+			dprintf(RTL8814AU_DRIVER_NAME ": post-assoc active power "
+				"mode: %s\n", strerror(powerStatus));
+		}
+
 		status_t setupStatus = _DoPostAssocSetup();
 		dprintf(RTL8814AU_DRIVER_NAME ": post-assoc setup: %s\n",
 			strerror(setupStatus));
