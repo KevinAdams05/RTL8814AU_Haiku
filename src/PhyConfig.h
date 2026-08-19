@@ -103,8 +103,25 @@ private:
 									uint32 value);
 	uint32						_ReadRF(uint32 path, uint8 rfRegister);
 
+	// Reprogram the baseband for a 2.4 <-> 5 GHz change.  Separate from
+	// SetChannel because it is only legal on an actual band change, and
+	// runs with the demodulator clocks gated.
+	status_t					_SwitchBand(ChannelBand band);
+
+	// Route the RF pins to the dongle's external LNA/PA and antenna
+	// switch for the given band.  Genuinely per-band: the 2.4 GHz
+	// routing cannot receive 5 GHz.
+	void						_SetRfePinmux(ChannelBand band);
+
 	// Channel helpers
 	static ChannelBand			_BandForChannel(uint8 channel);
+
+	// Per-channel-group baseband/RF programming.  The 5 GHz band is not
+	// one band to the hardware: the fc_area filter, the RF synthesizer's
+	// band-select bits and the AGC table all step at sub-band boundaries.
+	static uint32				_FcAreaForChannel(uint8 channel);
+	static uint32				_RfModAgForChannel(uint8 channel);
+	static uint32				_AgcTableForChannel(uint8 channel);
 
 	RTL8814AURegisterIO*		fRegisterIO;
 	RTL8814AUEfuseReader*		fEfuseReader;

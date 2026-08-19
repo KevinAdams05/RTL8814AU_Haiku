@@ -518,7 +518,51 @@ static const uint32 kBBRxPathMaskShift		= 8;		// 4-bit path mask in bits 8-11
 static const uint16 kRegBBTxPath			= 0x080C;
 static const uint16 kRegBBCckRxPath			= 0x0A04;
 static const uint16 kRegBBCckCheck			= 0x0454;
+static const uint8 kBBCckCheck5GHz			= 0x80;		// CCK invalid in 5 GHz
 static const uint16 kRegBBRfePinmux0		= 0x0CB0;
+
+// Per-band programming needed on a 2.4 <-> 5 GHz switch.  None of this is
+// optional: the RF synthesizer register carries band-select bits that are
+// all zero for 2.4 GHz, which is why writing a bare channel number has
+// always worked on 2.4 GHz and never produced a single 5 GHz frame.
+static const uint16 kRegBBFcArea			= 0x0860;	// fc_area
+static const uint32 kBBFcAreaMask			= 0x1FFE0000;
+static const uint16 kRegBBAgcTableSelect	= 0x0958;
+static const uint32 kBBAgcTableSelectMask	= 0x0000001F;
+static const uint16 kRegBBCckTxOnly			= 0x0A80;
+static const uint32 kBBCckTxOnly5GHz		= 0x00040000;	// bit 18
+
+// RFE (RF front-end) pinmux, one per RF path plus the BT-coexist word.
+// These route the chip's RF pins to the dongle's external LNA/PA and
+// antenna switch, and the correct routing differs per band.
+static const uint16 kRegBBRfePinmuxPathB	= 0x0EB0;
+static const uint16 kRegBBRfePinmuxPathC	= 0x18B4;
+static const uint16 kRegBBRfePinmuxPathD	= 0x1AB4;
+static const uint16 kRegBBRfePinmuxCoex		= 0x1ABC;
+static const uint32 kBBRfePinmuxCoexMask	= 0x0FF00000;
+
+// Our dongle reports rfe_type 20, which falls through the reference
+// driver's default branch: one pinmux word for 2.4 GHz and another for
+// 5 GHz, the same value on every path.
+static const uint32 kRfePinmux2_4GHz		= 0x77777777;
+static const uint32 kRfePinmux5GHz			= 0x54775477;
+static const uint32 kRfePinmuxCoex2_4GHz	= 0x07700000;	// [27:20] = 0x77
+static const uint32 kRfePinmuxCoex5GHz		= 0x05400000;	// [27:20] = 0x54
+
+// SYS_CFG3.  Bit 16 gates the CCK and OFDM clocks; the reference driver
+// drops it for the duration of a band switch and restores it after, so
+// the blocks are never running against a half-programmed band.
+static const uint16 kRegSysCfg3				= 0x1000;
+static const uint32 kSysCfg3DemodClockEnable = 0x00010000;
+
+// RF synthesizer band-select bits, written alongside the channel number
+// in kRfRegChannelStandalone.  Value is the reference driver's RF_MOD_AG
+// already positioned for the register's bits 18:16 and 9:8.
+static const uint32 kRfChannelBandMask		= 0x000703FF;
+static const uint32 kRfModAg2_4GHz			= 0x00000000;
+static const uint32 kRfModAgBand1			= 0x00010100;	// ch 36-64
+static const uint32 kRfModAgBand3			= 0x00030100;	// ch 100-140
+static const uint32 kRfModAgBand4			= 0x00050100;	// ch > 140
 
 
 
@@ -725,12 +769,25 @@ static const uint16 kRegOFDM0TRxPathEn		= 0x0040;
 static const uint16 kRegOFDM0TRMuxPar		= 0x0044;
 static const uint16 kRegCCK0AFESetting		= 0x0000;
 
-// RF register access (indirect via BB registers)
-static const uint16 kRegRFCtrl				= 0x001C;
-static const uint16 kRegRFPara				= 0x0020;
-static const uint16 kRegRFReadData			= 0x0024;
+// RF register access.  Reads and writes take completely different routes,
+// which is worth stating plainly because getting it wrong is silent:
+//
+//  - Writing goes through the 3-wire LSSI interface, one register per RF
+//    path, carrying the RF register address in bits 27:20 and the 20-bit
+//    value in bits 19:0.
+//  - Reading is a direct-mapped window per path, where each RF register
+//    occupies its own 32-bit slot at (base + register * 4).
+//
+// kBBRegPathBase above is the read window's base, and is NOT a general
+// per-path register block: an RF write aimed at base + offset lands on an
+// unrelated address and is quietly discarded.
+static const uint16 kRfLssiWriteReg[kRfPathCount]
+	= { 0x0C90, 0x0E90, 0x1890, 0x1A90 };
+static const uint32 kRfDataMask				= 0x000FFFFF;
+static const uint32 kRfAddressShift			= 20;
+static const uint32 kRfCommandMask			= 0x0FFFFFFF;
 
-// RF transceiver registers — accessed via kRegRFCtrl indirect path
+// RF transceiver registers — addressed through the access path above
 static const uint8 kRfRegMode				= 0x00;
 static const uint8 kRfRegChannelStandalone	= 0x18;
 static const uint8 kRfRegTxGain				= 0x56;

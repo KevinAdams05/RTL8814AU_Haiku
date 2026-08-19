@@ -182,34 +182,57 @@ RTL8814AUPhyConfig::SetChannel(uint8 channel, ChannelBandwidth bandwidth)
 		newBand == kBand2_4GHz ? "2.4 GHz" : "5 GHz",
 		bandChanged ? " (band switch)" : "");
 
-	// Configure the RF synthesizer on each path for the new frequency.
-	// The channel number maps directly to a synthesizer setting via
-	// RF register 0x18.
-	for (uint32 path = 0; path < kRfPathCount; path++) {
-		status_t status = _WriteRF(path, kRfRegChannelStandalone, channel);
+	// Reprogram the baseband for the new band before touching the
+	// synthesizer, so the demodulator is never running against a
+	// half-configured band.
+	if (bandChanged) {
+		status_t status = _SwitchBand(newBand);
 		if (status != B_OK)
 			return status;
 	}
 
-	// If the band changed (2.4 ↔ 5 GHz), reconfigure the baseband
-	if (bandChanged) {
-		// Switch LNA mode for the new band
-		uint32 lnaValue = (newBand == kBand5GHz) ? 0x00001 : 0x00000;
-		for (uint32 path = 0; path < kRfPathCount; path++)
-			_WriteRF(path, kRfRegLNA, lnaValue);
+	// The fc_area filter steps at sub-band boundaries, not at the
+	// 2.4/5 GHz boundary, so it is programmed per channel.
+	fRegisterIO->MaskedWrite32(kRegBBFcArea, kBBFcAreaMask,
+		_FcAreaForChannel(channel));
 
-		// Reload band-specific AGC tables — the 2.4 GHz and 5 GHz bands
-		// have different AGC gain curves due to different RF front-end
-		// gain/noise characteristics
-		if (newBand == kBand5GHz) {
-			dprintf(RTL8814AU_DRIVER_NAME ": reloading AGC tables for "
-				"5 GHz\n");
-			_ApplyBBTable(kAGCTable5G, kAGCTable5GCount);
-		} else {
-			dprintf(RTL8814AU_DRIVER_NAME ": reloading AGC tables for "
-				"2.4 GHz\n");
-			_ApplyBBTable(kAGCTable2G, kAGCTable2GCount);
-		}
+	// Configure the RF synthesizer on each path for the new frequency.
+	// The channel number goes in the low byte of RF register 0x18, but it
+	// is only half the story: bits 18:16 and 9:8 carry a band-select code
+	// that is all zeros for 2.4 GHz and non-zero for each 5 GHz sub-band.
+	// Writing a bare channel number therefore tuned 2.4 GHz correctly and
+	// left the synthesizer on the wrong band for every 5 GHz channel,
+	// which is why no 5 GHz frame was ever received.  Read-modify-write,
+	// because _SetBandwidth keeps the filter bandwidth in bits 11:10 of
+	// this same register.
+	uint32 channelValue = ((uint32)channel | _RfModAgForChannel(channel))
+		& kRfChannelBandMask;
+	for (uint32 path = 0; path < kRfPathCount; path++) {
+		uint32 rfValue = _ReadRF(path, kRfRegChannelStandalone);
+		rfValue = (rfValue & ~kRfChannelBandMask) | channelValue;
+
+		status_t status = _WriteRF(path, kRfRegChannelStandalone, rfValue);
+		if (status != B_OK)
+			return status;
+	}
+
+	// The 5 GHz AGC table is selected per sub-band.  2.4 GHz selects
+	// table 0, which _SwitchBand already did.
+	if (newBand == kBand5GHz) {
+		fRegisterIO->MaskedWrite32(kRegBBAgcTableSelect,
+			kBBAgcTableSelectMask, _AgcTableForChannel(channel));
+	}
+
+	// Read back one channel per 5 GHz sub-band edge we actually care
+	// about, rather than all 28, so a sweep stays readable.
+	if (channel == 36 || channel == 149) {
+		dprintf(RTL8814AU_DRIVER_NAME ": ch %u regs: FC_AREA=0x%08"
+			B_PRIx32 " AGC_SEL=0x%08" B_PRIx32 " RF18[A]=0x%05"
+			B_PRIx32 " RFE_A=0x%08" B_PRIx32 "\n", channel,
+			fRegisterIO->Read32(kRegBBFcArea),
+			fRegisterIO->Read32(kRegBBAgcTableSelect),
+			_ReadRF(0, kRfRegChannelStandalone),
+			fRegisterIO->Read32(kRegBBRfePinmux0));
 	}
 
 	// Configure bandwidth in the baseband registers
@@ -235,6 +258,193 @@ RTL8814AUPhyConfig::SetChannel(uint8 channel, ChannelBandwidth bandwidth)
 // ---------------------------------------------------------------------------
 // Private implementation
 // ---------------------------------------------------------------------------
+
+
+/*! Reprogram the baseband for a 2.4 <-> 5 GHz change.
+
+    Tuning the synthesizer is not enough to change band.  CCK does not
+    exist above 2.4 GHz, the demodulator has to be told so, and the AGC
+    gain curves differ because the RF front end has different gain and
+    noise characteristics per band.  Mirrors the reference driver's
+    PHY_SwitchWirelessBand8814A, minus two deliberate omissions noted
+    below.
+
+    Runs with the CCK/OFDM clocks gated, so the blocks are never live
+    against a half-programmed band.
+*/
+status_t
+RTL8814AUPhyConfig::_SwitchBand(ChannelBand band)
+{
+	dprintf(RTL8814AU_DRIVER_NAME ": switching band to %s\n",
+		band == kBand5GHz ? "5 GHz" : "2.4 GHz");
+
+	// Deliberately NOT bracketing this with the 0x1000[16] CCK/OFDM clock
+	// gate that the reference driver drops and restores around a band
+	// switch.  On this chip that bit is BIT0 of byte 0x1002, and BB-region
+	// writes only land while 0x1002 reads 0x03 (FEN_BBRSTB together with
+	// FEN_BB_GLB_RSTn) — see notes/rtl8814au/05-the-bb-write-lock.md, where
+	// the same clock-gate pattern is recorded as a false lead that cost a
+	// lot of time.  Gating the clock here would leave 0x1002 at 0x02 for
+	// exactly the window in which every write below happens, and they
+	// would all be silently dropped.
+	// Route the RF front end for this band first: everything below is
+	// demodulator configuration, and demodulating a band the antenna
+	// path cannot deliver is pointless.
+	_SetRfePinmux(band);
+
+	if (band == kBand5GHz) {
+		// Tell the MAC that CCK is not valid up here, but leave the CCK
+		// transmitter reachable — the reference driver keeps CCK TX
+		// available even with CCK switched off.
+		fRegisterIO->Write8(kRegBBCckCheck, kBBCckCheck5GHz);
+		fRegisterIO->MaskedWrite32(kRegBBCckTxOnly, kBBCckTxOnly5GHz,
+			kBBCckTxOnly5GHz);
+
+		// OFDM only.  Leaving CCK demodulation enabled in 5 GHz is one
+		// of the ways this band silently receives nothing.
+		fRegisterIO->MaskedWrite32(kRegBBOfdmCckEn,
+			kBBOfdmCckEnOfdm | kBBOfdmCckEnCck, kBBOfdmCckEnOfdm);
+	} else {
+		fRegisterIO->MaskedWrite32(kRegBBAgcTableSelect,
+			kBBAgcTableSelectMask, 0);
+
+		fRegisterIO->MaskedWrite32(kRegBBOfdmCckEn,
+			kBBOfdmCckEnOfdm | kBBOfdmCckEnCck,
+			kBBOfdmCckEnOfdm | kBBOfdmCckEnCck);
+
+		fRegisterIO->Write8(kRegBBCckCheck, 0);
+		fRegisterIO->MaskedWrite32(kRegBBCckTxOnly, kBBCckTxOnly5GHz, 0);
+	}
+
+	// Switch LNA mode and reload the band's AGC gain curve.  Both predate
+	// this function and are kept as they were, since 2.4 GHz works.
+	uint32 lnaValue = (band == kBand5GHz) ? 0x00001 : 0x00000;
+	for (uint32 path = 0; path < kRfPathCount; path++)
+		_WriteRF(path, kRfRegLNA, lnaValue);
+
+	if (band == kBand5GHz) {
+		dprintf(RTL8814AU_DRIVER_NAME ": reloading AGC tables for "
+			"5 GHz\n");
+		_ApplyBBTable(kAGCTable5G, kAGCTable5GCount);
+	} else {
+		dprintf(RTL8814AU_DRIVER_NAME ": reloading AGC tables for "
+			"2.4 GHz\n");
+		_ApplyBBTable(kAGCTable2G, kAGCTable2GCount);
+	}
+
+	// One thing the reference driver also does here, left out on purpose:
+	//
+	//  - The TX/RX path masks (kRegBBTxPath, kRegBBCckRxPath).  The
+	//    reference programs generic per-band values; ours are tuned for
+	//    this dongle's actual antenna wiring (paths C+D per EFUSE) and
+	//    overwriting them would regress the working 2.4 GHz path.
+
+	// Read back what actually landed.  BB writes on this chip have a
+	// history of being silently dropped, so a band switch that only
+	// *claims* to have happened is worth nothing.
+	dprintf(RTL8814AU_DRIVER_NAME ": band regs: SYSCFG3[0x1002]=0x%02x "
+		"CCK_CHECK=0x%02x OFDMCCK_EN=0x%08" B_PRIx32 " AGC_SEL=0x%08"
+		B_PRIx32 " CCK_TX=0x%08" B_PRIx32 " RFE_A=0x%08" B_PRIx32 "\n",
+		(unsigned)fRegisterIO->Read8(0x1002),
+		(unsigned)fRegisterIO->Read8(kRegBBCckCheck),
+		fRegisterIO->Read32(kRegBBOfdmCckEn),
+		fRegisterIO->Read32(kRegBBAgcTableSelect),
+		fRegisterIO->Read32(kRegBBCckTxOnly),
+		fRegisterIO->Read32(kRegBBRfePinmux0));
+
+	return B_OK;
+}
+
+
+/*! Route the RF pins for a band.
+
+    These registers connect the chip's RF pins to the dongle's external
+    LNA, PA and antenna switch, and the correct routing differs per band —
+    the 2.4 GHz routing physically cannot deliver 5 GHz to the receiver.
+    Read back at runtime, our dongle sits at the 2.4 GHz value, so this
+    had to be programmed before 5 GHz could receive anything.
+
+    Our EFUSE reports rfe_type 20, which lands in the reference driver's
+    default branch: one word repeated across the paths, differing only by
+    band.  Note the reference's 2.4 GHz default case deliberately leaves
+    path D alone, and we match that.
+
+    Writing these registers used to provoke a device check-sum error and a
+    USB disconnect, which is why they were long left untouched.  That was
+    before the BB unlock was understood — BB-region writes were being
+    dropped entirely then.  With 0x1002 reading 0x03 they land cleanly.
+*/
+void
+RTL8814AUPhyConfig::_SetRfePinmux(ChannelBand band)
+{
+	bool is5GHz = (band == kBand5GHz);
+	uint32 pinmux = is5GHz ? kRfePinmux5GHz : kRfePinmux2_4GHz;
+
+	fRegisterIO->Write32(kRegBBRfePinmux0, pinmux);
+	fRegisterIO->Write32(kRegBBRfePinmuxPathB, pinmux);
+	fRegisterIO->Write32(kRegBBRfePinmuxPathC, pinmux);
+
+	if (is5GHz)
+		fRegisterIO->Write32(kRegBBRfePinmuxPathD, pinmux);
+
+	fRegisterIO->MaskedWrite32(kRegBBRfePinmuxCoex, kBBRfePinmuxCoexMask,
+		is5GHz ? kRfePinmuxCoex5GHz : kRfePinmuxCoex2_4GHz);
+}
+
+
+/*! fc_area filter setting for a channel.  Steps at 5 GHz sub-band
+    boundaries; the last case covers all of 2.4 GHz.
+*/
+uint32
+RTL8814AUPhyConfig::_FcAreaForChannel(uint8 channel)
+{
+	if (channel >= 36 && channel <= 48)
+		return 0x494 << 17;
+	if (channel >= 50 && channel <= 64)
+		return 0x453 << 17;
+	if (channel >= 100 && channel <= 116)
+		return 0x452 << 17;
+	if (channel >= 118)
+		return 0x412 << 17;
+
+	return 0x96a << 17;
+}
+
+
+/*! RF synthesizer band-select code for a channel, already positioned for
+    kRfRegChannelStandalone.  Zero across 2.4 GHz, which is exactly why
+    writing a bare channel number worked there and nowhere else.
+*/
+uint32
+RTL8814AUPhyConfig::_RfModAgForChannel(uint8 channel)
+{
+	if (channel >= 36 && channel <= 64)
+		return kRfModAgBand1;
+	if (channel >= 100 && channel <= 140)
+		return kRfModAgBand3;
+	if (channel > 140)
+		return kRfModAgBand4;
+
+	return kRfModAg2_4GHz;
+}
+
+
+/*! AGC table index for a 5 GHz channel.  Only meaningful in 5 GHz;
+    2.4 GHz uses table 0.
+*/
+uint32
+RTL8814AUPhyConfig::_AgcTableForChannel(uint8 channel)
+{
+	if (channel >= 36 && channel <= 64)
+		return 1;
+	if (channel >= 100 && channel <= 144)
+		return 2;
+	if (channel >= 149)
+		return 3;
+
+	return 0;
+}
+
 
 
 /*! Load the baseband register initialization table. Programs the core
@@ -665,12 +875,19 @@ RTL8814AUPhyConfig::_WriteRF(uint32 path, uint8 rfRegister, uint32 value)
 	if (path >= kRfPathCount)
 		return B_BAD_INDEX;
 
-	// The RF write interface uses the BB register at (path_base + kRegRFCtrl).
-	// Format: [19:0] = data, [27:20] = RF register address
-	uint16 base = kBBRegPathBase[path];
-	uint32 rfValue = (value & 0x000FFFFF) | ((uint32)rfRegister << 20);
+	// Writes go through this path's 3-wire LSSI register, with the RF
+	// register address in bits 27:20 and the data in bits 19:0.
+	//
+	// This used to target kBBRegPathBase[path] + 0x1C, which is inside the
+	// read window and is not a write interface at all: 0x281C for path A.
+	// Every RF write in the driver was therefore discarded, so the chip
+	// never actually changed channel and stayed wherever the init tables
+	// left it.  2.4 GHz appeared to work only because the test network
+	// happened to sit on that channel.
+	uint32 command = (((uint32)rfRegister << kRfAddressShift)
+		| (value & kRfDataMask)) & kRfCommandMask;
 
-	return fRegisterIO->Write32(base + kRegRFCtrl, rfValue);
+	return fRegisterIO->Write32(kRfLssiWriteReg[path], command);
 }
 
 
@@ -686,15 +903,14 @@ RTL8814AUPhyConfig::_ReadRF(uint32 path, uint8 rfRegister)
 	if (path >= kRfPathCount)
 		return 0xFFFFFFFF;
 
-	uint16 base = kBBRegPathBase[path];
+	// Reads come from a direct-mapped window, where each RF register has
+	// its own 32-bit slot.  No command write and no wait: the previous
+	// implementation wrote a command to base + 0x20 and read base + 0x24,
+	// which is simply the slot for RF register 9, and so returned a
+	// constant unrelated value.
+	uint16 address = kBBRegPathBase[path] + (uint16)rfRegister * 4;
 
-	// Write the read command (address only, data = 0)
-	uint32 rfCmd = (uint32)rfRegister << 20;
-	fRegisterIO->Write32(base + kRegRFPara, rfCmd);
-
-	// Read the result
-	snooze(10);  // Brief delay for RF register access to complete
-	return fRegisterIO->Read32(base + kRegRFReadData) & 0x000FFFFF;
+	return fRegisterIO->Read32(address) & kRfDataMask;
 }
 
 
