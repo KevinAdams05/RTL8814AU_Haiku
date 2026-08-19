@@ -43,7 +43,7 @@ struct PhyRegEntry {
 // The EFUSE stores base power indices for each path and channel group.
 // There are 14 channel groups total (5 for 2.4 GHz, 9 for 5 GHz).
 static const uint32 kTxPwrGroupCount2G = 5;
-static const uint32 kTxPwrGroupCount5G = 9;
+static const uint32 kTxPwrGroupCount5G = 14;
 static const uint32 kTxPwrGroupCountTotal
 	= kTxPwrGroupCount2G + kTxPwrGroupCount5G;
 

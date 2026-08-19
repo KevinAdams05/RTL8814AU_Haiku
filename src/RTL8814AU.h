@@ -1043,6 +1043,23 @@ static const uint16 kEfuseAntennaConfig		= 0x00E;	// TX + RX path config
 static const uint16 kEfuseRfeType			= 0x010;	// RF front-end type (0-6)
 static const uint16 kEfuseTxPwr2G			= 0x020;	// 2.4 GHz power table
 static const uint16 kEfuseTxPwr5G			= 0x060;	// 5 GHz power table
+
+// The reference driver's power-gain block for this part: 168 bytes from
+// 0x10, split into a 42-byte run per RF path.  Within a path, 11 bytes of
+// 2.4 GHz base indices (6 CCK then 5 BW40), a delta, five more deltas,
+// then 14 bytes of 5 GHz base indices at +18.
+static const uint16 kEfuseTxPwrBase			= 0x010;
+static const uint16 kEfuseTxPwrPathStride	= 42;
+static const uint16 kEfuseTxPwr5GInPath		= 18;
+static const uint16 kEfuseTxPwrBlockLength	= 168;
+
+// A power index is a gain index, not a dBm value.  Anything above this is
+// not a valid index — unprogrammed EFUSE reads 0xFF — and zero means no
+// output at all, which is never what a factory-programmed part asks for.
+// The reference driver's per-band defaults are used in either case.
+static const uint8 kTxPwrIndexMax			= 0x3F;
+static const uint8 kTxPwrDefault2G			= 0x2D;
+static const uint8 kTxPwrDefault5G			= 0x2A;
 static const uint16 kEfuseTxPwrByRate		= 0x0B0;	// Power-by-rate diffs
 static const uint16 kEfuseThermalMeter		= 0x100;	// Thermal calibration
 static const uint16 kEfuseCrystalCal		= 0x120;	// Crystal calibration

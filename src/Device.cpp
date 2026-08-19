@@ -611,7 +611,7 @@ RTL8814AUDevice::_InitHardware()
 		probe[26] = 0x01; probe[27] = 0x00;	// Supported Rates IE (id=1, len=0)
 
 		status_t txStatus = fTxPath->Transmit(probe, sizeof(probe),
-			kTxQueueMGT, 0, 0, kSecurityNone, true);
+			kTxQueueMGT, _LowestBasicRate(), 0, kSecurityNone, true);
 		dprintf(RTL8814AU_DRIVER_NAME ": TX probe-req test: %s\n",
 			strerror(txStatus));
 	}
@@ -1874,6 +1874,25 @@ RTL8814AUDevice::_ScanSweep()
 }
 
 
+/*! Lowest TX rate that exists in the band we are currently on.
+
+    Management frames want the slowest, most robust rate available, and on
+    2.4 GHz that is CCK 1 Mbps.  CCK does not exist above 2.4 GHz, though,
+    so asking for it on a 5 GHz channel produces a frame that never reaches
+    the air — which is exactly how the first 5 GHz association attempt
+    failed: the auth request was transmitted at CCK 1 Mbps on channel 149
+    and the access point never saw it.  OFDM 6 Mbps is the 5 GHz floor.
+*/
+uint8
+RTL8814AUDevice::_LowestBasicRate() const
+{
+	if (fPhyConfig != NULL && fPhyConfig->CurrentBand() == kBand5GHz)
+		return kRateOFDM6;
+
+	return kRateCCK1;
+}
+
+
 /*! Run a scan to completion, then publish a B_NETWORK_WLAN_SCANNED
     notification on the userland-visible network monitor port.
 
@@ -2599,13 +2618,23 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		// In a busy environment with ~20 networks beaconing, mgmt
 		// frames arrive at ~50/sec.  Log every 5000 frames (~every
 		// 100 sec) so this stays a heartbeat, not a fire hose.
+		// Beacons from the BSSID we are trying to join, counted
+		// separately.  This is the control for a failed association: if
+		// this climbs, the chip is parked on the right channel and RX
+		// works, so a silent association is a transmit problem.
+		static uint32 sTargetBeacons = 0;
+		if (frameSubtype == 8 && frameLength >= 22
+			&& memcmp(frameData + 16, device->fJoinBssid, 6) == 0) {
+			sTargetBeacons++;
+		}
+
 		static uint32 sMgmtTick = 0;
 		if (++sMgmtTick >= 5000) {
 			sMgmtTick = 0;
-			dprintf(RTL8814AU_DRIVER_NAME ": mgmt subtypes: beacon(8)=%u probe(5)=%u auth(11)=%u assoc(1)=%u disasoc(10)=%u\n",
+			dprintf(RTL8814AU_DRIVER_NAME ": mgmt subtypes: beacon(8)=%u probe(5)=%u auth(11)=%u assoc(1)=%u disasoc(10)=%u fromTarget=%u\n",
 				(unsigned)sMgmtStats[8], (unsigned)sMgmtStats[5],
 				(unsigned)sMgmtStats[11], (unsigned)sMgmtStats[1],
-				(unsigned)sMgmtStats[10]);
+				(unsigned)sMgmtStats[10], (unsigned)sTargetBeacons);
 		}
 		// Management frames:
 		//   8 = beacon, 5 = probe-resp -> BSS list
@@ -3144,9 +3173,16 @@ RTL8814AUDevice::_SendAuthRequest()
 	frame[26] = 0x01; frame[27] = 0x00;	// auth seq = 1
 	frame[28] = 0x00; frame[29] = 0x00;	// status = 0 (reserved in req)
 
-	dprintf(RTL8814AU_DRIVER_NAME ": TX auth request seq=1\n");
-	return fTxPath->Transmit(frame, sizeof(frame), kTxQueueMGT,
-		0, 0, kSecurityNone, false);
+	uint8 rate = _LowestBasicRate();
+	status_t status = fTxPath->Transmit(frame, sizeof(frame), kTxQueueMGT,
+		rate, 0, kSecurityNone, false);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": TX auth request seq=1 rate=0x%02x "
+		"ch=%u: %s\n", (unsigned)rate,
+		fPhyConfig != NULL ? (unsigned)fPhyConfig->CurrentChannel() : 0,
+		strerror(status));
+
+	return status;
 }
 
 
@@ -3214,7 +3250,7 @@ RTL8814AUDevice::_SendAssocRequest()
 			"len=%u\n", (unsigned)i);
 	}
 
-	return fTxPath->Transmit(frame, i, kTxQueueMGT, 0, 0,
+	return fTxPath->Transmit(frame, i, kTxQueueMGT, _LowestBasicRate(), 0,
 		kSecurityNone, false);
 }
 
@@ -4069,7 +4105,7 @@ RTL8814AUDevice::_TxEapolDataFrame(const uint8* apMac,
 	i += eapolLen;
 
 	return fTxPath->Transmit(wireFrame, i, kTxQueueBE,
-		kRateCCK1, 0, kSecurityNone, false);
+		_LowestBasicRate(), 0, kSecurityNone, false);
 }
 
 

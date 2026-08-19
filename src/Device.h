@@ -149,6 +149,11 @@ private:
 	// the firmware neither sweeps on its own nor reports when it has.
 	void						_ScanSweep();
 
+	// Lowest TX rate that exists in the band we are currently on.  CCK is
+	// 2.4 GHz only, so management frames cannot be sent at 1 Mbps in
+	// 5 GHz — they simply never reach the air.
+	uint8						_LowestBasicRate() const;
+
 	// Cleanup
 	void						_Shutdown();
 

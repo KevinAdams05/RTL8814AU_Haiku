@@ -157,6 +157,21 @@ RTL8814AUPhyConfig::Initialize()
 	}
 
 	fInitialized = true;
+
+	// Populate the per-channel TX power table from EFUSE.  This has to
+	// happen here, before anything calls SetChannel, because SetChannel
+	// re-applies power for the new channel out of that table — and an
+	// unpopulated table is all zeros, so every channel change was quietly
+	// writing power index 0 over the perfectly good power the cold-start
+	// replay had just programmed.  Nothing transmitted at any real power
+	// after the first join.
+	status = _SetTxPower();
+	if (status != B_OK) {
+		dprintf(RTL8814AU_DRIVER_NAME ": TX power setup failed: %s\n",
+			strerror(status));
+		return status;
+	}
+
 	dprintf(RTL8814AU_DRIVER_NAME ": PHY initialization complete\n");
 	return B_OK;
 
@@ -226,6 +241,11 @@ RTL8814AUPhyConfig::SetChannel(uint8 channel, ChannelBandwidth bandwidth)
 	// Read back one channel per 5 GHz sub-band edge we actually care
 	// about, rather than all 28, so a sweep stays readable.
 	if (channel == 36 || channel == 149) {
+		dprintf(RTL8814AU_DRIVER_NAME ": ch %u txpower A=%u B=%u C=%u "
+			"D=%u\n", channel, (unsigned)_GetTxPowerIndex(0, channel),
+			(unsigned)_GetTxPowerIndex(1, channel),
+			(unsigned)_GetTxPowerIndex(2, channel),
+			(unsigned)_GetTxPowerIndex(3, channel));
 		dprintf(RTL8814AU_DRIVER_NAME ": ch %u regs: FC_AREA=0x%08"
 			B_PRIx32 " AGC_SEL=0x%08" B_PRIx32 " RF18[A]=0x%05"
 			B_PRIx32 " RFE_A=0x%08" B_PRIx32 "\n", channel,
@@ -605,23 +625,89 @@ RTL8814AUPhyConfig::_SetTxPower()
 	// Read 2.4 GHz TX power indices from EFUSE.
 	// The EFUSE stores per-path power for 5 channel groups at kEfuseTxPwr2G.
 	// Layout: path A groups 0-4, then path B groups 0-4, etc.
+	// The power-gain block is 42 bytes per path from kEfuseTxPwrBase: 11
+	// bytes of 2.4 GHz base indices (six CCK groups then five BW40 groups),
+	// deltas, then 14 bytes of 5 GHz base indices at +18.  The old offsets
+	// (0x020 and 0x060) landed mid-block on the delta bytes, so most groups
+	// read 0xEE and fell through to defaults, discarding this dongle's
+	// actual calibration.
 	for (uint32 path = 0; path < kRfPathCount; path++) {
-		uint16 offset2G = kEfuseTxPwr2G + path * kTxPwrGroupCount2G;
+		uint16 pathBase = kEfuseTxPwrBase + path * kEfuseTxPwrPathStride;
+
+		// The five 2.4 GHz BW40 groups follow the six CCK groups.
+		uint16 offset2G = pathBase + kTxPwrGroupCount2G + 1;
 		for (uint32 group = 0; group < kTxPwrGroupCount2G; group++) {
 			if (offset2G + group < kEfuseMapSize)
 				fTxPowerIndex[path][group] = efuseMap[offset2G + group];
 			else
-				fTxPowerIndex[path][group] = 0x24;
+				fTxPowerIndex[path][group] = kTxPwrDefault2G;
 		}
 
-		// Read 5 GHz TX power indices
-		uint16 offset5G = kEfuseTxPwr5G + path * kTxPwrGroupCount5G;
+		uint16 offset5G = pathBase + kEfuseTxPwr5GInPath;
 		for (uint32 group = 0; group < kTxPwrGroupCount5G; group++) {
-			uint32 idx = kTxPwrGroupCount2G + group;
+			uint32 index = kTxPwrGroupCount2G + group;
 			if (offset5G + group < kEfuseMapSize)
-				fTxPowerIndex[path][idx] = efuseMap[offset5G + group];
+				fTxPowerIndex[path][index] = efuseMap[offset5G + group];
 			else
-				fTxPowerIndex[path][idx] = 0x24;
+				fTxPowerIndex[path][index] = kTxPwrDefault5G;
+		}
+	}
+
+	// Validate every index we just read.  An unprogrammed EFUSE byte reads
+	// 0xFF and a wrong offset commonly reads 0x00, and neither is a usable
+	// gain index — 0x00 in particular means no output at all.  Channel 149
+	// came back 0 on all four paths, which is why the first 5 GHz
+	// association attempt transmitted an auth request the access point
+	// could not possibly hear.  The reference driver validates these the
+	// same way and falls back to its per-band defaults.
+	for (uint32 path = 0; path < kRfPathCount; path++) {
+		for (uint32 group = 0; group < kTxPwrGroupCountTotal; group++) {
+			uint8 index = fTxPowerIndex[path][group];
+			if (index != 0 && index <= kTxPwrIndexMax)
+				continue;
+
+			bool is5GHz = group >= kTxPwrGroupCount2G;
+			fTxPowerIndex[path][group] = is5GHz
+				? kTxPwrDefault5G : kTxPwrDefault2G;
+
+			dprintf(RTL8814AU_DRIVER_NAME ": TX power path %u group %u "
+				"invalid (0x%02x), using default 0x%02x\n",
+				(unsigned)path, (unsigned)group, (unsigned)index,
+				(unsigned)fTxPowerIndex[path][group]);
+		}
+	}
+
+	// Dump the reference driver's power-gain block as this dongle actually
+	// has it programmed, so the group offsets above can be checked against
+	// real data rather than assumed.
+	if (efuseMap != NULL) {
+		for (uint32 path = 0; path < kRfPathCount; path++) {
+			uint16 base = kEfuseTxPwrBase + path * kEfuseTxPwrPathStride;
+			if (base + kEfuseTxPwrPathStride > kEfuseMapSize)
+				break;
+
+			dprintf(RTL8814AU_DRIVER_NAME ": EFUSE pwr path %u @0x%03x: "
+				"2G %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x"
+				" | 5G %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x "
+				"%02x %02x %02x %02x\n", (unsigned)path, (unsigned)base,
+				efuseMap[base + 0], efuseMap[base + 1], efuseMap[base + 2],
+				efuseMap[base + 3], efuseMap[base + 4], efuseMap[base + 5],
+				efuseMap[base + 6], efuseMap[base + 7], efuseMap[base + 8],
+				efuseMap[base + 9], efuseMap[base + 10],
+				efuseMap[base + kEfuseTxPwr5GInPath + 0],
+				efuseMap[base + kEfuseTxPwr5GInPath + 1],
+				efuseMap[base + kEfuseTxPwr5GInPath + 2],
+				efuseMap[base + kEfuseTxPwr5GInPath + 3],
+				efuseMap[base + kEfuseTxPwr5GInPath + 4],
+				efuseMap[base + kEfuseTxPwr5GInPath + 5],
+				efuseMap[base + kEfuseTxPwr5GInPath + 6],
+				efuseMap[base + kEfuseTxPwr5GInPath + 7],
+				efuseMap[base + kEfuseTxPwr5GInPath + 8],
+				efuseMap[base + kEfuseTxPwr5GInPath + 9],
+				efuseMap[base + kEfuseTxPwr5GInPath + 10],
+				efuseMap[base + kEfuseTxPwr5GInPath + 11],
+				efuseMap[base + kEfuseTxPwr5GInPath + 12],
+				efuseMap[base + kEfuseTxPwr5GInPath + 13]);
 		}
 	}
 
@@ -768,16 +854,18 @@ RTL8814AUPhyConfig::_ChannelToGroupIndex(uint8 channel)
 	if (channel <= 11)	return 3;
 	if (channel <= 14)	return 4;
 
-	// 5 GHz
-	if (channel <= 48)	return 5;
-	if (channel <= 64)	return 6;
-	if (channel <= 116)	return 7;
-	if (channel <= 128)	return 8;
-	if (channel <= 144)	return 9;
-	if (channel <= 153)	return 10;
-	if (channel <= 161)	return 11;
-	if (channel <= 169)	return 12;
-	return 13;
+	// 5 GHz: the EFUSE carries 14 groups, and the 28 channels we support
+	// divide into exactly two per group in channel order — which is also
+	// how the factory values read back, ascending smoothly across the
+	// band.  Derive the group from the channel's position in the list
+	// rather than restating the boundaries and risking disagreement.
+	for (uint32 i = 0; i < sizeof(kChannelList5G); i++) {
+		if (kChannelList5G[i] == channel)
+			return kTxPwrGroupCount2G + i / 2;
+	}
+
+	// A 5 GHz channel we don't sweep: fall back to the last group.
+	return kTxPwrGroupCount2G + kTxPwrGroupCount5G - 1;
 }
 
 
