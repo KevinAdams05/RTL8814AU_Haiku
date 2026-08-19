@@ -2869,6 +2869,16 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	// PMK supplied via IOC_HAIKU_JOIN's rich struct, then program the
 	// derived PTK + GTK directly into the chip's security CAM.
 	if (llc[6] == 0x88 && llc[7] == 0x8E) {
+		// EAPOL in the four-way handshake is always unicast to us, and it
+		// only counts if it came from the access point we are joining.
+		// Same reasoning as the management-frame handlers: accepting
+		// another station's handshake frames makes the driver believe it
+		// is making progress when nothing of ours got through.
+		if (memcmp(&frameData[4], device->fMacAddress, 6) != 0)
+			return;
+		if (memcmp(&frameData[10], device->fJoinBssid, 6) != 0)
+			return;
+
 		MutexLocker locker(device->fLock);
 
 		uint8 fcByte0 = frameData[0];
@@ -3325,8 +3335,17 @@ RTL8814AUDevice::_HandleAuthResponse(const uint8* frame, uint32 length)
 	if (length < 30 || fJoinState != kJoinAuthenticating)
 		return;
 
-	// addr2 (SA) at offset 10 must match our target BSSID
+	// addr2 (SA) at offset 10 must match our target BSSID, and addr1 (DA)
+	// at offset 4 must be us.  The destination check is not a nicety: RCR
+	// has AMF set, so the chip hands us every management frame on the
+	// channel, including the auth and assoc responses the access point
+	// sends to other stations.  Without it a busy access point makes us
+	// believe we authenticated and associated when our own request never
+	// got through — and the give-away was the AID jumping between runs
+	// (45, 46, 17, 1), because those were other stations' AIDs.
 	if (memcmp(frame + 10, fJoinBssid, 6) != 0)
+		return;
+	if (memcmp(frame + 4, fMacAddress, 6) != 0)
 		return;
 
 	uint16 authAlg = frame[24] | (frame[25] << 8);
@@ -3360,7 +3379,12 @@ RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
 {
 	if (length < 30 || fJoinState != kJoinAssociating)
 		return;
+	// From our access point, and addressed to us.  See the note in
+	// _HandleAuthResponse: without the destination check we accept the
+	// assoc responses meant for other stations.
 	if (memcmp(frame + 10, fJoinBssid, 6) != 0)
+		return;
+	if (memcmp(frame + 4, fMacAddress, 6) != 0)
 		return;
 
 	uint16 capability = frame[24] | (frame[25] << 8);
