@@ -811,7 +811,36 @@ RTL8814AUDevice::_InitMAC()
 		| kRCR_ADF | kRCR_AMF
 		| kRCR_HTC_LOC_CTRL
 		| kRCR_APP_PHYST_RXFF | kRCR_APP_ICV | kRCR_APP_MIC;
+
+	// DIAGNOSTIC, REMOVE: accept every frame regardless of address, to
+	// find out whether unicast is demodulable at all.  We associate fine
+	// and then only ever receive group-addressed frames, so either the
+	// chip's address filter is rejecting our unicast or nothing unicast is
+	// being demodulated.  Promiscuous separates the two.
+	rxFilter |= kRCR_AAP;
+
 	fRegisterIO->Write32(kRegRCR, rxFilter);
+
+	// Read it straight back: the value seen at [after-trx-config] was
+	// 0xf400600e, which is missing ADF and carries the chip's default
+	// upper bits rather than what we asked for.
+	dprintf(RTL8814AU_DRIVER_NAME ": RCR wrote 0x%08" B_PRIx32
+		" read 0x%08" B_PRIx32 "\n", rxFilter,
+		fRegisterIO->Read32(kRegRCR));
+
+	// And confirm the chip agrees with us about our own MAC — the address
+	// filter compares against this register, so a mismatch here would
+	// drop every unicast frame addressed to us.
+	dprintf(RTL8814AU_DRIVER_NAME ": MAC ours %02x:%02x:%02x:%02x:%02x:%02x"
+		" chip %02x:%02x:%02x:%02x:%02x:%02x\n",
+		fMacAddress[0], fMacAddress[1], fMacAddress[2],
+		fMacAddress[3], fMacAddress[4], fMacAddress[5],
+		fRegisterIO->Read8(kRegMAC_ADDR + 0),
+		fRegisterIO->Read8(kRegMAC_ADDR + 1),
+		fRegisterIO->Read8(kRegMAC_ADDR + 2),
+		fRegisterIO->Read8(kRegMAC_ADDR + 3),
+		fRegisterIO->Read8(kRegMAC_ADDR + 4),
+		fRegisterIO->Read8(kRegMAC_ADDR + 5));
 
 	// Enable DMA engines
 	status = _EnableDMA();
@@ -2694,11 +2723,37 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 				frameData[27], frameData[28], frameData[29],
 				frameData[30], frameData[31]);
 		}
+		// Log every unicast data frame we see, whoever it is addressed
+		// to.  With the promiscuous diagnostic active, other stations'
+		// traffic showing up here proves unicast is demodulable and the
+		// address filter was the problem; nothing showing up proves the
+		// opposite.  Addr1 tells us whether any of it is for us.
+		static uint32 sDataUnicast = 0;
+		static uint32 sUnicastLogged = 0;
+		if (!bcast) {
+			sDataUnicast++;
+			if (sUnicastLogged < 20) {
+				sUnicastLogged++;
+				bool toUs = memcmp(&frameData[4],
+					device->fMacAddress, 6) == 0;
+				dprintf(RTL8814AU_DRIVER_NAME ": RX unicast #%u toUs=%d "
+					"prot=%d a1=%02x:%02x:%02x:%02x:%02x:%02x "
+					"a2=%02x:%02x:%02x:%02x:%02x:%02x\n",
+					(unsigned)sDataUnicast, toUs ? 1 : 0, prot ? 1 : 0,
+					frameData[4], frameData[5], frameData[6],
+					frameData[7], frameData[8], frameData[9],
+					frameData[10], frameData[11], frameData[12],
+					frameData[13], frameData[14], frameData[15]);
+			}
+		}
+
 		if ((sDataTotal & 0xFF) == 0) {
 			dprintf(RTL8814AU_DRIVER_NAME ": data RX heartbeat: "
-				"total=%u protected=%u bcast=%u fromOurAp=%u\n",
+				"total=%u protected=%u bcast=%u unicast=%u "
+				"fromOurAp=%u\n",
 				(unsigned)sDataTotal, (unsigned)sDataProtected,
-				(unsigned)sDataBroadcast, (unsigned)sFromOurAp);
+				(unsigned)sDataBroadcast, (unsigned)sDataUnicast,
+				(unsigned)sFromOurAp);
 		}
 	}
 
@@ -2714,7 +2769,14 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	//
 	// Ethernet output:
 	//   [6] dst=Addr1, [6] src=Addr3, [2] ethertype, [N] payload
-	const uint32 k80211HeaderLen = 24;
+	// A QoS data frame carries a two-byte QoS Control field after the
+	// sequence control, so its header is 26 bytes rather than 24.  On any
+	// WMM network — which is to say nearly all of them — unicast traffic
+	// to a station is QoS data while broadcast often stays plain data, so
+	// assuming 24 here reads the LLC/SNAP header two bytes early and
+	// throws the frame away as an LLC failure.
+	const bool isQosData = (frameSubtype & 0x08) != 0;
+	const uint32 k80211HeaderLen = isQosData ? 26 : 24;
 	const uint32 kLLCSnapLen = 8;
 	if (frameLength < k80211HeaderLen + kLLCSnapLen)
 		return;

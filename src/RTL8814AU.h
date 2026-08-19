@@ -67,6 +67,11 @@ static const uint32 kMaxFirmwareSize		= 0x18000;	// 96 KB
 
 // TX buffer: 2048 pages of 128 bytes each = 256 KB total
 static const uint32 kTxPageSize				= 128;
+
+// Frames aggregated into one bulk-IN transfer are padded to an 8-byte
+// boundary, NOT to a TX page.  Rounding up to 128 instead silently skips
+// every frame after the first in any multi-frame transfer.
+static const uint32 kRxAggregationAlign		= 8;
 static const uint32 kTxPageCount			= 2048;
 static const uint32 kTxBufferSize			= kTxPageSize * kTxPageCount;
 

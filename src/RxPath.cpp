@@ -360,11 +360,17 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 			fFramesReceived++;
 		}
 
-		// Advance to the next frame in the aggregate.
-		// Frames are aligned to 128-byte boundaries (kTxPageSize).
+		// Advance to the next frame in the aggregate.  The padding is to
+		// an 8-byte boundary; this used to round up to kTxPageSize (128),
+		// which is a TX concept and far too coarse.  Any frame longer than
+		// 128 bytes made the next offset land past its successor, so a
+		// multi-frame transfer lost everything after the first frame and
+		// usually tripped the bounds check on the way out.  Broadcast
+		// traffic tends to arrive alone in a transfer and so came through,
+		// which is why receive looked like it worked.
 		uint32 totalFrameSize = headerSize + shift + payloadLength;
-		uint32 aligned = (totalFrameSize + kTxPageSize - 1)
-			& ~(kTxPageSize - 1);
+		uint32 aligned = (totalFrameSize + kRxAggregationAlign - 1)
+			& ~(kRxAggregationAlign - 1);
 		offset += aligned;
 	}
 }
