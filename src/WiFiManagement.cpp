@@ -76,6 +76,7 @@ RTL8814AUWiFiManager::RTL8814AUWiFiManager(
 	fCurrentChannel(0),
 	fCurrentRssi(0),
 	fCurrentDataRate(0),
+	fScanStartTime(0),
 	fRunning(false),
 	fInitStatus(B_NO_INIT)
 {
@@ -172,8 +173,18 @@ RTL8814AUWiFiManager::StartScan(const uint8* channelList,
 	MutexLocker locker(fLock);
 
 	if (fState == kWiFiStateScanning) {
-		dprintf(RTL8814AU_DRIVER_NAME ": scan already in progress\n");
-		return B_BUSY;
+		// A scan is only supposed to sit in this state until the notifier
+		// gives up on the firmware's C2H event and calls FinishScan.  If
+		// we're still here well past that, the notifier is gone and
+		// nobody is going to clear the state — so take it over rather
+		// than refusing every scan until the next reboot.
+		if (system_time() - fScanStartTime < kScanStaleTimeout) {
+			dprintf(RTL8814AU_DRIVER_NAME ": scan already in progress\n");
+			return B_BUSY;
+		}
+
+		dprintf(RTL8814AU_DRIVER_NAME ": previous scan never finished — "
+			"starting a new one\n");
 	}
 
 	dprintf(RTL8814AU_DRIVER_NAME ": starting scan\n");
@@ -182,6 +193,7 @@ RTL8814AUWiFiManager::StartScan(const uint8* channelList,
 	_PurgeStaleBssEntries();
 
 	fState = kWiFiStateScanning;
+	fScanStartTime = system_time();
 	locker.Unlock();
 
 	// If no channel list provided, scan all channels
@@ -295,6 +307,13 @@ RTL8814AUWiFiManager::UpdateBssEntry(const uint8* bssid, const char* ssid,
 	if (entry == NULL)
 		return;
 
+	// A freshly allocated (or recycled) entry is memset to zero, so a
+	// zero lastSeen means this is the first beacon we've kept for this
+	// BSS.  Log those with their channel: the set of channels we ever
+	// harvest tells us whether the scan is really sweeping bands or just
+	// sitting on one channel collecting whatever passes by.
+	bool isNewEntry = entry->lastSeen == 0;
+
 	// Update the entry with the latest data from this beacon/probe
 	if (ssid != NULL && ssidLength > 0) {
 		uint32 copyLen = ssidLength;
@@ -319,6 +338,13 @@ RTL8814AUWiFiManager::UpdateBssEntry(const uint8* bssid, const char* ssid,
 			ieCopyLen = kMaxIELength;
 		memcpy(entry->ieData, ieData, ieCopyLen);
 		entry->ieLength = ieCopyLen;
+	}
+
+	if (isNewEntry) {
+		dprintf(RTL8814AU_DRIVER_NAME ": BSS + '%s' "
+			"%02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d\n",
+			entry->ssid, bssid[0], bssid[1], bssid[2], bssid[3],
+			bssid[4], bssid[5], (unsigned)channel, (int)rssi);
 	}
 }
 
@@ -688,6 +714,31 @@ RTL8814AUWiFiManager::WaitForScanComplete(bigtime_t timeout)
 {
 	return acquire_sem_etc(fScanCompleteSem, 1,
 		B_RELATIVE_TIMEOUT | B_CAN_INTERRUPT, timeout);
+}
+
+
+/*! Force the scan state back to idle.
+
+    _HandleScanComplete is the only other thing that clears
+    kWiFiStateScanning, and it runs from the firmware's kC2H_ScanComplete
+    event, which this chip never sends (see _ScanNotifierLoop).  Without
+    this, fState stays kWiFiStateScanning for the rest of the boot and
+    every subsequent StartScan is rejected with B_BUSY — so exactly one
+    scan per boot ever runs, and any AP that wasn't beaconing during that
+    single window can never be joined.
+
+    Leaves the BSS list alone: the entries harvested so far are the whole
+    point of the scan.
+*/
+void
+RTL8814AUWiFiManager::FinishScan()
+{
+	MutexLocker locker(fLock);
+
+	if (fState != kWiFiStateScanning)
+		return;
+
+	fState = kWiFiStateDisconnected;
 }
 
 

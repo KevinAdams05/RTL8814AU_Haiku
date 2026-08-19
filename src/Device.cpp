@@ -1814,8 +1814,13 @@ RTL8814AUDevice::_ScanNotifierLoop()
 	// from passively-received beacons, which is what userland consumes.
 	// Without this, wpa_supplicant blocks forever waiting for the scan
 	// notification before driving WPA2 association.
-	if (fWiFiManager != NULL && !fRemoved)
+	if (fWiFiManager != NULL && !fRemoved) {
 		fWiFiManager->WaitForScanComplete(8LL * 1000 * 1000);
+		// However that wait ended, the scan is over as far as we're
+		// concerned.  Clear the scanning state here or it never gets
+		// cleared at all, and every later scan fails with B_BUSY.
+		fWiFiManager->FinishScan();
+	}
 
 	if (gNotificationModule != NULL && !fRemoved) {
 		// Build the device path matching what wpa_supplicant expects.

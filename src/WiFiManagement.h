@@ -52,6 +52,12 @@ static const uint32 kMaxSSIDLength = 32;
 // Maximum length of a raw scan result IE (Information Element) block
 static const uint32 kMaxIELength = 768;
 
+// How long a scan may stay in progress before StartScan treats it as
+// finished and starts a new one anyway.  Comfortably longer than the
+// notifier's own 8-second wait, so this only fires if the notifier
+// itself went away without calling FinishScan.
+static const bigtime_t kScanStaleTimeout = 15LL * 1000 * 1000;
+
 
 // ---------------------------------------------------------------------------
 // BSS entry — one scanned access point
@@ -139,6 +145,13 @@ public:
 	// Multiple threads may wait simultaneously; all are woken when
 	// the scan-done C2H event arrives.
 	status_t					WaitForScanComplete(bigtime_t timeout);
+
+	// Force the scan state back to idle.  The firmware's
+	// kC2H_ScanComplete is the only thing that clears kWiFiStateScanning
+	// on its own, and it never arrives, so whoever waited on the scan
+	// must call this when the wait ends — otherwise every later
+	// StartScan is rejected with B_BUSY for the rest of the boot.
+	void						FinishScan();
 
 	// Check if a scan is currently in progress.
 	bool						IsScanning() const
@@ -264,6 +277,10 @@ private:
 	uint8						fCurrentChannel;
 	int8						fCurrentRssi;
 	uint8						fCurrentDataRate;
+
+	// When the in-progress scan started, so StartScan can self-heal if
+	// the notifier that should have called FinishScan died with it.
+	bigtime_t					fScanStartTime;
 
 	// Synchronization
 	mutex						fLock;
