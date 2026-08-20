@@ -839,6 +839,13 @@ RTL8814AUDevice::_InitMAC()
 	fRegisterIO->Write32(kRegEdcaBeParam, 0x0000A42B);
 	fRegisterIO->Write32(kRegEdcaBkParam, 0x0000A44F);
 
+	// Set the MAC's short and long retry limits.  Never written before, so
+	// the chip kept its power-on default; any frame that went unacknowledged
+	// on the first attempt was simply dropped rather than retried, which
+	// costs several percent of frames on a real link and is more than enough
+	// to flatten TCP throughput.
+	fRegisterIO->Write16(kRegRetryLimit, kRetryLimitInit);
+
 	// Program the rate-fallback tables and the response rate set.
 	//
 	// None of these were written.  The TX descriptor's RATE_ID field selects
@@ -1237,16 +1244,11 @@ RTL8814AUDevice::_InitQueuePriority()
 status_t
 RTL8814AUDevice::_EnableDMA()
 {
-	// Set RX aggregation threshold — controls how many frames the
-	// hardware bundles into a single USB bulk IN transfer.
-	// Lower = less latency, higher = better throughput.
-	uint32 aggThreshold = 0x03;		// 3 pages before sending
-	uint32 aggTimeout = 0x08;		// 8 × 32 µs = 256 µs timeout
-	fRegisterIO->Write8(kRegRxDmaAggPgTh,
-		(uint8)aggThreshold);
-	fRegisterIO->Write8(kRegRxDmaAggPgTh + 1,
-		(uint8)aggTimeout);
-
+	// RX aggregation is programmed in _InitRxAggregation, which runs after
+	// this and is the single owner of REG_RXDMA_AGG_PG_TH.  There used to be
+	// a second, different setting here -- 3 pages and a 256 us timeout --
+	// which was simply overwritten, so it did nothing except suggest the
+	// threshold was one thing when it was another.
 	return B_OK;
 }
 

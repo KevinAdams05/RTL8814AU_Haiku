@@ -404,7 +404,17 @@ static const uint16 kTrxDmaCtrlRxDmaAggEn	= 0x0004;
 //          page count, so latency stays bounded for low-rate traffic)
 // USB 2.0 defaults from r12au_postattach: dma_size=0x01, dma_time=0x10
 // USB 3.0 defaults: dma_size=0x07, dma_time=0x1a
-static const uint16 kRxDmaAggUsb2Value = 0x0520;	// time<<8 | size
+// REG_RXDMA_AGG_PG_TH: page threshold in byte 0, timeout in byte 1, so a
+// 16-bit write is (time << 8) | size.  The chip flushes the RX FIFO to USB
+// when either fires.
+//
+// This was 0x0520, which is time = 0x05 and size = 0x20 -- the two numbers the
+// wrong way round.  A 160 us timer against a 32-page threshold means the timer
+// always wins, so the chip shipped a nearly-empty transfer every 160 us
+// instead of batching, and receive throughput sat at about 1 Mbit/s while
+// transmit managed 27.  The vendor driver writes 0x2005: five pages, with the
+// longer timeout as the backstop rather than the trigger.
+static const uint16 kRxDmaAggUsb2Value = 0x2005;	// time<<8 | size
 static const uint16 kRxDmaAggUsb3Value		= 0x1a07;
 
 // REG_RXDMA_PRO controls RX-DMA burst behavior to USB.  Layout:
@@ -882,6 +892,14 @@ enum SecurityType {
 
 // Retry limit
 static const uint16 kRegRetryLimit			= 0x042A;
+
+// Short and long retry limits, one byte each: how many times the MAC will
+// retransmit a frame that goes unacknowledged before giving up.  This was
+// declared and never written, leaving whatever the chip powers up with -- and
+// a link that drops any frame not acknowledged first time loses several
+// percent of its traffic, which is enough to flatten TCP.  The vendor driver
+// writes 0x3030, 48 each way.
+static const uint16 kRetryLimitInit			= 0x3030;
 static const uint16 kRegRespSIFSOFDM		= 0x063A;
 static const uint16 kRegRespSIFSCCK		= 0x063C;
 static const uint16 kRegACKTo				= 0x0640;
@@ -1045,6 +1063,14 @@ static const uint32 kTxDescSWDefine_Shift	= 0;
 // ---------------------------------------------------------------------------
 
 static const uint32 kRxDescSize = 24;
+
+// How many frames the chip packed into this bulk-IN transfer, reported in the
+// FIRST descriptor of the transfer: byte 12, bits 16-23.  The walk has to be
+// bounded by this and not merely by bytes remaining -- a transfer is padded
+// past its last frame, and parsing that padding as a descriptor yields
+// plausible-looking nonsense.
+static const uint32 kRxDescAggNum_Shift	= 16;
+static const uint32 kRxDescAggNum_Mask	= 0x00FF0000;
 
 // RX descriptor DWORD 0 (offset 0x00)
 static const uint32 kRxDescPktLen_Shift		= 0;

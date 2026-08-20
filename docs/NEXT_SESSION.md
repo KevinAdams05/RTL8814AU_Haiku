@@ -40,10 +40,91 @@ handshake could complete and DHCP still fail.
 
 ## What to do next, in rough priority order
 
-### 1. Throughput
+### 1. Throughput — the bottleneck is RECEIVE, and it is one bug away
 
-~2 Mbit/s on a 2x2-capable link is functional but poor. The causes are known
-and all deliberate:
+Measuring each direction separately is what made this tractable:
+
+| Direction | Throughput |
+|---|---|
+| shredder -> desktop (**transmit**) | **15-32 Mbit/s** |
+| desktop -> shredder (**receive**) | **3.5-4.6 Mbit/s** |
+
+Receive started the session at 1.0 Mbit/s. Two register fixes doubled it
+twice: the aggregation threshold (below) and the retry limit. Transmit was
+never the problem.
+
+So the transmit path -- the thing that took all of 2026-08-20 to fix -- now
+performs acceptably, and **receive is the whole problem.** That inverted the
+expectation completely: the assumption had been that missing rate adaptation
+and software CCMP encrypt were the limit, and they are not.
+
+**What was found.** `REG_RXDMA_AGG_PG_TH` (0x0280) holds the page threshold in
+byte 0 and the timeout in byte 1. It was set to `0x0520` -- threshold 0x20,
+timeout 0x05, the two values transposed. A 160 us timer against a 32-page
+threshold means the timer always wins, so the chip shipped a nearly-empty
+transfer every 160 us and RX aggregation was in effect off. The vendor writes
+`0x2005`: five pages, with the longer timeout as a backstop rather than the
+trigger. Correcting it doubled receive throughput, 1 -> 2 Mbit/s. A second,
+dead writer in `_EnableDMA` setting yet another value was removed --
+`_InitRxAggregation` ran after it and always won.
+
+**The retry limit was never programmed.** `REG_RETRY_LIMIT` (0x042A) holds the
+short and long retry counts -- how many times the MAC retransmits an
+unacknowledged frame before giving up. The constant was declared and never
+written, so the chip kept its power-on default and frames that missed their
+first acknowledgement were simply dropped. Writing the vendor's 0x3030 (48
+each way) took receive from 2.0 to 3.5-4.6 Mbit/s, measured over three runs.
+
+**What is left.** Receive is still roughly a tenth of transmit, and ICMP loss
+sits at 5-20% and did not change when retries were enabled. Two contributing
+pieces of the aggregation walk are fixed:
+
+- The walk took `drvinfo_sz` as a hardcoded 32 whenever the PHY-status bit was
+  set. The reference takes it from the descriptor, and now so do we. A
+  single-frame transfer cannot detect the difference, which is why this
+  survived for as long as aggregation was off.
+- The per-frame offset is `kRxDescSize + drvinfo_sz + shift + packetLength`
+  rounded up to 8, matching the reference's `_RND8`.
+
+- `drvinfo_sz` is taken from the descriptor when it reports a size, falling
+  back to 32 only when it reports zero. Both extremes were measured: trusting
+  the descriptor unconditionally roughly doubled the misalignment rate,
+  because on this chip the field frequently reads 0 while a 32-byte PHY status
+  block is present, and following the reference literally under-advances by
+  exactly that much.
+- A packet length of zero now terminates the walk cleanly, as the reference
+  does, instead of being parsed as a frame.
+
+What remains is that **the loop is still bounded only by bytes remaining**, so
+a transfer padded past its final frame can be walked one descriptor too far.
+That accounts for 45-70 bail events per 4 MB transfer -- about 1.5% of frames,
+so it is real but too small to explain the 5-20% loss or the receive shortfall
+on its own. The loss is the thing to chase next, and its direction has not
+been established: it could be our transmitted acknowledgements failing rather
+than received frames being dropped.
+
+**Do not fix that by reading the chip's aggregate frame count.** It lives in
+the first descriptor at byte 12, bits 16-23, and the reference does read it --
+but the reference's own definition is annotated *"Check if it exist anymore"*,
+and on this chip it does not: bounding the walk by it dropped receive from
+2 Mbit/s to effectively zero, because it under-reports and the walk then
+abandons real frames. Tried, measured, reverted.
+
+Better next steps: work out how the chip actually signals the end of the
+aggregate — a zero packet length in the trailing descriptor is the obvious
+candidate, and the reference does check `pkt_len <= 0` and bail — or take a
+usbmon RX capture of the vendor driver and see exactly how it terminates.
+
+**Measure properly before changing anything.** A single 4 MB `scp` has enough
+variance to invent results: transmit measured 9, 17, 28, 32 and 15 Mbit/s
+across the session on builds that differed in nothing relevant. Take at least
+three samples, and beware integer division in the reporting -- 16079 ms for
+4 MB is 1.99 Mbit/s, which prints as "1" and looks like a regression from
+"2". That cost real confusion this session.
+
+### 2. Throughput, after that
+
+The remaining limits are known and all deliberate:
 
 - **No rate adaptation.** Every data frame is sent at a hardcoded OFDM
   24 Mbps with `USE_RATE` set, which tells the chip to ignore its own rate
@@ -61,7 +142,7 @@ and all deliberate:
 - **A-MPDU aggregation is disabled.** `MAX_AGG_NUM` and `AMPDU_DENSITY` are
   never set and Block-ACK state is not wired up.
 
-### 2. Strip the diagnostics
+### 3. Strip the diagnostics
 
 The tree carries deliberate instrumentation that earned its place and should
 now go: the ANonce and M2 hex dumps, the per-frame "RX from AP" dump, the
@@ -69,30 +150,33 @@ now go: the ANonce and M2 hex dumps, the per-frame "RX from AP" dump, the
 in the heartbeat, and the deauth reason logging. Then bump the version -- the
 repo still says 0.1.1 and only the build server has ever seen `0.1.2~test`.
 
-### 3. REG_HWSEQ_CTRL (0x0423) -- still unwritten, still a real gap
+### 4. REG_HWSEQ_CTRL (0x0423) -- sidestepped
 
-Every non-QoS descriptor sets `HWSEQ_EN`, asking the MAC to fill in the
-sequence number, and that requires this register enabled. The vendor writes
-`0xFF`; ours reads `0x00`, so every frame requests a service that is switched
-off and management frames all go out with sequence 0. The constants exist
-(`kRegHwSeqCtrl`, `kHwSeqCtrlAllQueues`) but are deliberately not written,
-because both placements tried hang the driver: during hardware init the M2
-transmit never returns, and inside `_DoPostAssocSetup` the worker dies before
-reaching it. The vendor writes it late in the association phase. Now that the
-link works, this can be approached without it being load-bearing.
+Sidestepped rather than open now. Every non-QoS descriptor used to set
+`HWSEQ_EN`, asking the MAC to supply the sequence number — a service this
+register never enabled, so **every frame went out as sequence 0**. Rather than
+fight the register (both placements tried hung the transmit path),
+`TxPath::Transmit` writes a real sequence number into the frame header and
+`HWSEQ_EN` is no longer set.
 
-### 4. 5 GHz association
+Worth knowing: fixing this did **not** improve throughput, which was the
+hypothesis that prompted it. Sequence 0 on every frame is a real protocol
+violation and the fix stands on its own, but an access point's duplicate
+filtering was evidently not what was costing bandwidth. The constants remain
+for anyone who wants the hardware path instead.
+
+### 5. 5 GHz association
 
 Receive works and has since 2026-08-19, but association on 5 GHz has never
 been attempted. `AdamsFamily02-5G` is on channel 149 and measured *stronger*
 than the 2.4 GHz radio (-65 to -69 dBm against -72 to -74).
 
-### 5. The Deskbar route
+### 6. The Deskbar route
 
 See `wpa-supplicant-and-deskbar.md`. Needs a supplicant-owned mode: the
 in-driver handshake and wpa_supplicant cannot both own the four-way.
 
-### 6. Loose ends
+### 7. Loose ends
 
 - **`SetActivePowerMode()` hangs intermittently.** It is the post-assoc
   worker's first action and issues an H2C command; when it hangs, association

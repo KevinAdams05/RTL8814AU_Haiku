@@ -297,6 +297,18 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 {
 	uint32 offset = 0;
 
+	// Bounding this loop by the chip's reported aggregate frame count was
+	// tried and reverted.  The count lives in the first descriptor at byte
+	// 12, bits 16-23, and the reference driver reads it -- but its own
+	// definition carries the comment "Check if it exist anymore", and on this
+	// chip it evidently does not: bounding the walk by it cut receive
+	// throughput from 2 Mbit/s to nearly nothing, because it under-reports
+	// and the walk then abandons real frames.
+	//
+	// So the loop is still bounded only by bytes remaining, which means a
+	// padded transfer can be walked one descriptor too far.  That is the
+	// source of the remaining "frame extends beyond transfer" messages.
+	// See docs/NEXT_SESSION.md.
 	while (offset + kRxDescSize <= length) {
 		// Parse the RX descriptor at the current position
 		RxFrameInfo info;
@@ -310,13 +322,22 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 		uint32 drvInfoSize = ((dword0 & kRxDescDrvInfoSize_Mask)
 			>> kRxDescDrvInfoSize_Shift) * 8;
 
-		// Calculate where the payload starts and its total frame size
-		// with alignment padding
-		// On the 8814AU, when descriptor's physt bit is set, the chip
-		// prepends a fixed 32-byte PHY status block before the 802.11
-		// frame, regardless of what the descriptor's drvinfo_sz field
-		// reports (which may be 0 even with PHY status present).
-		uint32 phyStatusBytes = info.hasPhyStatus ? 32 : drvInfoSize;
+		// Where the payload starts.  The reference driver computes this as
+		//   RXDESC_SIZE + drvinfo_sz + shift_sz + pkt_len
+		// taking drvinfo_sz from the descriptor -- but on this chip that
+		// field frequently reads 0 while a 32-byte PHY status block is
+		// nonetheless present, so following the reference literally
+		// under-advances by exactly 32 bytes and lands the next descriptor
+		// read inside the previous frame's payload.
+		//
+		// Both extremes were tried and measured. Trusting the descriptor
+		// unconditionally roughly doubled the misalignment rate; hardcoding
+		// 32 whenever the PHY-status bit is set ignores the descriptor when
+		// it does report a size. Prefer the reported value and fall back to
+		// the observed constant only when it reports nothing.
+		uint32 phyStatusBytes = drvInfoSize;
+		if (phyStatusBytes == 0 && info.hasPhyStatus)
+			phyStatusBytes = 32;
 		uint32 headerSize = kRxDescSize + phyStatusBytes;
 		uint32 payloadOffset = offset + headerSize;
 		uint32 payloadLength = info.packetLength;
@@ -325,7 +346,25 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 		uint32 shift = (dword0 & kRxDescShift_Mask) >> kRxDescShift_Shift;
 		payloadOffset += shift;
 
-		// Bounds check — make sure the frame fits within the transfer
+		// End of the aggregate.
+		//
+		// A bulk-IN transfer is padded past its final frame, and the padding
+		// parses as a descriptor whose packet length is zero.  The reference
+		// driver's first test on every iteration is `pkt_len <= 0`, and it
+		// treats that as the normal way a transfer ends -- not as an error.
+		//
+		// We had no such test, so the walk read on into the padding, produced
+		// a nonsense length, and only stopped when the bounds check below
+		// tripped. That was recorded as a dropped frame and logged, which
+		// made a routine end-of-transfer look like corruption -- and, worse,
+		// meant a genuine mid-aggregate misalignment and a normal
+		// end-of-aggregate were indistinguishable in the log.
+		if (payloadLength == 0)
+			break;
+
+		// Bounds check — the frame must fit within the transfer.  Reaching
+		// this now means a real misalignment rather than padding, so it is
+		// still worth counting and reporting.
 		if (payloadOffset + payloadLength > length) {
 			dprintf(RTL8814AU_DRIVER_NAME ": RX frame extends beyond "
 				"transfer (offset %" B_PRIu32 ", payload %" B_PRIu32

@@ -231,6 +231,40 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 	memcpy(transfer->buffer + kTxDescSize + packetOffset * 8, frameData,
 		frameLength);
 
+	// Assign the 802.11 sequence number in software.
+	//
+	// The frame builders leave Sequence Control zero and the descriptor used
+	// to set HWSEQ_EN, asking the MAC to fill it in.  That only works if
+	// REG_HWSEQ_CTRL enables the feature, and it reads 0x00 -- so every frame
+	// this driver sent went out as **sequence 0**.  Auth and assoc survive
+	// that, being few and far apart, but an access point's duplicate
+	// detection keys on (transmitter, sequence, fragment), so a stream of
+	// identically-numbered data frames looks like one frame retransmitted
+	// forever.  That is the shape of a link that works and yet manages only
+	// about 2 Mbit/s of TCP on a 24 Mbps fixed rate.
+	//
+	// Doing it here rather than in the builders puts it in one place, on the
+	// copy the chip will actually read, and covers every frame.  It also
+	// avoids REG_HWSEQ_CTRL entirely, which matters: both placements tried
+	// for that register hung the transmit path.
+	//
+	// Sequence Control is little-endian with the fragment number in the low
+	// four bits: byte 22 holds frag plus the low nibble of the sequence,
+	// byte 23 the remaining eight bits.  Safe to write after software CCMP
+	// has run, because CCMP's additional authenticated data masks the
+	// Sequence Control field out.
+	if (frameLength >= 24) {
+		uint8* wireFrame = transfer->buffer + kTxDescSize + packetOffset * 8;
+		const uint8 frameType = (wireFrame[0] >> 2) & 0x03;
+		if (frameType == 0 || frameType == 2) {	// management or data
+			uint16 sequence = fSequenceNumber++;
+			if (fSequenceNumber > 0x0FFF)
+				fSequenceNumber = 0;
+			wireFrame[22] = (uint8)((sequence & 0x0F) << 4);
+			wireFrame[23] = (uint8)((sequence >> 4) & 0xFF);
+		}
+	}
+
 	// Record what we are about to submit, so the completion callback can
 	// tell a short transfer from a complete one.  Only the firmware-download
 	// path used to set this, which left it at zero here -- so every ordinary
@@ -481,9 +515,7 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 
 	// DWORD 0: packet length, descriptor offset (40 bytes = 0x28),
 	// broadcast/multicast flag, first segment, last segment, OWN
-	// DISQSELSEQ goes with hardware sequence numbering: we set HWSEQ_EN in
-	// dword 8, and the reference pairs that with DISQSELSEQ for every
-	// non-QoS frame.  None of our frames are QoS.
+	// DISQSELSEQ is set for every non-QoS frame, as the reference does.
 	// FIRST_SEG is deliberately not set: it is a ring-descriptor concept, and
 	// the reference driver's USB transmit path has it commented out, setting
 	// only LAST_SEG.  The bit we used to also set as OWN is bit 31, which on
@@ -600,10 +632,8 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 	// transmit normally, and three out of every four sequence numbers set
 	// one of its two bits.
 	//
-	// Nothing needs to be written in its place.  HWSEQ_EN below asks the
-	// hardware to assign sequence numbers, and on that path the reference
-	// driver does not write SEQ at all — it only does so for QoS frames,
-	// which set their own sequence and leave HWSEQ_EN clear.
+	// Nothing needs to be written in its place: Transmit() writes the
+	// sequence number straight into the frame header before submitting.
 	//
 	// USE_RATE (bit 8) tells the chip to use the rate in dword 4 rather than
 	// waiting for a rate-adaptation hint.
@@ -643,20 +673,15 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 	// rate" flag and pairs with USE_RATE, which we always set.
 	uint32 dword6 = kTxDescSwDefineFixedRate;
 
-	// DWORDs 8 and 9: sequencing.  A QoS frame supplies its own sequence
-	// number in dword 9 and leaves HWSEQ_EN clear; everything else sets
-	// HWSEQ_EN and lets the hardware assign one.  These are alternatives,
-	// not options — the reference driver picks exactly one.
+	// DWORDs 8 and 9: sequencing.  Both are left zero.
+	//
+	// HWSEQ_EN used to be set here for every non-QoS frame, asking the MAC to
+	// supply the sequence number -- a service REG_HWSEQ_CTRL never enabled,
+	// so the number stayed at whatever the header carried, which was zero.
+	// Transmit() now writes a real sequence into the frame header instead,
+	// which needs neither this bit nor that register.
 	uint32 dword8 = 0;
 	uint32 dword9 = 0;
-	if (isQosData) {
-		uint16 sequence = fSequenceNumber++;
-		if (fSequenceNumber > 0x0FFF)
-			fSequenceNumber = 0;
-		dword9 = ((uint32)sequence << kTxDescSeqNum_Shift)
-			& kTxDescSeqNum_Mask;
-	} else
-		dword8 = (1 << 15);	// HWSEQ_EN
 
 	// Write the dwords (DWORD 7 reserved for descriptor checksum,
 	// computed below over the first 32 bytes).
