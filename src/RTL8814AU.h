@@ -462,6 +462,16 @@ static const uint16 kRegTxDmaStatus			= 0x0210;
 // and put it on the air, which is the one thing a successful queue_bulk
 // does not tell us.
 static const uint16 kRegTxPktEmpty			= 0x041A;
+
+// Per-frame TX report.  With this enabled and the descriptor's SPE_RPT bit
+// set, the firmware sends a C2H event for each reported frame saying whether
+// the peer acknowledged it.  That is the one thing neither a successful USB
+// completion nor an empty TX queue can tell us: whether the frame actually
+// made it onto the air and was received.
+static const uint16 kRegTxReportCtrl		= 0x04EC;
+static const uint16 kRegTxReportTime		= 0x04F0;
+static const uint8 kTxReportEnableBits		= (1 << 1) | (1 << 5);
+static const uint16 kTxReportTimeDefault	= 0x3DF0;
 static const uint16 kRegRQPN_NPQ			= 0x0214;
 
 // 8814A-specific page-allocation registers.  Unlike the older 8192-series
@@ -830,6 +840,10 @@ static const uint32 kTxDescBMC				= (1 << 24);	// Broadcast/Multicast
 static const uint32 kTxDescHTC				= (1 << 25);	// HT control present
 static const uint32 kTxDescLS				= (1 << 26);	// Last segment
 static const uint32 kTxDescFS				= (1 << 27);	// First segment
+// Ask the firmware for a transmit report on this frame (descriptor dword 2,
+// bit 19).  Pairs with kRegTxReportCtrl.
+static const uint32 kTxDescSpeRpt			= (1u << 19);
+
 static const uint32 kTxDescOWN				= (1 << 31);	// Owned by hardware
 
 // TX descriptor DWORD 1 (offset 0x04)
@@ -905,6 +919,14 @@ static const uint32 kRxDescSecType_Mask		= 0x00700000;
 
 // RX descriptor DWORD 2 (offset 0x08)
 static const uint32 kRxDescSeq_Shift		= 0;
+// RX descriptor dword 2, bit 28 (RPT_SEL).  When set, the "frame" is not an
+// 802.11 frame at all — it is a firmware C2H event delivered inline in the
+// RX bulk stream.  This is how C2H arrives on this chip; the interrupt IN
+// endpoint carries nothing, which is why every C2H event this driver
+// expected — scan complete, connection status, TX reports — appeared never
+// to be sent.
+static const uint32 kRxDescRptSel			= (1u << 28);
+
 static const uint32 kRxDescSeq_Mask			= 0x00000FFF;
 static const uint32 kRxDescFrag_Shift		= 12;
 static const uint32 kRxDescFrag_Mask		= 0x0000F000;
@@ -1039,6 +1061,10 @@ enum H2CCommandID {
 
 enum C2HEventID {
 	kC2H_Debug				= 0x01,
+	// Per-frame CCX transmit report.  The driver previously only knew
+	// about 0x14, which is something else; the reference driver's
+	// C2H_CCX_TX_RPT is 3.
+	kC2H_CcxTxReport		= 0x03,
 	kC2H_ScanComplete		= 0x07,
 	kC2H_BtInfo			= 0x09,
 	kC2H_RateAdaptive		= 0x0C,

@@ -77,6 +77,8 @@ RTL8814AUWiFiManager::RTL8814AUWiFiManager(
 	fCurrentRssi(0),
 	fCurrentDataRate(0),
 	fScanStartTime(0),
+	fTxReportTotal(0),
+	fTxReportFailed(0),
 	fRunning(false),
 	fInitStatus(B_NO_INIT)
 {
@@ -500,6 +502,10 @@ RTL8814AUWiFiManager::HandleC2HEvent(uint8 eventID, const uint8* payload,
 			_HandleRateAdaptive(payload, payloadLength);
 			break;
 
+		case kC2H_CcxTxReport:
+			_HandleCcxTxReport(payload, payloadLength);
+			break;
+
 		case kC2H_TxReport:
 			_HandleTxReport(payload, payloadLength);
 			break;
@@ -702,6 +708,46 @@ RTL8814AUWiFiManager::_SendRateAdaptiveCommand(uint8 macID, uint8 rateID)
 // ---------------------------------------------------------------------------
 // C2H event handlers
 // ---------------------------------------------------------------------------
+
+
+/*! Decode a per-frame CCX transmit report.
+
+    Byte 0 carries two failure flags: bit 7 is retry-limit-over and bit 6 is
+    lifetime-over.  Either one set means the frame was transmitted and never
+    acknowledged, so the chip gave up on it.  Neither set means the peer
+    acknowledged it.
+
+    This is the measurement that a successful queue_bulk and an empty TX
+    queue cannot give us.  For the stalled four-way handshake it separates
+    the two remaining possibilities cleanly: if M2 comes back acknowledged
+    then the access point received it and chose not to act on it, and if it
+    comes back retry-over then the frame went out and nobody heard it.
+*/
+void
+RTL8814AUWiFiManager::_HandleCcxTxReport(const uint8* payload,
+	uint32 length)
+{
+	if (length < 1)
+		return;
+
+	bool retryOver = (payload[0] & 0x80) != 0;
+	bool lifetimeOver = (payload[0] & 0x40) != 0;
+
+	fTxReportTotal++;
+	if (retryOver || lifetimeOver)
+		fTxReportFailed++;
+
+	// Log every failure, and the first few successes so we can see the
+	// mechanism working at all.
+	if (retryOver || lifetimeOver || fTxReportTotal <= 8) {
+		dprintf(RTL8814AU_DRIVER_NAME ": TX report: %s (byte0=0x%02x "
+			"retryOver=%d lifetimeOver=%d) %" B_PRIu32 " failed of %"
+			B_PRIu32 "\n",
+			(retryOver || lifetimeOver) ? "NOT ACKED" : "acked",
+			(unsigned)payload[0], retryOver ? 1 : 0, lifetimeOver ? 1 : 0,
+			fTxReportFailed, fTxReportTotal);
+	}
+}
 
 
 /*! Handle scan completion event from firmware.

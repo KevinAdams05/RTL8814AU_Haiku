@@ -210,7 +210,11 @@ RTL8814AURxPath::_ParseDescriptor(const uint8* descriptor, RxFrameInfo* info)
 	info->securityType = (SecurityType)((dword1 & kRxDescSecType_Mask)
 		>> kRxDescSecType_Shift);
 
-	// DWORD 2
+	// DWORD 2 — bit 28 first: if RPT_SEL is set this is a C2H event rather
+	// than a received frame, and the rest of the descriptor fields do not
+	// describe an 802.11 header.
+	info->isC2H = (dword2 & kRxDescRptSel) != 0;
+
 	info->sequenceNumber = (uint16)((dword2 & kRxDescSeq_Mask)
 		>> kRxDescSeq_Shift);
 	info->fragmentNumber = (uint8)((dword2 & kRxDescFrag_Mask)

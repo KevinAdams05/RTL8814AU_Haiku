@@ -824,6 +824,16 @@ RTL8814AUDevice::_InitMAC()
 	// assoc responses without it, so it would only add RX load.
 	fRegisterIO->Write32(kRegRCR, rxFilter);
 
+	// Turn on per-frame transmit reporting.  Plain register writes, so this
+	// is safe here — unlike an H2C command, which blocks device
+	// initialisation and boots the machine unreachable.
+	uint8 reportCtrl = fRegisterIO->Read8(kRegTxReportCtrl);
+	fRegisterIO->Write8(kRegTxReportCtrl, reportCtrl | kTxReportEnableBits);
+	fRegisterIO->Write16(kRegTxReportTime, kTxReportTimeDefault);
+	dprintf(RTL8814AU_DRIVER_NAME ": TX report enabled (RPT_CTRL 0x%02x -> "
+		"0x%02x)\n", (unsigned)reportCtrl,
+		(unsigned)fRegisterIO->Read8(kRegTxReportCtrl));
+
 	// Enable DMA engines
 	status = _EnableDMA();
 	if (status != B_OK)
@@ -2611,7 +2621,35 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	uint32 frameLength, const RxFrameInfo* info)
 {
 	RTL8814AUDevice* device = static_cast<RTL8814AUDevice*>(cookie);
-	if (device == NULL || frameLength < 24)
+	if (device == NULL)
+		return;
+
+	// Firmware C2H events arrive inline in the RX bulk stream, flagged by
+	// RPT_SEL in the descriptor — not on the interrupt IN endpoint, which is
+	// where this driver used to look and why no C2H event was ever seen.
+	// Layout is id, sequence, then payload.
+	if (info != NULL && info->isC2H) {
+		if (frameLength < 2 || device->fWiFiManager == NULL)
+			return;
+
+		static uint32 sC2HLogged = 0;
+		if (sC2HLogged < 12) {
+			sC2HLogged++;
+			dprintf(RTL8814AU_DRIVER_NAME ": C2H id=0x%02x seq=%u len=%"
+				B_PRIu32 " payload %02x %02x %02x %02x\n",
+				frameData[0], (unsigned)frameData[1], frameLength - 2,
+				frameLength > 2 ? frameData[2] : 0,
+				frameLength > 3 ? frameData[3] : 0,
+				frameLength > 4 ? frameData[4] : 0,
+				frameLength > 5 ? frameData[5] : 0);
+		}
+
+		device->fWiFiManager->HandleC2HEvent(frameData[0], frameData + 2,
+			frameLength - 2);
+		return;
+	}
+
+	if (frameLength < 24)
 		return;
 
 	// The first two bytes of the 802.11 frame contain the frame control.

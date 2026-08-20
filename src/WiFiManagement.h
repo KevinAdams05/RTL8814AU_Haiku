@@ -248,6 +248,8 @@ private:
 									uint8 rateID);
 
 	// C2H event handlers
+	void						_HandleCcxTxReport(const uint8* payload,
+									uint32 length);
 	void						_HandleScanComplete(const uint8* payload,
 									uint32 length);
 	void						_HandleConnectionStatus(const uint8* payload,
@@ -298,6 +300,10 @@ private:
 	// Synchronization
 	mutex						fLock;
 	sem_id						fScanCompleteSem;
+
+	// Per-frame transmit report tallies.
+	uint32						fTxReportTotal;
+	uint32						fTxReportFailed;
 
 	bool						fRunning;
 	status_t					fInitStatus;

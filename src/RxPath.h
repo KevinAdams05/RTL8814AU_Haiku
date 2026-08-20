@@ -55,6 +55,8 @@ struct RxFrameInfo {
 	SecurityType securityType;		// Encryption type used on this frame
 	bool		crcError;			// true if CRC32 check failed
 	bool		icvError;			// true if ICV check failed
+	bool		isC2H;				// this is a firmware C2H event, not a
+									// received 802.11 frame
 	bool		hasPhyStatus;		// true if PHY status block is present
 	bool		swDecNeeded;		// SWDEC bit (RX desc dword 0 bit 27):
 									// chip says "I couldn't HW-decrypt

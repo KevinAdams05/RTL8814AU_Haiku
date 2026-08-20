@@ -504,7 +504,11 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// RTS-control bits).  Setting those bits hangs the chip's MAC
 	// scheduler — the queue stops draining and the USB control pipe
 	// times out.  Leave them clear; mgmt frames don't need them.
-	uint32 dword2 = 0;
+	// Ask for a transmit report on this frame.  The report says whether the
+	// peer acknowledged it, which is the only way from inside the driver to
+	// tell "the chip put it on the air and nobody answered" apart from "the
+	// chip never sent it".  Cheap while traffic is this light.
+	uint32 dword2 = kTxDescSpeRpt;
 
 	// DWORD 3: sequence number + USE_RATE / DISABLE_FB / NAV_USE_HDR.
 	// USE_RATE (bit 8) tells the chip to use the data_rate in dword4
