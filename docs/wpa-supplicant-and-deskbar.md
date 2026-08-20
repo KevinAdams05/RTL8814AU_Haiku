@@ -146,10 +146,12 @@ all.
 
 **The four-way handshake does not complete.** This used to read "the access
 point never sends us unicast", which was true of the evidence at the time and
-is no longer true: with the assoc request's IEs put in the right order, M1
-arrives, passes the addressed-to-us check, and the driver derives a PTK and
-sends M2. The access point then keeps retransmitting M1, so it is not
-accepting our reply. Whatever starves the in-driver handshake starves
+is no longer true twice over. With the assoc request's IEs put in the right
+order, M1 arrives, passes the addressed-to-us check, and the driver derives a
+PTK and sends a byte-perfect M2. And unicast receive is now directly
+observable in its own right: the access point's Null Data keep-alives
+(subtype 4, header only) arrive addressed to us and are counted. What has
+never arrived is M3. Whatever starves the in-driver handshake starves
 wpa_supplicant identically, so this blocks the Deskbar route too. Tracked in
 [wpa2-in-driver.md](wpa2-in-driver.md).
 

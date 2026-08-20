@@ -4257,8 +4257,13 @@ RTL8814AUDevice::_TxEapolDataFrame(const uint8* apMac,
 	// 802.11 data-frame header
 	wireFrame[i++] = 0x08;	// FC[0]: type=Data (2), subtype=0
 	wireFrame[i++] = 0x01;	// FC[1]: ToDS=1, FromDS=0, Protected=0
+	// Duration/ID left zero, as in every other frame this driver builds.
+	// The field is little-endian, so the 0x00 0x3A this used to carry was
+	// 0x3A00 -- 14848us, not the 314us its comment claimed.  It does no harm
+	// either way because NAV_USE_HDR is clear and the hardware computes the
+	// NAV itself, but there is no reason to hand it a wrong number.
 	wireFrame[i++] = 0x00;	// Duration low
-	wireFrame[i++] = 0x3A;	// Duration high (314us)
+	wireFrame[i++] = 0x00;	// Duration high
 	memcpy(wireFrame + i, fJoinBssid, 6); i += 6;	// Addr1 = BSSID (RA)
 	memcpy(wireFrame + i, fMacAddress, 6); i += 6;	// Addr2 = our MAC (TA)
 	memcpy(wireFrame + i, apMac, 6); i += 6;		// Addr3 = AP MAC (DA)

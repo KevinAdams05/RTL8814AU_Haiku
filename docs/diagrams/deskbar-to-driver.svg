@@ -89,9 +89,9 @@
   <!-- the real blocker -->
   <rect class="bad" x="40" y="512" width="820" height="120" rx="3"/>
   <text x="56" y="533" font-weight="600" fill="#9a3030">Where it actually breaks today — and it is not any of the above</text>
-  <text x="56" y="553" class="small">The access point associates us (assoc status 0, aid assigned) and then sends only group-addressed traffic. Every frame we</text>
-  <text x="56" y="568" class="small">receive from it is bcast; we have never received one unicast frame addressed to us. EAPOL M1 is unicast, so it never arrives —</text>
-  <text x="56" y="583" class="small">which starves both the in-driver handshake and wpa_supplicant equally. A bind to 0x888E succeeds and then simply sits idle.</text>
+  <text x="56" y="553" class="small">The access point associates us (assoc status 0, aid assigned) and then does not start the four-way handshake. Unicast receive</text>
+  <text x="56" y="568" class="small">works — we see the access point's Null Data keep-alives addressed to us, and EAPOL M1 has arrived, been validated, and had a</text>
+  <text x="56" y="583" class="small">byte-perfect M2 built for it. What has never arrived is M3, so whatever the access point makes of our M2, it does not accept it.</text>
   <text x="56" y="603" class="small">Second, independent problem: the driver runs its own WPA2 handshake, so when wpa_supplicant issues its normal</text>
   <text x="56" y="618" class="small">reset-then-configure sequence (DEAUTH, clear IEs, WPA=0) the driver ignores it as hostile. The two fight each other.</text>
 </svg>
