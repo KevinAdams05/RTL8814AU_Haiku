@@ -196,6 +196,14 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 	// Copy the frame data after the descriptor
 	memcpy(transfer->buffer + kTxDescSize, frameData, frameLength);
 
+	// Record what we are about to submit, so the completion callback can
+	// tell a short transfer from a complete one.  Only the firmware-download
+	// path used to set this, which left it at zero here -- so every ordinary
+	// transmit compared its byte count against zero, decided it was short,
+	// and logged itself as SHORT/FAILED.  Every TX in the log looked like a
+	// failure and none of them were.
+	transfer->submitLength = totalLength;
+
 	locker.Unlock();
 
 	// Submit the USB bulk OUT transfer
