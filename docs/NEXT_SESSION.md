@@ -107,11 +107,6 @@ them.
 
 - **The router never sends M1.** Check whether it wants a WMM/QoS IE in the
   assoc request, and whether stale client state for our MAC is involved.
-- **`_TxCallback` reports `submitLength` as 0** in its log line even though
-  the byte count is right, and then labels every completion
-  `<-- SHORT/FAILED`. Every TX in the log looks like a failure and none of
-  them are. This is actively misleading and should be fixed first, before it
-  costs another wrong conclusion.
 - **A latent teardown bug.** `B_BAD_VALUE` from `queue_bulk` provably means a
   NULL data pointer, and it appeared once in a wedged state — so slots were
   handed out with freed buffers. Cleanup does `delete[]`; check whether it
