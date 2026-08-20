@@ -333,23 +333,47 @@ this — the ANonce and M2 both travel in the clear during a normal handshake.
 
 ## Status
 
-Working: association (genuinely — verified with the addressed-to-us checks
-in place, AID stable), M1 receipt, PTK derivation, and M2 construction and
-transmission.
+**The handshake works.** As of 2026-08-20 the full sequence completes and the
+link carries traffic:
 
-**Not working: the access point does not accept M2.** It keeps retransmitting
-M1. M2 is byte-perfect, the USB write completes in full, and the chip drains
-its TX queue, so the frame reaches the chip and the chip believes it sent it.
-What has not been established is whether it reaches the air.
+```
+EAPOL M1 -> built M2 -> EAPOL M3 (keyInfo=0x13ca, keyDataLen=56)
+M3 GTK extracted: keyId=2 len=16
+CAM programmed: TK@4 (AES, peer) GTK@2 (AES, keyid=2)
+EAPOL state -> Done (M4 sent; CCMP enabled)
+```
 
-An over-the-air capture is the outstanding measurement, and the first attempt
-was inconclusive: a monitor elsewhere in the house recorded 74,000 packets
-from 373 distinct transmitters and **nothing at all from this machine**, which
-would be damning except that the access point demonstrably answers our auth
-and assoc — it cannot reply to frames it never received. So the monitor was
-simply out of our range. A useful capture needs the monitor beside the machine
-under test, and needs a control: confirm the auth and assoc frames appear
-before drawing any conclusion about M2.
+Then DHCP obtains a lease and the interface passes ICMP at every payload size
+and full TCP sessions. Reproduced from a clean boot.
+
+### What was actually wrong
+
+For a long time this section read "the access point does not accept M2", and
+the natural suspects were the crypto and the M2 builder. Both were innocent,
+and proving it took a byte-for-byte comparison against a **known-good M2**
+captured from the vendor Linux driver on the same chip and access point:
+descriptor type, key info `0x010a`, key length, replay counter, key data
+length 22 and the whole RSN IE in the key data were **identical**. Only the
+nonce and MIC differed, as they must.
+
+The frame was always right. It was not reaching the access point, and the
+causes were in the transmit path and the MAC configuration — sixteen distinct
+defects in total. The two that finished it:
+
+- **`REG_CR` was written with two bits that do not exist** — `(1 << 13)` and
+  `(1 << 14)`. `REG_CR`'s defined bits stop at bit 10, so those were reserved,
+  and the security engine (`ENSEC`, bit 9) was never enabled at all.
+- **Uplink frames were mislabelled as 802.11 broadcast.** The transmit path
+  took its broadcast flag from the *Ethernet* destination, but the descriptor's
+  `BMC` bit describes the *802.11 receiver address* — and a station always
+  sends uplink as unicast to the access point. DHCP DISCOVER goes to
+  `ff:ff:ff:ff:ff:ff`, so it went out group-addressed with no acknowledgement
+  expected and the wrong MACID. This is why the handshake could complete while
+  DHCP still failed.
+
+The earlier entries in this file — the IE ordering requirement, the
+addressed-to-us validation, the descriptor field errors — remain accurate and
+are still worth reading; they were each necessary.
 
 ### The test access points are not equivalent — this matters
 

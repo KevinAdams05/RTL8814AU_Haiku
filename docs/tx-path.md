@@ -178,13 +178,17 @@ currently favours.
 
 ## TX queues
 
-The chip has multiple TX queues.  We use:
+`TxQueueSelect` names a hardware queue, not a USB pipe. That distinction was
+learned the hard way: the enum used to hold pipe indices, which collapsed
+`kTxQueueMGT`, `kTxQueueCMD` and `kTxQueueBCN` onto the same value so the
+descriptor builder could not tell them apart and had to infer a QSEL from the
+pipe — getting two of them wrong in the process.
 
-- **kTxQueueMGT** — auth, assoc-req, deauth, disassoc.  High
-  priority, low latency.
-- **kTxQueueBE** — best-effort data frames.  Most user traffic.
-- **kTxQueueVO/VI/BK** — the other access categories, currently
-  unused (we don't honor 802.11e prioritization).
+- **kTxQueueMGT** — auth, assoc-req, deauth, disassoc.
+- **kTxQueueBE** — best-effort data frames. Most user traffic.
+- **kTxQueueVO/VI/BK/BCN/HIGH/CMD** — the remaining queues; VI, BK and the
+  access-category split are currently unused (we don't honour 802.11e
+  prioritisation).
 
 Queue selection is `QUEUE_SEL` in dword 1, bits 8-12, and it takes the chip's
 own `QSLT_*` namespace rather than our pipe indices: `QSLT_BE` = 0,
@@ -193,23 +197,57 @@ own `QSLT_*` namespace rather than our pipe indices: `QSLT_BE` = 0,
 
 ## USB submission
 
-`fTxPath` maintains a pool of 12 USB bulk-OUT buffers.  Each
-`Transmit` call takes a free buffer, builds the descriptor, copies
-the frame, and submits via `usb_module->queue_bulk` to one of the
-three bulk-OUT endpoints.
+`fTxPath` maintains 16 transfer buffers per bulk-OUT pipe, 48 in total. Each
+`Transmit` call claims a free buffer, builds the descriptor, copies the frame
+after it, and submits the pair via `usb_module->queue_bulk`.
 
-The three endpoints map to traffic-class buckets — endpoint 0x02 for
-queue 0 (BE), 0x03 for queue 1 (mgmt), 0x04 for queue 2 (HQ).
-Picking the right endpoint matters: if we submit a mgmt frame on
-the BE endpoint it gets queued behind data and may not go out fast
-enough to satisfy auth/assoc timeout requirements.
+### Which endpoint a queue goes to
+
+The three bulk OUT endpoints are 0x02, 0x03 and 0x04 in enumeration order, and
+the chip services specific queues on specific endpoints. From
+`_ThreeOutPipeMapping` in the reference driver, and confirmed against a usbmon
+capture of the vendor Linux driver completing a handshake on this same chip:
+
+| Queue | Pipe | Endpoint |
+|---|---|---|
+| VO, BCN, MGT, HIGH, CMD | 0 | **0x02** |
+| VI | 1 | 0x03 |
+| BE, BK | 2 | **0x04** |
+
+This is not a preference about latency; it is what the hardware drains. This
+documentation previously stated the opposite mapping — 0x02 for BE, 0x03 for
+management — and so did the code. Management went to 0x04 and data to 0x03, an
+endpoint the working driver never uses at all, which is why **management frames
+reached the air and no data frame ever did**, across three over-the-air
+captures. Everything downstream followed from it: EAPOL M2 unanswered until the
+access point gave up with a four-way handshake timeout, DHCP never completing,
+TCP unusable.
+
+Firmware download is separate and uses a hardcoded pipe 0, which was always
+correct.
+
+### Bulk transfer sizing
+
+A bulk transfer whose length is an exact multiple of the endpoint's max packet
+size ends on a full packet, so the device cannot tell the transfer is over. The
+descriptor's `PKT_OFFSET` field (dword 1, bits 24-28, in units of 8 bytes)
+exists to avoid that: when `40 + frameLength` would land on a 512-byte
+boundary, an 8-byte gap is inserted between descriptor and frame and declared
+there, making the submission `48 + frameLength` instead.
 
 ## TX completion
 
-USB completion fires `_TxCallback`.  Currently we just free the
-buffer back to the pool — no per-frame ack-status bookkeeping.
-The chip's H2C/C2H protocol provides aggregate TX-report C2H events
-(`kC2H_TxReport`) which we currently log but don't act on.
+USB completion fires `_TxCallback`, which frees the buffer back to the pool.
+There is no per-frame ack-status bookkeeping.
+
+`SPE_RPT` in the descriptor would ask the firmware for a per-frame transmit
+report, delivered as a C2H event. It is deliberately not set: the vendor driver
+asks for one on almost nothing, and no C2H report ever arrived during the
+period this driver asked on every frame. Note also that the completion callback
+compares against `submitLength`, which for a long time was only set on the
+firmware-download path — so every ordinary transmit compared its byte count
+against zero and logged itself as short. Every TX in the syslog looked like a
+failure and none were.
 
 ## Write() entry point
 

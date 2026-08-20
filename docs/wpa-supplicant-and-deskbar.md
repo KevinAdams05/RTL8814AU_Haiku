@@ -141,19 +141,12 @@ This driver already publishes `SCANNED` and `JOINED` in that format.
 
 ## 6. So why does it not work yet
 
-Two independent problems, and the first one is not about wpa_supplicant at
-all.
-
-**The four-way handshake does not complete.** This used to read "the access
-point never sends us unicast", which was true of the evidence at the time and
-is no longer true twice over. With the assoc request's IEs put in the right
-order, M1 arrives, passes the addressed-to-us check, and the driver derives a
-PTK and sends a byte-perfect M2. And unicast receive is now directly
-observable in its own right: the access point's Null Data keep-alives
-(subtype 4, header only) arrive addressed to us and are counted. What has
-never arrived is M3. Whatever starves the in-driver handshake starves
-wpa_supplicant identically, so this blocks the Deskbar route too. Tracked in
+**The handshake is no longer the reason.** This section spent a long time
+describing a four-way handshake that would not complete; as of 2026-08-20 it
+does, and the link carries DHCP, ICMP and TCP. See
 [wpa2-in-driver.md](wpa2-in-driver.md).
+
+What remains is a design conflict, and it is the whole of the problem now.
 
 **net_server undoes its own join.** Joining an open network has to go through
 net_server, because there is no passphrase for `wifi-join` to take. Doing so
@@ -190,19 +183,17 @@ cannot work even after the receive bug is fixed.
 
 In order, because each step only matters once the previous one holds:
 
-1. **Fix unicast receive.** Nothing else can be tested until an EAPOL M1
-   reaches the host. Everything below is blocked on it.
-2. **Add a supplicant-owned mode.** Keep the in-driver handshake for the
+1. **Add a supplicant-owned mode.** Keep the in-driver handshake for the
    `wifi-join` path, but when wpa_supplicant is driving — signalled clearly
    by `IOC_WPA` being set and IEs arriving via `IOC_APPIE` — stand down:
    honour DEAUTH, install the keys it gives us through `IOC_WPAKEY`, and do
    not run our own state machine. The two must not both be live.
-3. **Fill the remaining ioctls** as wpa_supplicant reaches them —
+2. **Fill the remaining ioctls** as wpa_supplicant reaches them —
    `UCASTCIPHERS`, `MCASTCIPHER`, `MCASTKEYLEN`, `KEYMGTALGS`, `RSNCAPS`,
    `WPAIE`, `OPTIE`, `CHANNEL`. Add them driven by the log, not
    speculatively; an unhandled one shows up immediately as
    `Control unknown op`.
-4. **Answer `SIOCGIFSTATS`** to stop the recurring unknown-ioctl noise, so
+3. **Answer `SIOCGIFSTATS`** to stop the recurring unknown-ioctl noise, so
    that log stays a useful signal.
 
 The encouraging part is what is *not* on this list: the media type is

@@ -7,6 +7,7 @@
     .supp   { fill: #fffdf2; stroke: #b08020; stroke-width: 1.4; }
     .drv    { fill: #e7f5ea; stroke: #2c8a4a; stroke-width: 1.4; }
     .bad    { fill: #f7e8e8; stroke: #9a3030; stroke-width: 1.4; }
+    .ok     { fill: #e7f5ea; stroke: #2c8a4a; stroke-width: 1.4; }
     .small  { font-size: 11px; fill: #555; }
     .mono   { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; }
     .arrow  { fill: none; stroke: #444; stroke-width: 1.4; }
@@ -86,12 +87,13 @@
   <path class="evt" d="M 400 442 L 465 442" marker-end="url(#arrg)"/>
   <path class="evt" d="M 665 406 L 665 372" marker-end="url(#arrg)"/>
 
-  <!-- the real blocker -->
-  <rect class="bad" x="40" y="512" width="820" height="120" rx="3"/>
-  <text x="56" y="533" font-weight="600" fill="#9a3030">Where it actually breaks today — and it is not any of the above</text>
-  <text x="56" y="553" class="small">The access point associates us (assoc status 0, aid assigned) and then does not start the four-way handshake. Unicast receive</text>
-  <text x="56" y="568" class="small">works — we see the access point's Null Data keep-alives addressed to us, and EAPOL M1 has arrived, been validated, and had a</text>
-  <text x="56" y="583" class="small">byte-perfect M2 built for it. What has never arrived is M3, so whatever the access point makes of our M2, it does not accept it.</text>
-  <text x="56" y="603" class="small">Second, independent problem: the driver runs its own WPA2 handshake, so when wpa_supplicant issues its normal</text>
-  <text x="56" y="618" class="small">reset-then-configure sequence (DEAUTH, clear IEs, WPA=0) the driver ignores it as hostile. The two fight each other.</text>
+  <!-- the remaining blocker: no longer the handshake -->
+  <rect class="ok" x="40" y="512" width="820" height="42" rx="3"/>
+  <text x="56" y="532" font-weight="600" fill="#2c8a4a">The handshake is no longer the obstacle</text>
+  <text x="56" y="547" class="small">As of 2026-08-20 the in-driver four-way completes (M1→M2→M3→M4, CCMP enabled), DHCP gets a lease, and the link carries ICMP and TCP.</text>
+
+  <rect class="bad" x="40" y="566" width="820" height="66" rx="3"/>
+  <text x="56" y="586" font-weight="600" fill="#9a3030">What blocks the Deskbar route: the driver and the supplicant both want to own the handshake</text>
+  <text x="56" y="604" class="small">wpa_supplicant opens by resetting driver state — DEAUTH, clear the IEs, WPA=0 — before configuring its own session. That is normal, but this</text>
+  <text x="56" y="619" class="small">driver runs its own WPA2 handshake and treats the reset as interference. Both cannot own it: the driver needs a "supplicant is driving, stand down" mode.</text>
 </svg>

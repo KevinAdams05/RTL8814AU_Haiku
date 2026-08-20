@@ -21,9 +21,9 @@ For *using* the driver, see the [top-level README](../README.md).
 | [tx-path.md](tx-path.md) | Write() entry, ethernet → 802.11 conversion, SW CCMP encrypt, descriptor build, queue selection |
 | [wifi-management.md](wifi-management.md) | Scan flow, join state machine, MLME, the Haiku ioctl glue |
 | [phy-channel-and-band.md](phy-channel-and-band.md) | RF register access (the two routes), what a channel change entails, the 2.4/5 GHz band switch |
-| [NEXT_SESSION.md](NEXT_SESSION.md) | Where the WPA2 handshake stands, the plan to finish it, and the testing traps worth not re-learning |
-| [wpa-supplicant-and-deskbar.md](wpa-supplicant-and-deskbar.md) | What it takes to connect from the Deskbar: the net_server/wpa_supplicant chain, the net80211 ioctl contract, how EAPOL really reaches userland, and why the in-driver handshake blocks it |
-| [wpa2-in-driver.md](wpa2-in-driver.md) | The in-driver WPA2-PSK implementation — why we don't use wpa_supplicant, why we don't use the chip's HW crypto, the 4-way handshake state machine, SW CCMP |
+| [NEXT_SESSION.md](NEXT_SESSION.md) | Current state (the link works), what to do next — throughput first — the negative results worth not repeating, and the testing traps |
+| [wpa-supplicant-and-deskbar.md](wpa-supplicant-and-deskbar.md) | What it takes to connect from the Deskbar: the net_server/wpa_supplicant chain, the net80211 ioctl contract, how EAPOL really reaches userland, and why the in-driver handshake conflicts with the supplicant |
+| [wpa2-in-driver.md](wpa2-in-driver.md) | The in-driver WPA2-PSK implementation — why we don't use wpa_supplicant, why we don't use the chip's HW crypto, the 4-way handshake state machine, SW CCMP, and what was actually wrong for so long |
 | [ioctl-reference.md](ioctl-reference.md) | Quick reference for SIOCS80211 / SIOCG80211 IOC handlers and what userland calls them |
 | [build-and-deploy.md](build-and-deploy.md) | Building the .hpkg on a Haiku machine, installing it, fast-path edit-build-test iteration |
 | [STYLE_GUIDE.md](STYLE_GUIDE.md) | Coding style for this driver — formatting, naming, the logging and register-access idioms, and the style checker |

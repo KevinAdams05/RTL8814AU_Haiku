@@ -52,13 +52,13 @@
   <!-- fTxPath::Transmit -->
   <rect class="txpath" x="320" y="384" width="260" height="56" rx="3"/>
   <text x="450" y="406" text-anchor="middle" font-weight="600">fTxPath::Transmit</text>
-  <text x="450" y="422" text-anchor="middle" class="small">select bulk-OUT pipe based on queue</text>
+  <text x="450" y="422" text-anchor="middle" class="small">queue &#8594; pipe: MGT/BCN/VO/HIGH/CMD &#8594; EP 0x02, VI &#8594; 0x03, BE/BK &#8594; EP 0x04</text>
   <text x="450" y="436" text-anchor="middle" class="small">(BE / MGT / VO / HQ)</text>
 
   <!-- BuildDescriptor -->
   <rect class="txpath" x="320" y="460" width="260" height="48" rx="3"/>
   <text x="450" y="482" text-anchor="middle" font-weight="600">_BuildDescriptor</text>
-  <text x="450" y="498" text-anchor="middle" class="small">32-byte chip TX descriptor (SecType = None)</text>
+  <text x="450" y="498" text-anchor="middle" class="small">40-byte chip TX descriptor (SecType = None; SW CCMP done above)</text>
 
   <!-- USB submit -->
   <rect class="txpath" x="320" y="528" width="260" height="40" rx="3"/>

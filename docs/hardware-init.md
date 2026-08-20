@@ -34,6 +34,13 @@ morrownr's Linux driver but written from scratch.  Highlights:
   machine to leave standby.  Times out after ~200 ms if the chip
   doesn't respond.
 
+`REG_CR` deserves care: its defined bits stop at **bit 10**. Bits 16-17 are
+the network type and there is nothing at 11-15. The driver used to set
+`(1 << 13)` and `(1 << 14)` here, named as security-CAM enables, which are
+reserved on this chip — while the security engine, the single bit **`ENSEC` at
+bit 9**, was never enabled at all. `ENSWBCN` is bit 8, not 12. The vendor
+driver reaches `0x06FF`; before the fix this driver reached `0x64FF`.
+
 When power-on returns, `REG_CR` reads `0x603f` (TX/RX path enabled
 in MAC, scheduler running).
 
@@ -55,8 +62,23 @@ decoded map):
 `_InitMAC` programs:
 
 - **Page allocation** — divides the chip's TX FIFO into queue
-  partitions: HPQ=20, LPQ=20, NPQ=20, EPQ=20, PUB=1960 pages, with
-  a beacon queue boundary at page 0x07F5.
+  partitions: HPQ, LPQ, NPQ and EPQ get **0x20 (32) pages each**, PUB gets
+  **0x776 (1910)**, and the boundary is **0x07F6** — so the four queues plus
+  the public pool sum to the boundary exactly.
+
+  These were 20 decimal, PUB 1960 and boundary 0x07F5 for a long time. The
+  reference header defines `HPQ/LPQ/NPQ/EPQ_PGNUM` **twice**, under opposite
+  arms of `#if defined(CONFIG_SDIO_HCI) || defined(CONFIG_USB_HCI)` — `0x20`
+  for the USB and SDIO case, plain `20` otherwise. This is USB, so `0x20` is
+  live, and the decimal figure came from the wrong arm. The old numbers did
+  not even self-add: 4 x 20 + 1960 is 2040, against a boundary set to 2037.
+
+- **EDCA parameters** — the four access-category registers (0x0500-0x050C),
+  which set AIFS, CWmin, CWmax and TXOP per queue. These were declared and
+  never written for a long time; EDCA is what lets a queue contend for the
+  medium, so at reset defaults the best-effort queue never won a transmit
+  opportunity while management, scheduled on SIFS/PIFS timing, was
+  unaffected.
 - **Queue priorities** — `REG_TRXDMA_CTRL = 0xf5b4` mapping AC0..3
   + mgmt + high-priority.
 - **LLT (Link List Table)** — per-page next-page pointers for the

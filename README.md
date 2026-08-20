@@ -2,13 +2,19 @@
 >An LLM was used to aid in development of this code.
 
 >[!WARNING]
->This is very alpha version code, it is not fully working yet!
->It does connect to DHCP, get an IP, and can ping! But it's not done yet.
+>This is alpha version code. It works, but it is not finished.
 >
->Current state in short: scanning works across both bands, and WPA2-PSK
->association, DHCP and ping work on **2.4 GHz**.  5 GHz networks are now
->visible to a scan, but associating over 5 GHz has not been tested.
->TCP-heavy traffic (for example browsing in WebPositive) does not work yet.
+>Current state in short: scanning works across both bands, and on **2.4 GHz**
+>a WPA2-PSK network associates, completes the four-way handshake, installs
+>CCMP keys, gets a DHCP lease, and carries ICMP and TCP — a full SSH session
+>over the air has been verified, at every ping payload size from 56 to 1472
+>bytes. 5 GHz networks are visible to a scan and receive works there, but
+>**associating over 5 GHz has not been tested**.
+>
+>The main shortfall now is **throughput: around 2 Mbit/s**. Three deliberate
+>simplifications account for it — every data frame is sent at a fixed rate
+>with no rate adaptation, CCMP runs in software rather than on the chip's
+>engine, and A-MPDU aggregation is disabled. All three are addressable.
 
 **Bug reports (please attach listdev output, syslog and/or screenshots) and PRs welcome! See "Logging Bugs / How to Help" section below**
 
