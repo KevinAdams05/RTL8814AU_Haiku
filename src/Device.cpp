@@ -744,10 +744,16 @@ RTL8814AUDevice::_PowerOnSequence()
 
 	fRegisterIO->Write16(kRegCR, 0x0000);
 	uint16 crValue = fRegisterIO->Read16(kRegCR);
+	// Enable the security engine with ENSEC, the one bit that actually
+	// exists for it.  This used to set bits 13 and 14 instead, which are
+	// undefined on this chip -- REG_CR's defined bits stop at bit 10 -- so
+	// the MAC command register carried two reserved bits and never had the
+	// security engine turned on.  A usbmon capture of the vendor driver
+	// shows it reaching 0x06FF here where we reached 0x64FF.
 	crValue |= kCR_HCI_TxDMA_En | kCR_HCI_RxDMA_En
 		| kCR_TxDMA_En | kCR_RxDMA_En
 		| kCR_Protocol_En | kCR_Schedule_En
-		| kCR_EnsecCAMTx | kCR_EnsecCAMRx;
+		| kCR_EnSec;
 	fRegisterIO->Write16(kRegCR, crValue);
 
 	dprintf(RTL8814AU_DRIVER_NAME ": power-on sequence complete "
@@ -893,46 +899,15 @@ RTL8814AUDevice::_InitMAC()
 	// assoc responses without it, so it would only add RX load.
 	fRegisterIO->Write32(kRegRCR, rxFilter);
 
-	// Diagnostic: read back the TX-path registers the vendor Linux driver
-	// programs, so our post-init state can be diffed against a usbmon
-	// capture of it bringing up the same chip.  Six separate fixes derived
-	// from that capture each turned out correct and none completed the
-	// handshake, which is the signal to stop guessing one register at a time
-	// and compare the whole subsystem at once.
-	//
-	// The address list is exactly the 4-byte-aligned registers in
-	// 0x0200-0x05FF that the vendor writes, so the comparison is
-	// like-for-like.
-	{
-		static const uint16 kDiagRegisters[] = {
-	0x0204, 0x0208, 0x020C, 0x022C, 0x0230, 0x0234, 0x0238, 0x023C,
-	0x0240, 0x0280, 0x0290, 0x0420, 0x0424, 0x0428, 0x042C, 0x0430,
-	0x0434, 0x043C, 0x0440, 0x0444, 0x0448, 0x044C, 0x0450, 0x0454,
-	0x0458, 0x045C, 0x0478, 0x0480, 0x049C, 0x04A0, 0x04A4, 0x04A8,
-	0x04C0, 0x04C4, 0x04C8, 0x04CC, 0x04D4, 0x0500, 0x0504, 0x0508,
-	0x050C, 0x0510, 0x0514, 0x0518, 0x0520, 0x0524, 0x0540, 0x0550,
-	0x0554, 0x0558, 0x055C, 0x0560, 0x0564, 0x0574, 0x05BC,
-		};
-		const uint32 count = sizeof(kDiagRegisters)
-			/ sizeof(kDiagRegisters[0]);
-		for (uint32 i = 0; i < count; i += 4) {
-			dprintf(RTL8814AU_DRIVER_NAME ": regdump"
-				" %04x=%08" B_PRIx32 " %04x=%08" B_PRIx32
-				" %04x=%08" B_PRIx32 " %04x=%08" B_PRIx32 "\n",
-				kDiagRegisters[i],
-				fRegisterIO->Read32(kDiagRegisters[i]),
-				i + 1 < count ? kDiagRegisters[i + 1] : 0,
-				i + 1 < count
-					? fRegisterIO->Read32(kDiagRegisters[i + 1]) : 0,
-				i + 2 < count ? kDiagRegisters[i + 2] : 0,
-				i + 2 < count
-					? fRegisterIO->Read32(kDiagRegisters[i + 2]) : 0,
-				i + 3 < count ? kDiagRegisters[i + 3] : 0,
-				i + 3 < count
-					? fRegisterIO->Read32(kDiagRegisters[i + 3]) : 0);
-		}
-	}
-
+	// The post-init register comparison that lived here has been removed.
+	// It read back the 55 registers the vendor driver writes in
+	// 0x0200-0x05FF so our state could be diffed against a usbmon capture of
+	// it, and that comparison found five real defects -- but 55 extra USB
+	// control reads during init left the device unable to complete the H2C
+	// command the post-assoc worker issues, so association succeeded and
+	// nothing after it ran.  The results are recorded in
+	// docs/NEXT_SESSION.md; regenerate the dump there if it is needed again,
+	// and expect to pay for it.
 
 	// Turn on per-frame transmit reporting.  Plain register writes, so this
 	// is safe here — unlike an H2C command, which blocks device
@@ -948,6 +923,23 @@ RTL8814AUDevice::_InitMAC()
 	status = _EnableDMA();
 	if (status != B_OK)
 		return status;
+
+	// A verbatim replay of the vendor driver's MAC initialisation sequence
+	// was tried here and removed.  See docs/NEXT_SESSION.md: it is a
+	// negative result worth not repeating.
+	//
+	// The window between the end of the vendor's firmware download and the
+	// start of its BB/PHY table -- 183 writes, its entire MAC init -- was
+	// replayed in exact order, then trimmed to 177 to exclude its transition
+	// into the PHY table.  Both versions left association working and data
+	// frames still untransmitted, and both deterministically killed the
+	// post-association H2C path: the interface associates,
+	// B_NETWORK_WLAN_JOINED fires, and nothing after it runs.
+	//
+	// So the MAC configuration is not the missing piece.  That is useful --
+	// it moves the search to the PHY/RF path or the post-association
+	// sequence -- but it cost the ability to reach the handshake at all, so
+	// it does not stay in the tree.
 
 	dprintf(RTL8814AU_DRIVER_NAME ": MAC initialization complete\n");
 	return B_OK;
@@ -2598,7 +2590,22 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 			payloadLen > 7 ? payload[7] : 0);
 	}
 
-	bool isBroadcast = (dstMAC[0] & 0x01) != 0;
+	// Whether the *payload's* destination is a group address.  Used only for
+	// logging and for choosing the encryption key; it is deliberately NOT
+	// passed to the transmit path as an 802.11 broadcast flag.
+	//
+	// A station in infrastructure mode sends every uplink frame to the access
+	// point as a unicast 802.11 frame -- Address1 is the BSSID below,
+	// unconditionally.  The descriptor's BMC bit describes that receiver
+	// address, not the Ethernet destination inside the payload, so setting it
+	// for an Ethernet broadcast tells the chip the frame is group-addressed:
+	// no acknowledgement expected, group-key handling, different rate rules.
+	// It also forced MACID 1 rather than the access point's MACID 0.
+	//
+	// That is why DHCP could not complete even once the four-way handshake
+	// did: DHCP DISCOVER has an Ethernet destination of ff:ff:ff:ff:ff:ff, so
+	// every attempt went out mislabelled.
+	bool payloadIsGroupAddressed = (dstMAC[0] & 0x01) != 0;
 
 	// Build the 802.11 + LLC/SNAP header on the stack.  Max payload
 	// fits comfortably under the chip's TX buffer (kUsbTxBufferSize)
@@ -2656,7 +2663,8 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 			dprintf(RTL8814AU_DRIVER_NAME ": TX encrypt entry #%u "
 				"ethertype=%04x bcast=%d gtkValid=%d ptkValid=%d "
 				"ccmpEnabled=%d txFrameLen=%u\n",
-				(unsigned)sTxEnter, etherType, isBroadcast ? 1 : 0,
+				(unsigned)sTxEnter, etherType,
+				payloadIsGroupAddressed ? 1 : 0,
 				device->fGtkValid ? 1 : 0,
 				device->fPtkValid ? 1 : 0,
 				device->fCcmpEnabled ? 1 : 0,
@@ -2704,7 +2712,7 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 			dprintf(RTL8814AU_DRIVER_NAME ": SW CCMP encrypt OK #%u "
 				"len=%u bcast=%d ethertype=%04x pn=%llu\n",
 				(unsigned)sCcmpEncOk, (unsigned)txFrameLen,
-				isBroadcast ? 1 : 0, etherType,
+				payloadIsGroupAddressed ? 1 : 0, etherType,
 				(unsigned long long)pn);
 		}
 	}
@@ -2716,7 +2724,7 @@ RTL8814AUDevice::Write(void* cookie, off_t position, const void* buffer,
 	// infrequent and legacy rates are universally supported.
 	status_t status = device->fTxPath->Transmit(frame,
 		txFrameLen, kTxQueueBE, kRateOFDM24, 0,
-		kSecurityNone, isBroadcast);
+		kSecurityNone, false);
 
 	if (status != B_OK)
 		*numBytes = 0;

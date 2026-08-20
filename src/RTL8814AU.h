@@ -430,9 +430,15 @@ static const uint32 kCR_Protocol_En			= (1 << 4);
 static const uint32 kCR_Schedule_En			= (1 << 5);
 static const uint32 kCR_MAC_TX_En			= (1 << 6);
 static const uint32 kCR_MAC_RX_En			= (1 << 7);
-static const uint32 kCR_Enswbcnio			= (1 << 12);
-static const uint32 kCR_EnsecCAMTx			= (1 << 13);
-static const uint32 kCR_EnsecCAMRx			= (1 << 14);
+// REG_CR's defined bits stop at bit 10; bits 16-17 are the network type and
+// there is nothing at 11-15.  kCR_Enswbcnio was (1 << 12) and
+// kCR_EnsecCAMTx/Rx were (1 << 13)/(1 << 14) -- none of those exist on this
+// chip, and setting the latter two wrote undefined bits into the MAC's central
+// command register on every boot.  The security engine is a single bit,
+// ENSEC, and it was never set at all.
+static const uint32 kCR_EnSwBcn				= (1 << 8);
+static const uint32 kCR_EnSec				= (1 << 9);
+static const uint32 kCR_CalTmr_En			= (1 << 10);
 
 // H2C mailboxes — 4 rotating boxes, each with a 4-byte standard and
 // 4-byte extended register. The firmware reads these to process commands
@@ -698,6 +704,20 @@ static const uint16 kRegAmpduMaxLength		= 0x0458;
 // discarded, so a short lifetime looks exactly like "the chip accepted the
 // frame and never transmitted it".  The vendor driver disables expiry
 // outright; ours was left at the chip default of 0x10001000.
+// Hardware sequence-number control, one enable bit per queue.  Every non-QoS
+// descriptor this driver builds sets HWSEQ_EN, which asks the MAC to fill in
+// the frame's sequence number -- and that only works if the feature is
+// enabled here.  We never write it and it reads 0x00, so every frame requests
+// a service that is switched off; the vendor driver writes 0xFF.
+//
+// NOT currently written, because both placements tried so far hang the driver:
+// during hardware init the M2 transmit never returns, and inside the
+// post-association sequence the worker dies before it. The vendor writes it
+// late in the association phase. See docs/NEXT_SESSION.md -- this is the top
+// open lead, not a dead one.
+static const uint16 kRegHwSeqCtrl			= 0x0423;
+static const uint8 kHwSeqCtrlAllQueues		= 0xFF;
+
 static const uint16 kRegPktLifeTime			= 0x04C0;
 static const uint32 kPktLifeTimeDisabled	= 0xFFFFFFFF;
 
