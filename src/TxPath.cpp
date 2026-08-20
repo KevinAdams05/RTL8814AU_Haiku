@@ -452,15 +452,27 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// beacon path uses its own dword-1 build above with kQslBeacon.
 	// VO/VI both map to pipe 0; BE/BK to pipe 1.  Pick the lower-prio
 	// value of each pair so we don't lie about urgency to the chip.
+	// The reference driver's values (hal_com.h): BE is 0, BK is 2, VI is 5,
+	// VO is 7, MGNT is 0x12.
+	//
+	// This used to send best-effort traffic as 0x02, labelled QSLT_BE in a
+	// comment. 0x02 is QSLT_BK — the background queue. Management frames
+	// were tagged 0x12 and correct, which is exactly why auth and assoc
+	// always reached the air while **no data frame ever did**: an
+	// over-the-air capture of a full association showed 55 management frames
+	// from this station and zero data frames. Everything that looked like a
+	// separate mystery — EAPOL M2 never reaching the access point, DHCP
+	// never completing, pings above a trivial size vanishing — was this one
+	// wrong constant.
 	uint32 qslt;
 	if (queueSelect == kTxQueueMGT)			// pipe 3 (MGT/CMD/BCN)
 		qslt = 0x12;							// QSLT_MGNT
 	else if (queueSelect == kTxQueueBE)		// pipe 1 (BE/BK)
-		qslt = 0x02;							// QSLT_BE
+		qslt = 0x00;							// QSLT_BE
 	else if (queueSelect == kTxQueueVO)		// pipe 0 (VO/VI)
 		qslt = 0x05;							// QSLT_VI
 	else
-		qslt = 0x02;
+		qslt = 0x00;							// QSLT_BE
 
 	// For management frames morrownr's pcap shows MACID=1, rate_id=8.
 	// Data frames also use MACID=1 because we haven't sent the H2C
