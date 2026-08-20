@@ -283,7 +283,7 @@ static const uint32 kFwTxDescOffset			= 40;		// TX desc bytes before payload
 // it ends up at the same value used by the beacon-valid test:
 //   TXPKT_PGNUM_8814A_WMM = 0x07F5 (2037)
 // We use this as the beacon queue boundary during firmware download.
-static const uint16 kFwTxPktBufBoundary		= 0x07F5;
+static const uint16 kFwTxPktBufBoundary		= 0x07F6;
 
 // Firmware ready polling — _FWFreeToGo8814A() uses 100 × 50 ms = 5 sec
 static const uint32 kFirmwareReadyAttempts	= 100;
@@ -510,11 +510,34 @@ static const uint32 kRQPNCommit				= 0x80000000;
 // Per-queue page counts matching morrownr/8814au HPQ/LPQ/NPQ/EPQ_PGNUM
 // (all 20, decimal) and the computed PUB_PGNUM = 2040 - 4*20 = 1960.
 // Total reserves 8 pages for beacon (BCNQ_PAGE_NUM_8814) out of 2048.
-static const uint32 kPageNumHPQ				= 20;
-static const uint32 kPageNumLPQ				= 20;
-static const uint32 kPageNumNPQ				= 20;
-static const uint32 kPageNumEPQ				= 20;
-static const uint32 kPageNumPUB				= 1960;
+// TX packet-buffer page allocation, one figure per internal queue.
+//
+// These are 0x20, not 20.  The reference driver's rtl8814a_hal.h defines
+// HPQ/LPQ/NPQ/EPQ_PGNUM twice under opposite arms of an
+// "#if defined(CONFIG_SDIO_HCI) || defined(CONFIG_USB_HCI)" -- 0x20 for the
+// USB and SDIO case, plain 20 for everything else.  This is USB, so 0x20 is
+// the live definition, and the decimal 20 taken from the wrong arm gave every
+// queue 20 pages instead of 32.
+//
+// PUB and the boundary follow from them: a usbmon capture of the vendor
+// driver initialising this chip writes 0x776 to REG_FIFOPAGE_INFO_5 and
+// 0x07F6 as the boundary, and 4 * 0x20 + 0x776 == 0x7F6 exactly.  The old
+// numbers did not even close: 4 * 20 + 1960 is 2040, against a boundary set
+// to 2037.
+static const uint32 kPageNumHPQ				= 0x20;
+static const uint32 kPageNumLPQ				= 0x20;
+static const uint32 kPageNumNPQ				= 0x20;
+static const uint32 kPageNumEPQ				= 0x20;
+static const uint32 kPageNumPUB				= 0x776;
+
+// Written to REG_AUTO_LLT once the page allocation is committed, to build the
+// packet buffer's page link list.  A comment here used to record that this
+// was "tried and found to be a no-op on 8814A"; the vendor driver does it on
+// every init, immediately after the boundary registers.
+static const uint8 kAutoLLTInit				= 0x11;
+
+// Written to REG_TXDMA_OFFSET_CHK during page allocation.
+static const uint32 kTxDmaOffsetChkInit		= 0x0FFD0200;
 
 // Boundary registers — describe where the beacon queue starts in the
 // TX packet buffer.  Matches REG_TXPKTBUF_BCNQ_BDNY_8814A (0x0424),
@@ -633,15 +656,67 @@ static const uint16 kRegSIFS_TRX			= 0x0516;
 // beacon packet we submit is kept in TX packet buffer (not air-transmitted).
 static const uint16 kRegFwhwTxqCtrl			= 0x0420;
 
+// Auto-rate-fallback rate sets.  On this chip each one is a **64-bit** rate
+// mask, so they are 8 bytes apart, and they are not contiguous past ARFR1:
+// rtl8814a_spec.h gives 0x0444, 0x044C, 0x048C, 0x0494, 0x049C, 0x04A4.
+// hal_com_reg.h's ARFR1 = 0x0448 is the older parts' 4-byte layout and does
+// not apply here -- it is the same trap as the page counts.  The TX
+// descriptor's RATE_ID field selects among these, so leaving them
+// unprogrammed points the rate-fallback engine at empty tables.
 static const uint16 kRegARFR0				= 0x0444;
 static const uint16 kRegARFR1				= 0x044C;
-static const uint16 kRegARFR2				= 0x0454;
-static const uint16 kRegARFR3				= 0x045C;
-static const uint16 kRegARFR4				= 0x0464;
-static const uint16 kRegARFR5				= 0x046C;
+
+// Data and response auto-rate-fallback retry counts.
+static const uint16 kRegDARFRC				= 0x0430;
+static const uint16 kRegDARFRCHigh			= 0x0434;
+static const uint16 kRegRARFRCHigh			= 0x043C;
+
+// Values the vendor driver writes at init, read off a usbmon capture of it
+// bringing this chip up.  RRSR is the response rate set; 0x00000FFF permits
+// every legacy rate, which is what the vendor uses until it narrows the set
+// from the access point's basic rates after associating.
+static const uint32 kDARFRCInit				= 0x01000000;
+static const uint32 kDARFRCHighInit			= 0x08070504;
+static const uint32 kRARFRCHighInit			= 0x08070504;
+static const uint32 kRRSRInit				= 0x00000FFF;
+// The vendor writes each ARFR as eight bytes: a low and a high half.
+static const uint32 kARFR0InitLow			= 0xFE01F010;
+static const uint32 kARFR0InitHigh			= 0x40000000;
+static const uint32 kARFR1InitLow			= 0x003FF010;
+static const uint32 kARFR1InitHigh			= 0x40000000;
+// Per rtl8814a_spec.h.  These were 0x0454/0x045C/0x0464/0x046C, which is a
+// 4-byte-stride guess and wrong on every one of them.
+static const uint16 kRegARFR2				= 0x048C;
+static const uint16 kRegARFR3				= 0x0494;
+static const uint16 kRegARFR4				= 0x049C;
+static const uint16 kRegARFR5				= 0x04A4;
 
 static const uint16 kRegAmpduMaxTime		= 0x0456;
 static const uint16 kRegAmpduMaxLength		= 0x0458;
+
+// Packet lifetime.  A frame that sits in a hardware queue longer than this is
+// discarded, so a short lifetime looks exactly like "the chip accepted the
+// frame and never transmitted it".  The vendor driver disables expiry
+// outright; ours was left at the chip default of 0x10001000.
+static const uint16 kRegPktLifeTime			= 0x04C0;
+static const uint32 kPktLifeTimeDisabled	= 0xFFFFFFFF;
+
+// Protection mode (RTS/CTS) control, and the retry/aggregation limits beside
+// it.  Values are the vendor driver's, read off a usbmon capture.
+static const uint16 kRegProtModeCtrl		= 0x04C8;
+static const uint8 kProtModeCtrlInit		= 0xFF;
+static const uint16 kRegProtModeCtrlHigh	= 0x04CC;
+static const uint32 kProtModeCtrlHighInit	= 0x0201FFFF;
+
+// Per-MACID power-save bitmap: a bit set means that station is asleep, so its
+// frames are buffered rather than sent.  We never wrote it, and it comes up
+// with bit 1 set -- MACID 1, which is the management and broadcast MACID and
+// was, until recently, the MACID every frame this driver sent went out on.
+// That is very likely why moving data frames to MACID 1 once stopped DHCP
+// working. The vendor clears it explicitly.
+static const uint16 kRegMacIdSleep			= 0x04D4;
+
+static const uint32 kAmpduMaxLengthInit		= 0x0003FFFF;
 
 static const uint16 kRegFastEdcaCtrl		= 0x0460;
 

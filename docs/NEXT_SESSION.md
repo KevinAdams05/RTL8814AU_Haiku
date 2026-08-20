@@ -61,47 +61,106 @@ unicast frame addressed to us" is gone, and `deskbar-to-driver.svg` and
 
 ## Next session, in order
 
-### 1. Get a cooperative access point
+### 1. Read the register diff, then stop guessing
 
-This is now the binding constraint, not the driver. Everything below needs an
-access point that reliably sends M1, and neither available one does:
+The single most useful thing built this session is a systematic comparison
+rather than another hypothesis. `_InitHardware` ends with a `regdump` of every
+4-byte-aligned register in 0x0200-0x05FF that the vendor Linux driver writes,
+and `scratchpad/` holds the tooling to diff it:
 
-- The **phone hotspot** sent M1 earlier in the day and has stopped. It also
-  auto-disables on inactivity, re-randomises its BSSID on restart, and
-  measured -86 dBm with a bad FCS from eight feet.
-- The **home router** associates us and has never sent M1.
+- `vendor-init.sh` — captures the vendor driver's **complete** register
+  transcript over usbmon, from probe through a finished WPA2 handshake. Note
+  the driver programs almost nothing at probe: it only reads the EFUSE there,
+  and RQPN, EDCA, the queue map and the PHY are all set on **first open**. A
+  capture that misses `ip link set up` is worthless.
+- `usbmon-regs.py` — decodes Realtek register access out of that capture. The
+  chip has no memory-mapped I/O, so every access is a USB control transfer and
+  the capture is a complete ordered transcript.
+- `analyse-usbmon.py` — pulls out TX descriptors and which endpoint each frame
+  went to.
 
-A spare router, or a fresh hotspot on a different phone, converts this from
-guesswork back into measurement. Power-cycling the hotspot before the run is
-worth trying first, since it sent M1 earlier from the same code.
+**Registers that still differ**, vendor value against ours, restricted to ones
+where all four bytes of the vendor's value were actually observed:
 
-### 2. Then simply retest the handshake
+| Register | Vendor | Ours | Name |
+|---|---|---|---|
+| 0x0420 | 0xFF310F80 | 0x00710F81 | `REG_FWHW_TXQ_CTRL` |
+| 0x0428 | 0x30300E0A | 0x20201616 | `REG_SPEC_SIFS` |
+| 0x0440 | 0x0080015F | 0x00000FFF | `REG_RRSR` (deliberate: ours is permissive) |
+| 0x049C | 0x0600F010 | 0x00000000 | `REG_ARFR4` low |
+| 0x04A0 | 0x400003E0 | 0x00000000 | `REG_ARFR4` high |
+| 0x04A4 | 0x0600F015 | 0x00000000 | `REG_ARFR5` low |
+| 0x04A8 | 0x000000E0 | 0x00000000 | `REG_ARFR5` high |
+| 0x04C8 | 0x363608FF | 0x0C1401FF | `REG_PROT_MODE_CTRL` upper bytes |
+| 0x0514 | 0x0E0A0E0A | 0x10101010 | `REG_SIFS_CTX` |
+| 0x0550 | 0x01001019 | 0x00001414 | `REG_BCN_CTRL` |
+| 0x0560 | 0x5D4FEC00 | 0x00000001 | `REG_TSFTR` (free-running, expected) |
+| 0x0564 | 0x00000012 | 0x00000000 | — |
 
-With five descriptor bugs fixed, the handshake completing is its own signal
-and needs no capture. If M3 arrives, the audit was the answer. If M2 still
-goes unanswered with the rate and NDPA problems gone, the remaining
-descriptor gaps are the aggregation and PHY fields the reference sets only for
-non-EAPOL data frames — `DATA_BW`, `DATA_LDPC`, `DATA_STBC`,
-`DATA_RATE_FB_LIMIT`, `MAX_AGG_NUM`, `AMPDU_DENSITY` — none of which should
-matter for an EAPOL frame the reference deliberately routes around all of
-them.
+`ARFR4`/`ARFR5` being entirely unwritten is the most substantive item left:
+the TX descriptor's `RATE_ID` selects among the ARFR tables, and on this chip
+they are 64-bit and **not** contiguous — 0x0444, 0x044C, 0x048C, 0x0494,
+0x049C, 0x04A4 per `rtl8814a_spec.h`. `hal_com_reg.h`'s 4-byte stride is the
+older parts' layout and does not apply.
 
-### 3. Dead ends now closed, so nobody re-walks them
+Ignore these when reading the dump, they are not faults: 0x022C (commit bit
+self-clears), 0x0230-0x0240 (the upper half is read-only available-page
+count), 0x0204 high byte (firmware-download trigger), and anything marked as
+partially observed.
 
-- **`REG_TX_RPT_CTRL` at 0x04EC is not that register on this chip.** `0x04EC`
-  is `REG_DROP_PKT_NUM_8814A`; the `REG_TX_RPT_CTRL` name is the generic
-  definition in `hal_com_reg.h` for older parts. That is why the write never
-  stuck. For 8814A, `0x04F0` is `REG_PTCL_TX_RPT`.
-- **There is no register that enables TX reports on this chip.**
-  `HW_VAR_TX_RPT_MAX_MACID` is 8188E-only, gated on `RATE_ADAPTIVE_SUPPORT`.
-  The C2H report is driven purely by `SPE_RPT` in the descriptor.
-- **`HW_VAR_MACID_LINK` is a no-op for 8814A** — no HAL in the tree
-  implements it, so there is no "mark this MACID linked" bitmap gating data
-  transmission. `REG_MACID_NO_LINK_0/1` (0x0484/0x0488) are 8188E names; on
-  8814A those addresses are `REG_TXPKTBUF_IV_LOW/HIGH`.
-- **Our `RPT_SEL` decode is correct**: byte 8, bit 28, matching
-  `GET_RX_STATUS_DESC_RPT_SEL_8814A`. C2H detection is not the reason reports
-  never arrive.
+### 2. The blocker, restated precisely
+
+The access point associates us, sends M1 up to five times, never accepts M2,
+and deauthenticates with **reason 15** — `4WAY_HANDSHAKE_TIMEOUT`. It is
+telling us plainly that it ran the handshake and never got a usable reply.
+This reproduces on demand from a clean boot via
+`scratchpad/deploy-test.sh <passphrase>`, taking about four minutes.
+
+**The vendor Linux driver completes the same handshake on the same silicon,
+the same access point and the same channel** — `PTK=CCMP GTK=CCMP`. So the
+chip and the access point are both exonerated and the fault is ours.
+
+### 3. What was fixed this session, and why none of it was enough
+
+Seven distinct defects, each verified against the working driver rather than
+guessed, and **the handshake still fails identically after all of them**:
+
+1. Bulk OUT endpoints were backwards — management belonged on 0x02 and data on
+   0x04; we sent data to 0x03, which the working driver never touches.
+2. EDCA parameters were declared and never written, so the best-effort queue
+   could not contend for the medium.
+3. TX packet-buffer page counts read a hex `0x20` as decimal `20`, and PUB and
+   the boundary were derived from it — our numbers did not even self-add.
+4. `REG_AUTO_LLT` and `REG_TXDMA_OFFSET_CHK` were never written.
+5. The rate-fallback tables (`ARFR0`/`ARFR1`) and `RRSR` were never programmed,
+   with `ARFR1` at the wrong address.
+6. `REG_PKT_LIFE_TIME` sat at a finite default, so queued frames could expire.
+7. `REG_MACID_SLEEP` came up with bit 1 set — MACID 1, the management and
+   broadcast MACID, marked asleep. This very likely explains the old result
+   where moving data frames to MACID 1 stopped DHCP working.
+
+That every one of these was real and none was sufficient is itself the
+finding: there is no single remaining gate, or the gate is somewhere the
+register comparison does not reach — the PHY/RF path, or the frame content
+rather than its transmission.
+
+### 4. Decide between "not transmitted" and "refused" before anything else
+
+This is still unresolved and everything else is guesswork without it. The
+11:47 capture showed **zero data frames** from us against 3656 from other
+stations, but that predates fixes 1-7.
+
+**The air capture is currently unusable.** Later captures came back with
+`SA:00:00:00:00:00:00`, empty SSIDs and nonsense addresses — tcpdump
+mis-parsing corrupt frames — and shredder absent entirely even when the timing
+provably overlapped. The change that broke it is the **Edimax being plugged
+into the laptop**, a 4x4 radio inches from its internal antenna. Unplug it
+before capturing, or better, use the Edimax itself as the monitor: it is a far
+more sensitive receiver and sits beside the machine under test.
+
+Timing, so a window cannot miss again: association lands **T+32 s** after the
+join is fired from a clean boot, and the handshake is over by ~T+50 s.
+`wifi-capture.sh` now runs 180 s.
 
 ### 4. Loose ends worth closing regardless
 

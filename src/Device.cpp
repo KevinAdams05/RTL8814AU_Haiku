@@ -787,9 +787,10 @@ RTL8814AUDevice::_InitMAC()
 	if (status != B_OK)
 		return status;
 
-	// LLT auto-init was tried at REG_AUTO_LLT (0x0208) BIT0 but found to
-	// be a no-op on 8814A — the chip auto-builds the link-list as part
-	// of the RQPN_CTRL_2 commit.  Skip the trigger here.
+	// REG_AUTO_LLT is written in _InitPageAllocation, where the vendor
+	// driver does it.  A note here used to claim the chip auto-builds the
+	// link list as part of the RQPN_CTRL_2 commit, so the trigger was
+	// skipped; the capture shows the vendor writing it on every init.
 
 	// Program the queue-to-endpoint priority map so the three USB bulk
 	// OUT endpoints (pipe 0 = HIGH, pipe 1 = NORMAL, pipe 2 = LOW) route
@@ -832,9 +833,49 @@ RTL8814AUDevice::_InitMAC()
 	fRegisterIO->Write32(kRegEdcaBeParam, 0x0000A42B);
 	fRegisterIO->Write32(kRegEdcaBkParam, 0x0000A44F);
 
+	// Program the rate-fallback tables and the response rate set.
+	//
+	// None of these were written.  The TX descriptor's RATE_ID field selects
+	// one of ARFR0-3, so an unprogrammed set points the chip's rate-fallback
+	// engine at an empty table; RRSR is the response rate set, which governs
+	// the rates the chip may use for CTS and ACK, and therefore whether an
+	// RTS/CTS-protected data frame can complete its exchange at all.
+	//
+	// Values are the ones a usbmon capture shows the vendor driver writing
+	// while bringing this chip up.  RRSR is left permissive at 0x00000FFF --
+	// the vendor narrows it to the access point's basic rates after
+	// associating, and being permissive is the safer default.
+	fRegisterIO->Write32(kRegDARFRC, kDARFRCInit);
+	fRegisterIO->Write32(kRegDARFRCHigh, kDARFRCHighInit);
+	fRegisterIO->Write32(kRegRARFRCHigh, kRARFRCHighInit);
+	fRegisterIO->Write32(kRegRRSR, kRRSRInit);
+	fRegisterIO->Write32(kRegARFR0, kARFR0InitLow);
+	fRegisterIO->Write32(kRegARFR0 + 4, kARFR0InitHigh);
+	fRegisterIO->Write32(kRegARFR1, kARFR1InitLow);
+	fRegisterIO->Write32(kRegARFR1 + 4, kARFR1InitHigh);
+
 	// Set AMPDU aggregation parameters
 	fRegisterIO->Write8(kRegAmpduMaxTime, kAmpduMaxTime);
-	fRegisterIO->Write32(kRegAmpduMaxLength, kAmpduMaxLength);
+	fRegisterIO->Write32(kRegAmpduMaxLength, kAmpduMaxLengthInit);
+
+	// Disable packet expiry, clear the per-MACID sleep bitmap, and set the
+	// protection-mode registers.  All four were left at chip defaults, and
+	// reading them back after init showed every one differing from what the
+	// vendor driver ends up with on the same chip:
+	//
+	//   REG_PKT_LIFE_TIME  0x10001000 -> 0xFFFFFFFF   frames were expiring
+	//   REG_MACID_SLEEP    0x00000002 -> 0x00000000   MACID 1 was asleep
+	//   REG_PROT_MODE_CTRL 0x......01 -> 0x......FF
+	//   0x04CC             0x0201FF7F -> 0x0201FFFF
+	//
+	// The lifetime one is the interesting one: a frame held in a queue past
+	// its lifetime is discarded silently, which is indistinguishable from
+	// never being transmitted. The MACID_SLEEP default matters too, because
+	// bit 1 is the management and broadcast MACID.
+	fRegisterIO->Write32(kRegPktLifeTime, kPktLifeTimeDisabled);
+	fRegisterIO->Write32(kRegMacIdSleep, 0);
+	fRegisterIO->Write8(kRegProtModeCtrl, kProtModeCtrlInit);
+	fRegisterIO->Write32(kRegProtModeCtrlHigh, kProtModeCtrlHighInit);
 
 	// Configure initial RX filter — accept unicast, broadcast,
 	// multicast, data, and mgmt frames.  We deliberately leave
@@ -851,6 +892,47 @@ RTL8814AUDevice::_InitMAC()
 	// Promiscuous is deliberately NOT set here: we receive unicast auth and
 	// assoc responses without it, so it would only add RX load.
 	fRegisterIO->Write32(kRegRCR, rxFilter);
+
+	// Diagnostic: read back the TX-path registers the vendor Linux driver
+	// programs, so our post-init state can be diffed against a usbmon
+	// capture of it bringing up the same chip.  Six separate fixes derived
+	// from that capture each turned out correct and none completed the
+	// handshake, which is the signal to stop guessing one register at a time
+	// and compare the whole subsystem at once.
+	//
+	// The address list is exactly the 4-byte-aligned registers in
+	// 0x0200-0x05FF that the vendor writes, so the comparison is
+	// like-for-like.
+	{
+		static const uint16 kDiagRegisters[] = {
+	0x0204, 0x0208, 0x020C, 0x022C, 0x0230, 0x0234, 0x0238, 0x023C,
+	0x0240, 0x0280, 0x0290, 0x0420, 0x0424, 0x0428, 0x042C, 0x0430,
+	0x0434, 0x043C, 0x0440, 0x0444, 0x0448, 0x044C, 0x0450, 0x0454,
+	0x0458, 0x045C, 0x0478, 0x0480, 0x049C, 0x04A0, 0x04A4, 0x04A8,
+	0x04C0, 0x04C4, 0x04C8, 0x04CC, 0x04D4, 0x0500, 0x0504, 0x0508,
+	0x050C, 0x0510, 0x0514, 0x0518, 0x0520, 0x0524, 0x0540, 0x0550,
+	0x0554, 0x0558, 0x055C, 0x0560, 0x0564, 0x0574, 0x05BC,
+		};
+		const uint32 count = sizeof(kDiagRegisters)
+			/ sizeof(kDiagRegisters[0]);
+		for (uint32 i = 0; i < count; i += 4) {
+			dprintf(RTL8814AU_DRIVER_NAME ": regdump"
+				" %04x=%08" B_PRIx32 " %04x=%08" B_PRIx32
+				" %04x=%08" B_PRIx32 " %04x=%08" B_PRIx32 "\n",
+				kDiagRegisters[i],
+				fRegisterIO->Read32(kDiagRegisters[i]),
+				i + 1 < count ? kDiagRegisters[i + 1] : 0,
+				i + 1 < count
+					? fRegisterIO->Read32(kDiagRegisters[i + 1]) : 0,
+				i + 2 < count ? kDiagRegisters[i + 2] : 0,
+				i + 2 < count
+					? fRegisterIO->Read32(kDiagRegisters[i + 2]) : 0,
+				i + 3 < count ? kDiagRegisters[i + 3] : 0,
+				i + 3 < count
+					? fRegisterIO->Read32(kDiagRegisters[i + 3]) : 0);
+		}
+	}
+
 
 	// Turn on per-frame transmit reporting.  Plain register writes, so this
 	// is safe here — unlike an H2C command, which blocks device
@@ -1015,8 +1097,11 @@ RTL8814AUDevice::_ConfigTrxPath()
     plus a commit register at 0x022C.  Writing kRQPNCommit (0x80000000)
     to REG_RQPN_CTRL_2 latches the per-queue values into hardware.
 
-    Page counts match the reference driver's HPQ/LPQ/NPQ/EPQ_PGNUM
-    values (20 each) and PUB = 2048 - BCNQ(8) - 4*20 = 1960.
+    Page counts are the reference driver's HPQ/LPQ/NPQ/EPQ_PGNUM for the
+    USB/SDIO case, 0x20 each, with PUB = 0x776 and the boundary 0x07F6 so
+    that 4 * 0x20 + 0x776 == 0x7F6.  See the note in RTL8814AU.h: the
+    header defines those page counts twice under opposite arms of a
+    preprocessor conditional, and the decimal 20 came from the wrong arm.
 
     Reference: _InitQueueReservedPage_8814AUsb() in morrownr/8814au,
                hal/rtl8814a/usb/usb_halinit.c.
@@ -1043,6 +1128,13 @@ RTL8814AUDevice::_InitPageAllocation()
 	fRegisterIO->Write16(kRegMgQPgBndy, kFwTxPktBufBoundary);
 	fRegisterIO->Write16(kRegFIFOPage, kFwTxPktBufBoundary);
 	fRegisterIO->Write16(kRegFIFOPage + 2, kFwTxPktBufBoundary);
+
+	// Build the packet buffer's page link list, then set the TX DMA offset
+	// check.  Both were missing.  The vendor driver issues them here, in this
+	// order, immediately after the boundary registers -- confirmed against a
+	// usbmon capture of it initialising this chip.
+	fRegisterIO->Write8(kRegAutoLLT, kAutoLLTInit);
+	fRegisterIO->Write32(kRegTxDmaOffsetChk, kTxDmaOffsetChkInit);
 
 	dprintf(RTL8814AU_DRIVER_NAME ": page allocation set "
 		"(HPQ=%u LPQ=%u NPQ=%u EPQ=%u PUB=%u bndy=0x%04x)\n",
