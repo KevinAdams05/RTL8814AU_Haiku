@@ -174,7 +174,6 @@ private:
 	sem_id						fPipeSlotFree[kBulkOutEndpointCount];
 
 	// TX sequence number — incremented for each frame sent
-	uint16						fSequenceNumber;
 
 	// Statistics
 	uint32						fFramesSent;

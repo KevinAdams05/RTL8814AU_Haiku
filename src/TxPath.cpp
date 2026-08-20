@@ -48,7 +48,6 @@ RTL8814AUTxPath::RTL8814AUTxPath(RTL8814AURegisterIO* registerIO,
 	fRegisterIO(registerIO),
 	fUSBModule(usbModule),
 	fUSBDevice(usbDevice),
-	fSequenceNumber(0),
 	fFramesSent(0),
 	fFramesFailed(0),
 	fInitStatus(B_NO_INIT)
@@ -287,10 +286,12 @@ RTL8814AUTxPath::SendFirmwareChunk(const uint8* data, uint32 length)
 	uint8* desc = transfer->buffer;
 	memset(desc, 0, kTxDescSize);
 
-	// DWORD 0: packet length, descriptor offset = 40, BMC, FS, LS, OWN
+	// DWORD 0: packet length, descriptor offset = 40, BMC, FS, LS, and bit 31.
+	// Bit 31 was called OWN here; it is DISQSELSEQ, the same bit under its
+	// 8814A name.  Firmware download works with it set, so leave it set.
 	uint32 dword0 = (length & kTxDescPktLen_Mask)
 		| ((kTxDescSize << kTxDescOffset_Shift) & kTxDescOffset_Mask)
-		| kTxDescBMC | kTxDescFS | kTxDescLS | kTxDescOWN;
+		| kTxDescBMC | kTxDescFS | kTxDescLS | kTxDescDisQSelSeq;
 
 	// DWORD 1: MACID=0, QSEL = 0x10 (QSLT_BEACON)
 	uint32 dword1 = ((uint32)kQslBeacon << kTxDescQueueSel_Shift)
@@ -426,19 +427,19 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// Zero the entire descriptor first — unused fields must be 0
 	memset(descriptor, 0, kTxDescSize);
 
-	// Assign and advance the sequence number
-	uint16 seqNum = fSequenceNumber++;
-	if (fSequenceNumber > 0x0FFF)
-		fSequenceNumber = 0;
-
 	// DWORD 0: packet length, descriptor offset (40 bytes = 0x28),
 	// broadcast/multicast flag, first segment, last segment, OWN
 	// DISQSELSEQ goes with hardware sequence numbering: we set HWSEQ_EN in
 	// dword 8, and the reference pairs that with DISQSELSEQ for every
 	// non-QoS frame.  None of our frames are QoS.
+	// FIRST_SEG is deliberately not set: it is a ring-descriptor concept, and
+	// the reference driver's USB transmit path has it commented out, setting
+	// only LAST_SEG.  The bit we used to also set as OWN is bit 31, which on
+	// this chip is DISQSELSEQ — the same bit, under an older name — so there
+	// was never a separate OWN to clear.
 	uint32 dword0 = (frameLength & kTxDescPktLen_Mask)
 		| ((kTxDescSize << kTxDescOffset_Shift) & kTxDescOffset_Mask)
-		| kTxDescFS | kTxDescLS | kTxDescOWN | kTxDescDisQSelSeq;
+		| kTxDescLS | kTxDescDisQSelSeq;
 	if (isBroadcast)
 		dword0 |= kTxDescBMC;
 
@@ -477,34 +478,35 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	else
 		qslt = 0x00;							// QSLT_BE
 
-	// For management frames morrownr's pcap shows MACID=1, rate_id=8.
-	// Data frames also use MACID=1 because we haven't sent the H2C
-	// MacIDCfg that would set up MACID 0's rate-adaptation table —
-	// without that, frames TX'd with MACID 0 are silently dropped by
-	// the chip's MAC scheduler.  rate_id=8 indexes the chip's default
-	// rate set which covers OFDM 6-54 Mbps.
-	// Management frames go out on MACID 1; data frames go out on whatever
-	// the caller passed, which is 0.
+	// MACID selection follows the reference driver's allocation rules, which
+	// are not obvious from the descriptor alone.
 	//
-	// The comment above claims data frames should use MACID 1 too, on the
-	// grounds that MACID 0 has no rate-adaptation table and the scheduler
-	// discards it.  That claim is wrong, and it was tested: forcing data
-	// frames onto MACID 1 stopped DHCP working on an open network that had
-	// completed DHCP moments earlier on MACID 0 — no address, nothing
-	// received.  Whatever RA_INFO does for MACID 1, data frames need
-	// MACID 0, so leave them there.  It did not help the EAPOL handshake
-	// either, which is what prompted trying it.
-	// Everything goes out on MACID 1, which is the only MACID this driver
-	// ever configures — _DoPostAssocSetup sends RA_INFO for it and nothing
-	// else — and a MACID with no rate-adaptation table gets its frames
-	// discarded by the MAC scheduler.
+	// In station mode the reference reserves MACID 1 as
+	// RTW_DEFAULT_MGMT_MACID and hands it to the broadcast/multicast station,
+	// with the comment "STA mode have no BMC data TX, shared with this
+	// macid".  The access point's own station entry is allocated from a loop
+	// that starts at 0, so it gets MACID 0.  Unicast data addressed to the
+	// access point therefore goes out on MACID 0, while management and
+	// group-addressed frames go out on MACID 1.
 	//
-	// This was tried before and reverted, but that test was confounded: at
-	// the time best-effort traffic was still tagged QSLT_BK by mistake, so
-	// data frames had two independent reasons to be dropped and fixing one
-	// changed nothing. With the queue selector now correct, this is the
-	// combination that has never actually been tested.
-	uint8 effectiveMacID = macID == 0 ? 1 : macID;
+	// This matters because it was got wrong in both directions.  An earlier
+	// comment here claimed MACID 0 has no rate-adaptation table and that the
+	// scheduler discards its frames, so everything was forced onto MACID 1.
+	// The measurement that contradicted it is the strongest single data point
+	// in this investigation: DHCP completed on an open network with data
+	// frames on MACID 0 and stopped completing when they were moved to MACID
+	// 1.  The reference explains why.
+	//
+	// If MACID 0 needs a rate-adaptation table, the fix is to send it one —
+	// see _DoPostAssocSetup — not to move traffic to the MACID that already
+	// has one and means something else.
+	uint8 effectiveMacID = macID;
+	if (effectiveMacID == 0
+		&& (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD
+			|| isBroadcast)) {
+		effectiveMacID = 1;
+	}
+
 	uint32 rateID = 8;	// chip's default rate set, OFDM 6-54 Mbps
 
 	// DWORD 1: MACID, queue select, rate ID, security type
@@ -540,28 +542,48 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	if (queueSelect != kTxQueueMGT && queueSelect != kTxQueueCMD)
 		dword2 |= kTxDescBK;
 
-	// DWORD 3: sequence number + USE_RATE / DISABLE_FB / NAV_USE_HDR.
-	// USE_RATE (bit 8) tells the chip to use the data_rate in dword4
-	// instead of waiting for rate-adaptation hints — without it the
-	// chip never transmits.
-	uint32 dword3 = ((uint32)seqNum << kTxDescSeq_Shift)
-		& kTxDescSeq_Mask;
-	dword3 |= (1 << 8);		// USE_RATE
+	// DWORD 3: USE_RATE only.
+	//
+	// This dword used to also carry a 12-bit software sequence number at
+	// bits 16-27, which is simply the wrong place for it: the descriptor's
+	// SEQ field is at offset 36, bits 12-23.  Bits 16-27 of this dword are
+	// USE_MAX_LEN, MAX_AGG_NUM, **NDPA** and AMPDU_MAX_TIME, so an
+	// incrementing counter was scribbling over four aggregation and
+	// beamforming controls on every single frame.  NDPA is the damaging one:
+	// a non-zero value there tells the chip the frame is an HT/VHT null-data
+	// packet announcement for channel sounding rather than something to
+	// transmit normally, and three out of every four sequence numbers set
+	// one of its two bits.
+	//
+	// Nothing needs to be written in its place.  HWSEQ_EN below asks the
+	// hardware to assign sequence numbers, and on that path the reference
+	// driver does not write SEQ at all — it only does so for QoS frames,
+	// which set their own sequence and leave HWSEQ_EN clear.
+	//
+	// USE_RATE (bit 8) tells the chip to use the rate in dword 4 rather than
+	// waiting for a rate-adaptation hint.
+	uint32 dword3 = (1 << 8);	// USE_RATE
+
+	// DWORD 4: transmit rate, and the retry limit for management frames.
+	// DATA_SHORT is NOT here — see dword 5.
+	uint32 dword4 = (dataRate & kTxDescDataRate_Mask);
 	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
-		dword3 |= (1 << 10);	// DISABLE_FB
-		dword3 |= (1 << 15);	// NAV_USE_HDR
+		// The reference gives management frames an explicit retry limit and
+		// leaves fallback alone.  We used to set DISABLE_FB and NAV_USE_HDR
+		// instead; those belong to its beamforming NDPA branch, not here.
+		dword4 |= kTxDescRetryLimitEn
+			| ((12u << kTxDescRetryLimit_Shift) & kTxDescRetryLimit_Mask);
 	}
 
-	// DWORD 4: data rate, short preamble for CCK rates.
-	// morrownr probe-req has 0x001A0000 (rate index 0x1A which seems
-	// off — possibly bandwidth/spec related).  For now keep our value.
-	uint32 dword4 = (dataRate & kTxDescDataRate_Mask);
+	// DWORD 5: short preamble, for CCK rates only.  The chip ignores this
+	// when the rate is legacy OFDM or better.
+	uint32 dword5 = 0;
 	if (dataRate <= kRateCCK11)
-		dword4 |= kTxDescDataShort;
+		dword5 |= kTxDescDataShort;
 
-	// DWORD 6: morrownr's pcap shows 0x00000001 here for mgmt frames
-	// but writing that bit also wedges the chip.  Skip it — frames go
-	// out fine without it.
+	// DWORD 6: SW_DEFINE.  Bit 0 is the firmware's "the driver picked the
+	// rate" flag and pairs with USE_RATE, which we always set.
+	uint32 dword6 = kTxDescSwDefineFixedRate;
 
 	// DWORD 8 bit 15: HWSEQ_EN — let HW assign sequence numbers.
 	uint32 dword8 = (1 << 15);
@@ -574,6 +596,8 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	desc32[2] = B_HOST_TO_LENDIAN_INT32(dword2);
 	desc32[3] = B_HOST_TO_LENDIAN_INT32(dword3);
 	desc32[4] = B_HOST_TO_LENDIAN_INT32(dword4);
+	desc32[5] = B_HOST_TO_LENDIAN_INT32(dword5);
+	desc32[6] = B_HOST_TO_LENDIAN_INT32(dword6);
 	desc32[8] = B_HOST_TO_LENDIAN_INT32(dword8);
 
 	// 16-bit XOR checksum over first 32 bytes, stored at offset 28-29.

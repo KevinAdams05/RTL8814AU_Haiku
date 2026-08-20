@@ -853,7 +853,12 @@ static const uint32 kTxDescSpeRpt			= (1u << 19);
 static const uint32 kTxDescDisQSelSeq		= (1u << 31);	// dword 0
 static const uint32 kTxDescBK				= (1u << 16);	// dword 2
 
-static const uint32 kTxDescOWN				= (1 << 31);	// Owned by hardware
+// Bit 31 of dword 0 is DISQSELSEQ on 8814A -- see kTxDescDisQSelSeq above.
+// Older Realtek headers name the same bit OWN, from the PCIe ring descriptor
+// where it hands ownership to the DMA engine. There is only one bit; do not
+// define a second name for it and set both.
+
+// Descriptor offset 16 (dword 4).
 
 // TX descriptor DWORD 1 (offset 0x04)
 static const uint32 kTxDescMACID_Shift		= 0;
@@ -882,9 +887,19 @@ static const uint32 kTxDescDataBW_Shift		= 5;
 static const uint32 kTxDescDataBW_Mask		= 0x00000060;	// FIXME: verify
 static const uint32 kTxDescRTSEn			= (1 << 12);
 static const uint32 kTxDescCTSEn			= (1 << 13);
-static const uint32 kTxDescRetryLimit_Shift	= 16;
-static const uint32 kTxDescRetryLimitEn		= (1 << 17);
+static const uint32 kTxDescRetryLimitEn	= (1u << 17);
+static const uint32 kTxDescRetryLimit_Shift	= 18;
+static const uint32 kTxDescRetryLimit_Mask	= 0x00FC0000;
+
+// Descriptor offset 20 (dword 5).  DATA_SHORT is here, NOT in dword 4 --
+// putting it in dword 4 lands it on bit 4 of the 7-bit TX_RATE field, which
+// silently rewrites a CCK 1 Mbps request (0x00) into DESC_RATEMCS4 (0x10).
 static const uint32 kTxDescDataShort		= (1 << 4);	// Short preamble
+
+// Descriptor offset 24 (dword 6).  Bit 0 of SW_DEFINE tells the firmware the
+// driver has fixed the rate itself, which is what USE_RATE asks for; the
+// reference sets the two together on every frame.
+static const uint32 kTxDescSwDefineFixedRate	= (1u << 0);
 
 // TX descriptor DWORD 5 (offset 0x14)
 static const uint32 kTxDescTxPwrOffset_Shift = 0;

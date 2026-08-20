@@ -3494,10 +3494,12 @@ RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
     fPostAssocSem.  Runs the H2C sequence the firmware needs in order
     to actually TX our data frames on-air:
 
-      1. RA_INFO (H2C 0x40):  rate-adaptation table for MACID 1 —
-         without this, the chip's MAC scheduler has no rate set for
-         our STA and silently discards every queued data frame.
-      2. MEDIA_STATUS_RPT (H2C 0x01): tells the firmware MACID 1 is
+      1. RA_INFO (H2C 0x40):  rate-adaptation table for MACID 0, the
+         MACID the reference driver assigns to the access point's own
+         station entry and therefore the one unicast data frames go out
+         on.  MACID 1 is RTW_DEFAULT_MGMT_MACID, reserved for management
+         and group-addressed frames.
+      2. MEDIA_STATUS_RPT (H2C 0x01): tells the firmware MACID 0 is
          a connected peer so it manages keepalives / power-save.
 
     These can't be issued from _HandleAssocResponse directly because
@@ -4345,10 +4347,10 @@ RTL8814AUDevice::_PostAssocLoop()
          filter recognises traffic from / to this BSS.  (We already
          wrote it in _DoJoin, but Associate() in WiFiManager does it
          too — keep consistent.)
-      2. Send RA_INFO H2C — MACID 1, rate_id 8 (OFDM), BW 20 MHz,
+      2. Send RA_INFO H2C — MACID 0, rate_id 8 (OFDM), BW 20 MHz,
          rate mask covering OFDM 6–54 Mbps.  The rate adaptation
          engine uses this to pick a rate per data-frame TX.
-      3. Send MEDIA_STATUS_RPT H2C — connect=1, MACID=1.
+      3. Send MEDIA_STATUS_RPT H2C — connect=1, MACID=0.
 */
 status_t
 RTL8814AUDevice::_DoPostAssocSetup()
@@ -4402,7 +4404,7 @@ RTL8814AUDevice::_DoPostAssocSetup()
 	dprintf(RTL8814AU_DRIVER_NAME ": post-assoc RA_INFO: %s\n",
 		strerror(raStatus));
 
-	// 3. MEDIA_STATUS_RPT (H2C 0x01) — connect=1, MACID=1.
+	// 3. MEDIA_STATUS_RPT (H2C 0x01) — connect=1, MACID=0.
 	uint8 msPayload[2] = { 1, kMacID };
 	status_t msStatus = fWiFiManager->SendH2C(kH2C_MediaStatusRpt,
 		msPayload, sizeof(msPayload));
