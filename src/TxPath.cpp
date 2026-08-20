@@ -433,9 +433,12 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 
 	// DWORD 0: packet length, descriptor offset (40 bytes = 0x28),
 	// broadcast/multicast flag, first segment, last segment, OWN
+	// DISQSELSEQ goes with hardware sequence numbering: we set HWSEQ_EN in
+	// dword 8, and the reference pairs that with DISQSELSEQ for every
+	// non-QoS frame.  None of our frames are QoS.
 	uint32 dword0 = (frameLength & kTxDescPktLen_Mask)
 		| ((kTxDescSize << kTxDescOffset_Shift) & kTxDescOffset_Mask)
-		| kTxDescFS | kTxDescLS | kTxDescOWN;
+		| kTxDescFS | kTxDescLS | kTxDescOWN | kTxDescDisQSelSeq;
 	if (isBroadcast)
 		dword0 |= kTxDescBMC;
 
@@ -527,6 +530,15 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// tell "the chip put it on the air and nobody answered" apart from "the
 	// chip never sent it".  Cheap while traffic is this light.
 	uint32 dword2 = kTxDescSpeRpt;
+
+	// Data frames are not aggregated here, and the reference marks exactly
+	// that with BK.  Management frames go out on their own queue and do not
+	// take part in aggregation at all, which is one candidate explanation
+	// for why they reach the air while data frames never have: a data frame
+	// the chip believes is a candidate for A-MPDU can sit in the buffer
+	// waiting for company.
+	if (queueSelect != kTxQueueMGT && queueSelect != kTxQueueCMD)
+		dword2 |= kTxDescBK;
 
 	// DWORD 3: sequence number + USE_RATE / DISABLE_FB / NAV_USE_HDR.
 	// USE_RATE (bit 8) tells the chip to use the data_rate in dword4

@@ -844,6 +844,15 @@ static const uint32 kTxDescFS				= (1 << 27);	// First segment
 // bit 19).  Pairs with kRegTxReportCtrl.
 static const uint32 kTxDescSpeRpt			= (1u << 19);
 
+// Fields the reference driver sets on a non-QoS frame that this driver did
+// not.  DISQSELSEQ turns off per-queue sequence allocation, which the
+// hardware sequence generator expects to be off when it is assigning the
+// numbers itself; BK marks a data frame as not participating in A-MPDU
+// aggregation, without which the chip can sit on the frame waiting to
+// aggregate it with something that never arrives.
+static const uint32 kTxDescDisQSelSeq		= (1u << 31);	// dword 0
+static const uint32 kTxDescBK				= (1u << 16);	// dword 2
+
 static const uint32 kTxDescOWN				= (1 << 31);	// Owned by hardware
 
 // TX descriptor DWORD 1 (offset 0x04)
