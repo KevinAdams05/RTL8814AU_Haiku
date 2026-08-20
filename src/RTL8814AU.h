@@ -869,6 +869,8 @@ static const uint32 kTxDescRateID_Shift		= 16;
 static const uint32 kTxDescRateID_Mask		= 0x001F0000;
 static const uint32 kTxDescSecType_Shift	= 22;
 static const uint32 kTxDescSecType_Mask		= 0x00C00000;
+// Gap between the descriptor and the frame, in units of 8 bytes.  Used to
+// keep a bulk OUT transfer off a max-packet-size boundary.
 static const uint32 kTxDescPktOffset_Shift	= 24;
 static const uint32 kTxDescPktOffset_Mask	= 0x1F000000;
 

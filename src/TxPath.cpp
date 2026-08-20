@@ -138,7 +138,36 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 		return fInitStatus;
 
 	// Validate frame size — descriptor + frame must fit in the USB buffer
-	uint32 totalLength = kTxDescSize + frameLength;
+	// A bulk OUT transfer whose length is an exact multiple of the endpoint's
+	// max packet size ends on a full packet, so the device cannot tell the
+	// transfer is over and waits for a continuation that never comes.  The
+	// usual cures are a zero-length terminating packet or padding; the
+	// reference driver pads, and does it through the descriptor.
+	//
+	// Its buffers carry TXDESC_OFFSET = TXDESC_SIZE + PACKET_OFFSET_SZ = 48
+	// bytes of headroom.  Normally it writes the 40-byte descriptor at
+	// offset 8 so the frame follows immediately and submits 40 + length.  But
+	// when 40 + length would land on a bulk-size boundary it leaves the
+	// descriptor at offset 0, keeping an 8-byte gap before the frame,
+	// declares the gap in the descriptor's PKT_OFFSET field, and submits
+	// 48 + length instead — which cannot be a multiple of 512 or 1024 if
+	// 40 + length was.
+	//
+	// We submit 40 + length unconditionally, so every frame whose total hits
+	// a 512-byte multiple stalls.  Nothing in the handshake happens to land
+	// there (M2 totals 193 bytes), but ordinary traffic does: an ICMP echo
+	// with a 412-byte payload totals exactly 512.  That is the shape of "TCP
+	// is unusable and pings above a certain size vanish".
+	//
+	// Testing against 512 covers SuperSpeed too, since every multiple of
+	// 1024 is a multiple of 512.  Padding a frame that did not strictly need
+	// it is harmless — it is the same path the reference takes.
+	const uint32 kBulkBoundary = 512;
+	uint32 packetOffset = 0;
+	if (((kTxDescSize + frameLength) % kBulkBoundary) == 0)
+		packetOffset = 1;	// units of 8 bytes
+
+	uint32 totalLength = kTxDescSize + packetOffset * 8 + frameLength;
 	if (totalLength > kUsbTxBufferSize) {
 		dprintf(RTL8814AU_DRIVER_NAME ": TX frame too large: %" B_PRIu32
 			" bytes (max %" B_PRIu32 ")\n",
@@ -191,10 +220,14 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 
 	// Build the TX descriptor at the start of the buffer
 	_BuildDescriptor(transfer->buffer, frameLength, queueSelect,
-		dataRate, macID, secType, isBroadcast);
+		dataRate, macID, secType, isBroadcast, packetOffset);
 
-	// Copy the frame data after the descriptor
-	memcpy(transfer->buffer + kTxDescSize, frameData, frameLength);
+	// Copy the frame data after the descriptor, leaving the declared gap.
+	// Zero the gap so the chip is not handed stale bytes from a prior frame.
+	if (packetOffset > 0)
+		memset(transfer->buffer + kTxDescSize, 0, packetOffset * 8);
+	memcpy(transfer->buffer + kTxDescSize + packetOffset * 8, frameData,
+		frameLength);
 
 	// Record what we are about to submit, so the completion callback can
 	// tell a short transfer from a complete one.  Only the firmware-download
@@ -430,7 +463,7 @@ RTL8814AUTxPath::CancelAll()
 void
 RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	TxQueueSelect queueSelect, uint8 dataRate, uint8 macID,
-	SecurityType secType, bool isBroadcast)
+	SecurityType secType, bool isBroadcast, uint32 packetOffset)
 {
 	// Zero the entire descriptor first — unused fields must be 0
 	memset(descriptor, 0, kTxDescSize);
@@ -517,12 +550,15 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 
 	uint32 rateID = 8;	// chip's default rate set, OFDM 6-54 Mbps
 
-	// DWORD 1: MACID, queue select, rate ID, security type
+	// DWORD 1: MACID, queue select, rate ID, security type, and the
+	// padding gap between descriptor and frame in units of 8 bytes.
 	uint32 dword1 = (effectiveMacID & kTxDescMACID_Mask)
 		| ((qslt << kTxDescQueueSel_Shift) & kTxDescQueueSel_Mask)
 		| ((rateID << kTxDescRateID_Shift) & kTxDescRateID_Mask)
 		| (((uint32)secType << kTxDescSecType_Shift)
-			& kTxDescSecType_Mask);
+			& kTxDescSecType_Mask)
+		| ((packetOffset << kTxDescPktOffset_Shift)
+			& kTxDescPktOffset_Mask);
 
 	// DWORD 2: aggregation enable.  We previously set kTxDescAGGEn
 	// for data frames here, but the chip never actually emits them —

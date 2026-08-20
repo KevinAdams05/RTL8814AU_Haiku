@@ -139,7 +139,8 @@ private:
 									uint8 dataRate,
 									uint8 macID,
 									SecurityType secType,
-									bool isBroadcast);
+									bool isBroadcast,
+									uint32 packetOffset);
 
 	// Map a TxQueueSelect value to a bulk OUT pipe index (0-2).
 	static uint32				_QueueToPipeIndex(TxQueueSelect queue);
