@@ -120,17 +120,36 @@ static const uint32 kUsbTxBufferSize		= 16384;	// 16 KB per bulk OUT
 static const uint32 kUsbRxBufferSize		= 32768;	// 32 KB for bulk IN
 static const uint32 kUsbInterruptBufferSize	= 64;		// for interrupt IN
 
-// Queue-to-endpoint mapping (WMM priority → bulk OUT pipe index)
+// Hardware transmit queues.
+//
+// These are queue identities, not bulk OUT pipe indices.  They used to be
+// pipe indices, which collapsed distinct queues onto the same value —
+// kTxQueueMGT, kTxQueueCMD and kTxQueueBCN were all 2, so the descriptor
+// builder could not tell them apart and had to guess a QSEL from the pipe.
+// Worse, the guesses were wrong: see _QueueToPipeIndex for the mapping this
+// chip actually wants and how it was established.
 enum TxQueueSelect {
-	kTxQueueVO		= 0,	// Voice — highest priority → OUT #1
-	kTxQueueVI		= 0,	// Video — high priority → OUT #1
-	kTxQueueBE		= 1,	// Best effort — normal → OUT #2
-	kTxQueueBK		= 1,	// Background — low priority → OUT #2
-	kTxQueueMGT		= 2,	// Management → OUT #3
-	kTxQueueCMD		= 2,	// H2C commands → OUT #3
-	kTxQueueBCN		= 2,	// Beacons → OUT #3
-	kTxQueueHIGH	= 0,	// High priority → OUT #1
+	kTxQueueVO		= 0,	// Voice — highest priority
+	kTxQueueVI,				// Video
+	kTxQueueBE,				// Best effort — ordinary data
+	kTxQueueBK,				// Background
+	kTxQueueBCN,			// Beacons
+	kTxQueueMGT,			// Management
+	kTxQueueHIGH,			// High priority
+	kTxQueueCMD,			// H2C commands
 };
+
+// QSEL values the TX descriptor's queue_sel field expects.  From the
+// reference driver's hal_com.h; confirmed against a usbmon capture of the
+// vendor Linux driver on this chip, where a management frame carried 0x12
+// and an EAPOL data frame carried 0x00.
+static const uint32 kQslBE					= 0x00;
+static const uint32 kQslBK					= 0x02;
+static const uint32 kQslVI					= 0x05;
+static const uint32 kQslVO					= 0x07;
+static const uint32 kQslHigh				= 0x11;
+static const uint32 kQslMgnt				= 0x12;
+static const uint32 kQslCmd					= 0x13;
 
 
 // ---------------------------------------------------------------------------
@@ -897,6 +916,19 @@ static const uint32 kTxDescRetryLimit_Mask	= 0x00FC0000;
 // putting it in dword 4 lands it on bit 4 of the 7-bit TX_RATE field, which
 // silently rewrites a CCK 1 Mbps request (0x00) into DESC_RATEMCS4 (0x10).
 static const uint32 kTxDescDataShort		= (1 << 4);	// Short preamble
+
+// Virtual carrier sense (RTS/CTS).  The vendor driver wraps data frames in
+// RTS/CTS: RTS_ENABLE in dword 3, the RTS rate in dword 4, RTS_SHORT in
+// dword 5.
+static const uint32 kTxDescRtsEnable		= (1u << 12);	// dword 3
+static const uint32 kTxDescRtsRate_Shift	= 24;			// dword 4
+static const uint32 kTxDescRtsRate_Mask		= 0x1F000000;
+static const uint32 kTxDescRtsShort			= (1u << 12);	// dword 5
+
+// Sequence number, dword 9.  Only written for QoS frames; non-QoS frames set
+// HWSEQ_EN instead and let the hardware assign one.
+static const uint32 kTxDescSeqNum_Shift		= 12;
+static const uint32 kTxDescSeqNum_Mask		= 0x00FFF000;
 
 // Descriptor offset 24 (dword 6).  Bit 0 of SW_DEFINE tells the firmware the
 // driver has fixed the rate itself, which is what USE_RATE asks for; the

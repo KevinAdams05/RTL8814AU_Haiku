@@ -124,8 +124,15 @@ them.
   `MARK=$(wc -l < /var/log/syslog)` and then `awk -v s=$MARK "NR>s"`. Without
   the mark, lines from three boots ago read as current results — that happened
   again this session and briefly looked like a working handshake.
-- **Reboot between join attempts**, and check `uptime` — the reboot-wait loop
-  can connect to the still-running old system and test stale code.
+- **Reboot between join attempts, and wait for the box to actually go down.**
+  Checking `uptime` is not enough, and the obvious pattern is actively
+  dangerous: `grep -q "up   0:0"` also matches `up 0:01` through `up 0:09`.
+  With reboots a few minutes apart it therefore matches the *old* system that
+  has not gone down yet, the join fires against a box that is about to
+  reboot, and the result reads as a spontaneous crash. This cost three test
+  cycles and a bisect hunt for a crash that did not exist. Wait for ping to
+  fail first, then for it to come back — `scratchpad/deploy-test.sh` does
+  this correctly.
 - **Replacing a `.hpkg` does not swap the running driver.** packagefs serves
   the old one until reboot. Verify with
   `strings /boot/system/add-ons/kernel/drivers/bin/rtl8814au`.

@@ -802,7 +802,35 @@ RTL8814AUDevice::_InitMAC()
 	// Clear REG_TXPAUSE — the reference driver ensures transmission is
 	// not paused before the first bulk OUT.  Without this, the chip will
 	// accept but not dispatch frames.
+	//
+	// The vendor driver gets to the same place by a different route: it
+	// writes 0x3F here to pause every queue while it configures, then
+	// clears it as a side effect of a 4-byte write to 0x0520 whose third
+	// byte lands on 0x0522.  A direct zero is equivalent.
 	fRegisterIO->Write8(kRegTxPause, 0x00);
+
+	// Program the EDCA channel-access parameters for the four access
+	// categories.  Each register packs TXOP limit (bits 16-31), CWmax
+	// (12-15), CWmin (8-11) and AIFS (0-7).
+	//
+	// These were never written before, only declared, and that was the
+	// reason **no data frame this driver ever sent reached the air** while
+	// management frames always did.  EDCA is what lets a queue contend for
+	// the medium; left at the chip's reset defaults the best-effort queue
+	// never wins a transmit opportunity, so frames sit in its packet buffer
+	// and expire.  Management is unaffected because it goes out on the
+	// management queue, which is scheduled on SIFS/PIFS timing rather than
+	// through EDCA contention — hence a driver that could associate, but
+	// never complete a four-way handshake or a DHCP lease.
+	//
+	// The values are the ones a usbmon capture shows the vendor Linux
+	// driver writing on this chip, and they decode to the standard 802.11
+	// defaults for a 9 us slot: BE gets AIFS 43 us with CW 15-1023, VO gets
+	// AIFS 34 us with CW 3-7 and a 47-unit TXOP.
+	fRegisterIO->Write32(kRegEdcaVoParam, 0x002F3222);
+	fRegisterIO->Write32(kRegEdcaViParam, 0x005E4322);
+	fRegisterIO->Write32(kRegEdcaBeParam, 0x0000A42B);
+	fRegisterIO->Write32(kRegEdcaBkParam, 0x0000A44F);
 
 	// Set AMPDU aggregation parameters
 	fRegisterIO->Write8(kRegAmpduMaxTime, kAmpduMaxTime);
@@ -3352,6 +3380,16 @@ RTL8814AUDevice::_SendAssocRequest()
 	frame[i++] = 0x30; frame[i++] = 0x48;
 	frame[i++] = 0x60; frame[i++] = 0x6C;
 
+	// No WMM Information Element (vendor-specific, element 221).
+	//
+	// It was added to declare this station QoS-capable, so that EAPOL could
+	// be sent as a QoS Data frame the way the vendor Linux driver does.  The
+	// access point's response was to stop answering the association request
+	// entirely: authentication still succeeded, the request still went out,
+	// and nothing came back.  Whatever it objects to, association matters
+	// more than matching the vendor's frame subtype, so this stays out until
+	// there is a reason to believe it is needed.
+
 	if (haveRsnIe) {
 		dprintf(RTL8814AU_DRIVER_NAME ": TX assoc request (WPA2) "
 			"len=%u, with %u-byte RSN IE\n",
@@ -4251,10 +4289,17 @@ RTL8814AUDevice::_TxEapolDataFrame(const uint8* apMac,
 	if (eapolLen > 256)
 		return B_BUFFER_OVERFLOW;
 
-	uint8 wireFrame[24 + 8 + 256];
+	uint8 wireFrame[26 + 8 + 256];
 	uint32 i = 0;
 
-	// 802.11 data-frame header
+	// 802.11 data-frame header, 24 bytes.
+	//
+	// The vendor Linux driver sends EAPOL as a QoS Data frame (subtype 8)
+	// with a 26-byte header, and that was tried here.  It requires
+	// advertising WMM in the association request to be legitimate, and doing
+	// so made this access point stop answering the association request
+	// altogether.  Non-QoS is a valid choice for a station that does not
+	// claim QoS, so stay with it and keep association.
 	wireFrame[i++] = 0x08;	// FC[0]: type=Data (2), subtype=0
 	wireFrame[i++] = 0x01;	// FC[1]: ToDS=1, FromDS=0, Protected=0
 	// Duration/ID left zero, as in every other frame this driver builds.
@@ -4267,8 +4312,8 @@ RTL8814AUDevice::_TxEapolDataFrame(const uint8* apMac,
 	memcpy(wireFrame + i, fJoinBssid, 6); i += 6;	// Addr1 = BSSID (RA)
 	memcpy(wireFrame + i, fMacAddress, 6); i += 6;	// Addr2 = our MAC (TA)
 	memcpy(wireFrame + i, apMac, 6); i += 6;		// Addr3 = AP MAC (DA)
-	wireFrame[i++] = 0;		// SeqCtrl low (HW fills via HWSEQ_EN)
-	wireFrame[i++] = 0;		// SeqCtrl high
+	wireFrame[i++] = 0;		// SeqCtrl low  — the descriptor carries the
+	wireFrame[i++] = 0;		// SeqCtrl high   sequence for QoS frames
 
 	// LLC/SNAP encapsulation, ethertype = EAPOL (0x888E)
 	wireFrame[i++] = 0xAA;

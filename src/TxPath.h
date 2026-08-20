@@ -134,6 +134,7 @@ public:
 private:
 	// Build the 40-byte TX descriptor into the provided buffer.
 	void						_BuildDescriptor(uint8* descriptor,
+									const uint8* frameData,
 									uint32 frameLength,
 									TxQueueSelect queueSelect,
 									uint8 dataRate,
@@ -174,9 +175,13 @@ private:
 	// completion sem misses completions on the other slots.
 	sem_id						fPipeSlotFree[kBulkOutEndpointCount];
 
-	// TX sequence number — incremented for each frame sent
+	// TX sequence number.  Used only for QoS frames, which carry their
+	// own sequence in descriptor dword 9; non-QoS frames set HWSEQ_EN
+	// and let the hardware assign one.
+	uint16						fSequenceNumber;
 
 	// Statistics
+	uint32						fDescriptorsLogged;
 	uint32						fFramesSent;
 	uint32						fFramesFailed;
 

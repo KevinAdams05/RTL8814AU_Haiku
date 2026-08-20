@@ -48,6 +48,8 @@ RTL8814AUTxPath::RTL8814AUTxPath(RTL8814AURegisterIO* registerIO,
 	fRegisterIO(registerIO),
 	fUSBModule(usbModule),
 	fUSBDevice(usbDevice),
+	fSequenceNumber(0),
+	fDescriptorsLogged(0),
 	fFramesSent(0),
 	fFramesFailed(0),
 	fInitStatus(B_NO_INIT)
@@ -219,7 +221,7 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 	transfer->inUse = true;
 
 	// Build the TX descriptor at the start of the buffer
-	_BuildDescriptor(transfer->buffer, frameLength, queueSelect,
+	_BuildDescriptor(transfer->buffer, frameData, frameLength, queueSelect,
 		dataRate, macID, secType, isBroadcast, packetOffset);
 
 	// Copy the frame data after the descriptor, leaving the declared gap.
@@ -461,12 +463,21 @@ RTL8814AUTxPath::CancelAll()
       DWORD 6–9: reserved / future use
 */
 void
-RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
-	TxQueueSelect queueSelect, uint8 dataRate, uint8 macID,
-	SecurityType secType, bool isBroadcast, uint32 packetOffset)
+RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
+	uint32 frameLength, TxQueueSelect queueSelect, uint8 dataRate,
+	uint8 macID, SecurityType secType, bool isBroadcast, uint32 packetOffset)
 {
 	// Zero the entire descriptor first — unused fields must be 0
 	memset(descriptor, 0, kTxDescSize);
+
+	// Read the frame's own type and subtype rather than being told, so the
+	// descriptor cannot disagree with the bytes it describes.  A QoS data
+	// frame carries its own sequence number and a 2-byte QoS Control field;
+	// a non-QoS frame leaves sequencing to the hardware.  The reference
+	// driver switches on exactly this distinction.
+	const uint8 frameControl = frameData[0];
+	const bool isData = ((frameControl >> 2) & 0x03) == 2;
+	const bool isQosData = isData && ((frameControl >> 4) & 0x08) != 0;
 
 	// DWORD 0: packet length, descriptor offset (40 bytes = 0x28),
 	// broadcast/multicast flag, first segment, last segment, OWN
@@ -480,44 +491,30 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// was never a separate OWN to clear.
 	uint32 dword0 = (frameLength & kTxDescPktLen_Mask)
 		| ((kTxDescSize << kTxDescOffset_Shift) & kTxDescOffset_Mask)
-		| kTxDescLS | kTxDescDisQSelSeq;
+		| kTxDescLS;
+	if (!isQosData)
+		dword0 |= kTxDescDisQSelSeq;
 	if (isBroadcast)
 		dword0 |= kTxDescBMC;
 
-	// Translate our internal queue enum to the descriptor's QSLT_*
-	// value namespace.  The TX descriptor's queue_sel field expects:
-	//   QSLT_MGNT = 0x12, QSLT_HIGH = 0x11, QSLT_BCN = 0x10,
-	//   QSLT_VO = 0x07, QSLT_VI = 0x05, QSLT_BE = 0x02, QSLT_BK = 0x01.
-	// Our enum encodes the USB pipe index instead.  Without the right
-	// QSLT value the chip's MAC scheduler never picks the frame off
-	// its internal queue, so nothing reaches the air.
-	// NB: TxQueueSelect enum values are USB pipe indices, not unique
-	// queue IDs — kTxQueueMGT/CMD/BCN all = 2.  In _BuildDescriptor
-	// we treat any pipe-3 queue (MGT/CMD/BCN) as MGNT (0x12); the
-	// beacon path uses its own dword-1 build above with kQslBeacon.
-	// VO/VI both map to pipe 0; BE/BK to pipe 1.  Pick the lower-prio
-	// value of each pair so we don't lie about urgency to the chip.
-	// The reference driver's values (hal_com.h): BE is 0, BK is 2, VI is 5,
-	// VO is 7, MGNT is 0x12.
-	//
-	// This used to send best-effort traffic as 0x02, labelled QSLT_BE in a
-	// comment. 0x02 is QSLT_BK — the background queue. Management frames
-	// were tagged 0x12 and correct, which is exactly why auth and assoc
-	// always reached the air while **no data frame ever did**: an
-	// over-the-air capture of a full association showed 55 management frames
-	// from this station and zero data frames. Everything that looked like a
-	// separate mystery — EAPOL M2 never reaching the access point, DHCP
-	// never completing, pings above a trivial size vanishing — was this one
-	// wrong constant.
+	// Translate the queue identity to the descriptor's QSEL value.  These
+	// used to be inferred from the pipe index, which could not distinguish
+	// queues that shared a pipe and got two of them wrong: best effort was
+	// sent as 0x02 (QSLT_BK, the background queue) and video as 0x05 while
+	// voice frames were labelled video.  Now the enum carries the identity,
+	// so the mapping is a direct lookup.
 	uint32 qslt;
-	if (queueSelect == kTxQueueMGT)			// pipe 3 (MGT/CMD/BCN)
-		qslt = 0x12;							// QSLT_MGNT
-	else if (queueSelect == kTxQueueBE)		// pipe 1 (BE/BK)
-		qslt = 0x00;							// QSLT_BE
-	else if (queueSelect == kTxQueueVO)		// pipe 0 (VO/VI)
-		qslt = 0x05;							// QSLT_VI
-	else
-		qslt = 0x00;							// QSLT_BE
+	switch (queueSelect) {
+		case kTxQueueVO:	qslt = kQslVO;		break;
+		case kTxQueueVI:	qslt = kQslVI;		break;
+		case kTxQueueBE:	qslt = kQslBE;		break;
+		case kTxQueueBK:	qslt = kQslBK;		break;
+		case kTxQueueBCN:	qslt = kQslBeacon;	break;
+		case kTxQueueMGT:	qslt = kQslMgnt;	break;
+		case kTxQueueHIGH:	qslt = kQslHigh;	break;
+		case kTxQueueCMD:	qslt = kQslCmd;		break;
+		default:			qslt = kQslBE;		break;
+	}
 
 	// MACID selection follows the reference driver's allocation rules, which
 	// are not obvious from the descriptor alone.
@@ -575,7 +572,11 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// peer acknowledged it, which is the only way from inside the driver to
 	// tell "the chip put it on the air and nobody answered" apart from "the
 	// chip never sent it".  Cheap while traffic is this light.
-	uint32 dword2 = kTxDescSpeRpt;
+	// SPE_RPT asks the firmware for a per-frame transmit report.  It is not
+	// set: the vendor driver asks for one on almost nothing, no C2H report
+	// ever arrived in the whole time we asked on every frame, and a report
+	// nothing consumes is at best wasted firmware work.
+	uint32 dword2 = 0;
 
 	// Data frames are not aggregated here, and the reference marks exactly
 	// that with BK.  Management frames go out on their own queue and do not
@@ -607,10 +608,21 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// USE_RATE (bit 8) tells the chip to use the rate in dword 4 rather than
 	// waiting for a rate-adaptation hint.
 	uint32 dword3 = (1 << 8);	// USE_RATE
+	if (isData) {
+		// Virtual carrier sense.  The vendor driver protects data frames
+		// with RTS/CTS and leaves management unprotected, which is what the
+		// usbmon capture of a working handshake on this chip shows.
+		dword3 |= kTxDescRtsEnable;
+	}
 
 	// DWORD 4: transmit rate, and the retry limit for management frames.
 	// DATA_SHORT is NOT here — see dword 5.
 	uint32 dword4 = (dataRate & kTxDescDataRate_Mask);
+	if (isData) {
+		// RTS at OFDM 24 Mbps, matching the vendor driver.
+		dword4 |= ((uint32)kRateOFDM24 << kTxDescRtsRate_Shift)
+			& kTxDescRtsRate_Mask;
+	}
 	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
 		// The reference gives management frames an explicit retry limit and
 		// leaves fallback alone.  We used to set DISABLE_FB and NAV_USE_HDR
@@ -624,13 +636,27 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	uint32 dword5 = 0;
 	if (dataRate <= kRateCCK11)
 		dword5 |= kTxDescDataShort;
+	if (isData)
+		dword5 |= kTxDescRtsShort;
 
 	// DWORD 6: SW_DEFINE.  Bit 0 is the firmware's "the driver picked the
 	// rate" flag and pairs with USE_RATE, which we always set.
 	uint32 dword6 = kTxDescSwDefineFixedRate;
 
-	// DWORD 8 bit 15: HWSEQ_EN — let HW assign sequence numbers.
-	uint32 dword8 = (1 << 15);
+	// DWORDs 8 and 9: sequencing.  A QoS frame supplies its own sequence
+	// number in dword 9 and leaves HWSEQ_EN clear; everything else sets
+	// HWSEQ_EN and lets the hardware assign one.  These are alternatives,
+	// not options — the reference driver picks exactly one.
+	uint32 dword8 = 0;
+	uint32 dword9 = 0;
+	if (isQosData) {
+		uint16 sequence = fSequenceNumber++;
+		if (fSequenceNumber > 0x0FFF)
+			fSequenceNumber = 0;
+		dword9 = ((uint32)sequence << kTxDescSeqNum_Shift)
+			& kTxDescSeqNum_Mask;
+	} else
+		dword8 = (1 << 15);	// HWSEQ_EN
 
 	// Write the dwords (DWORD 7 reserved for descriptor checksum,
 	// computed below over the first 32 bytes).
@@ -643,6 +669,7 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	desc32[5] = B_HOST_TO_LENDIAN_INT32(dword5);
 	desc32[6] = B_HOST_TO_LENDIAN_INT32(dword6);
 	desc32[8] = B_HOST_TO_LENDIAN_INT32(dword8);
+	desc32[9] = B_HOST_TO_LENDIAN_INT32(dword9);
 
 	// 16-bit XOR checksum over first 32 bytes, stored at offset 28-29.
 	uint16 checksum = 0;
@@ -651,6 +678,7 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 		checksum ^= B_LENDIAN_TO_HOST_INT16(words[i]);
 	descriptor[28] = (uint8)(checksum & 0xFF);
 	descriptor[29] = (uint8)((checksum >> 8) & 0xFF);
+
 }
 
 
@@ -664,10 +692,40 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 uint32
 RTL8814AUTxPath::_QueueToPipeIndex(TxQueueSelect queue)
 {
-	uint32 index = (uint32)queue;
-	if (index >= kBulkOutEndpointCount)
-		return 1;	// Default to best-effort
-	return index;
+	// The three bulk OUT endpoints are 0x02, 0x03 and 0x04 in enumeration
+	// order, and the chip expects specific queues on specific ones.  From
+	// _ThreeOutPipeMapping in the reference driver's hal/hal_com.c:
+	//
+	//   VO, BCN, MGT, HIGH, CMD -> RtOutPipe[0]  (endpoint 0x02)
+	//   VI                      -> RtOutPipe[1]  (endpoint 0x03)
+	//   BE, BK                  -> RtOutPipe[2]  (endpoint 0x04)
+	//
+	// This is not a preference; it is what the hardware services.  A usbmon
+	// capture of the vendor Linux driver completing a WPA2 handshake on this
+	// same chip shows exactly that split: 43 management frames on endpoint
+	// 0x02, the EAPOL data frames on endpoint 0x04, and endpoint 0x03 never
+	// used at all.
+	//
+	// We had it backwards.  Management went to 0x04 and data to 0x03 — an
+	// endpoint the working driver never touches — which is why management
+	// frames reached the air and **no data frame ever did**, across three
+	// over-the-air captures. Everything downstream of that (EAPOL M2 going
+	// unanswered until the access point gave up with a four-way handshake
+	// timeout, DHCP never completing, TCP unusable) followed from it.
+	switch (queue) {
+		case kTxQueueVO:
+		case kTxQueueBCN:
+		case kTxQueueMGT:
+		case kTxQueueHIGH:
+		case kTxQueueCMD:
+			return 0;
+		case kTxQueueVI:
+			return 1;
+		case kTxQueueBE:
+		case kTxQueueBK:
+			return 2;
+	}
+	return 2;	// unreachable; best-effort is the safe default
 }
 
 
