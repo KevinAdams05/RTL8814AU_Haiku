@@ -491,12 +491,18 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, uint32 frameLength,
 	// received.  Whatever RA_INFO does for MACID 1, data frames need
 	// MACID 0, so leave them there.  It did not help the EAPOL handshake
 	// either, which is what prompted trying it.
-	uint8 effectiveMacID = macID;
+	// Everything goes out on MACID 1, which is the only MACID this driver
+	// ever configures — _DoPostAssocSetup sends RA_INFO for it and nothing
+	// else — and a MACID with no rate-adaptation table gets its frames
+	// discarded by the MAC scheduler.
+	//
+	// This was tried before and reverted, but that test was confounded: at
+	// the time best-effort traffic was still tagged QSLT_BK by mistake, so
+	// data frames had two independent reasons to be dropped and fixing one
+	// changed nothing. With the queue selector now correct, this is the
+	// combination that has never actually been tested.
+	uint8 effectiveMacID = macID == 0 ? 1 : macID;
 	uint32 rateID = 8;	// chip's default rate set, OFDM 6-54 Mbps
-	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
-		if (effectiveMacID == 0)
-			effectiveMacID = 1;
-	}
 
 	// DWORD 1: MACID, queue select, rate ID, security type
 	uint32 dword1 = (effectiveMacID & kTxDescMACID_Mask)
