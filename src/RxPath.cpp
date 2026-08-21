@@ -68,6 +68,17 @@ RTL8814AURxPath::RTL8814AURxPath(RTL8814AURegisterIO* registerIO,
 	for (uint32 i = 0; i < kRxTransferCount; i++) {
 		fBuffers[i] = new(std::nothrow) uint8[kUsbRxBufferSize];
 		if (fBuffers[i] == NULL) {
+			// Say so.  This used to fail silently: fInitStatus was set and
+			// the constructor returned, and the only symptom was a driver
+			// that attached, scanned nothing and associated with nothing.
+			// Raising kRxTransferCount to 12 hit exactly this and cost two
+			// test cycles to attribute, because nothing in the log mentioned
+			// memory at all.
+			dprintf(RTL8814AU_DRIVER_NAME ": RX path: failed to allocate "
+				"buffer %" B_PRIu32 " of %" B_PRIu32 " (%" B_PRIu32
+				" bytes each, %" B_PRIu32 " KB total) -- receive will not "
+				"work\n", i, kRxTransferCount, kUsbRxBufferSize,
+				(kRxTransferCount * kUsbRxBufferSize) / 1024);
 			fInitStatus = B_NO_MEMORY;
 			return;
 		}
@@ -504,12 +515,16 @@ RTL8814AURxPath::_RxCallback(void* cookie, status_t status, void* data,
 		return;
 
 	rxPath->fTransfersCompleted++;
-	// At ~225 callbacks/sec on this hardware, even every-64th is
+	// At ~200 callbacks/sec on this hardware, even every-64th is
 	// ~3.5 syslog lines/sec, which contributed to the BFS log-rotation
 	// panic.  Log first 8 to confirm RX comes alive at boot, then
-	// only every 4096 (~every 18 sec) as a heartbeat.
+	// only every 4096 (~every 20 sec) as a heartbeat.
+	//
+	// This was temporarily every 512 while chasing receive throughput, which
+	// is eight times the rate this comment warns about.  Do not leave it
+	// there: raise it while measuring, put it back afterwards.
 	if (rxPath->fTransfersCompleted <= 8
-		|| (rxPath->fTransfersCompleted & 511) == 0) {
+		|| (rxPath->fTransfersCompleted & 4095) == 0) {
 		dprintf(RTL8814AU_DRIVER_NAME ": RX cb #%" B_PRIu32 " status=%s len=%"
 			B_PRIuSIZE " frames=%" B_PRIu32 " crc=%" B_PRIu32 " drop=%"
 			B_PRIu32 " (walk=%" B_PRIu32 " icv=%" B_PRIu32 ")\n",
