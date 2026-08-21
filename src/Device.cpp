@@ -105,6 +105,11 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fTxPnPairwise = 1;
 	fTxPnGroup = 1;
 	fLinkStateSem = -1;
+	fSupplicantTkValid = false;
+	fSupplicantGtkValid = false;
+	fSupplicantGtkId = 0;
+	memset(fSupplicantTk, 0, sizeof(fSupplicantTk));
+	memset(fSupplicantGtk, 0, sizeof(fSupplicantGtk));
 	fPostAssocSem = -1;
 	fPostAssocThread = -1;
 	fPostAssocStop = false;
@@ -1575,26 +1580,110 @@ RTL8814AUDevice::_Set80211(void* userArgs, size_t length)
 
 		case IEEE80211_IOC_WPAKEY:
 		{
-			// Encryption key install — diagnostic dump.  Real
-			// implementation will program the chip's security CAM.
+			// Key installation driven by wpa_supplicant.
+			//
+			// This used to be a diagnostic stub, which is why connecting
+			// from the Deskbar could never work: the supplicant would
+			// complete the four-way handshake, hand us the keys, and we
+			// would log them and drop them, so nothing could be encrypted
+			// or decrypted afterwards.
+			//
+			// The chip's CAM is programmed by _InstallSessionKeys, which
+			// takes the pairwise and group keys together because that is
+			// how the in-driver handshake produces them. wpa_supplicant
+			// installs them in two separate calls, so hold each until both
+			// have arrived.
 			struct ieee80211req_key key;
 			memset(&key, 0, sizeof(key));
 			uint32 copyLen = request.i_len < sizeof(key)
 				? request.i_len : sizeof(key);
 			if (copyLen > 0 && request.i_data != NULL)
 				user_memcpy(&key, request.i_data, copyLen);
-			dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY stub: type=%u "
-				"keyix=%u flags=0x%02x keylen=%u "
-				"mac=%02x:%02x:%02x:%02x:%02x:%02x rsc=%llu tsc=%llu "
-				"data[0..7]=%02x%02x%02x%02x%02x%02x%02x%02x\n",
-				key.ik_type, key.ik_keyix, key.ik_flags, key.ik_keylen,
+
+			const bool isPairwise
+				= key.ik_keyix == (uint16)IEEE80211_KEYIX_NONE;
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY %s cipher=%u "
+				"keyix=%u keylen=%u flags=0x%02x "
+				"mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+				isPairwise ? "pairwise" : "group",
+				key.ik_type, (unsigned)key.ik_keyix,
+				(unsigned)key.ik_keylen, (unsigned)key.ik_flags,
 				key.ik_macaddr[0], key.ik_macaddr[1], key.ik_macaddr[2],
-				key.ik_macaddr[3], key.ik_macaddr[4], key.ik_macaddr[5],
-				(unsigned long long)key.ik_keyrsc,
-				(unsigned long long)key.ik_keytsc,
-				key.ik_keydata[0], key.ik_keydata[1], key.ik_keydata[2],
-				key.ik_keydata[3], key.ik_keydata[4], key.ik_keydata[5],
-				key.ik_keydata[6], key.ik_keydata[7]);
+				key.ik_macaddr[3], key.ik_macaddr[4], key.ik_macaddr[5]);
+
+			// Only CCMP is supported. A 16-byte key is the CCMP temporal
+			// key; anything else is TKIP or WEP and we would install
+			// nonsense rather than fail visibly.
+			if (key.ik_keylen != 16) {
+				dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY: %u-byte key "
+					"is not CCMP, ignoring\n", (unsigned)key.ik_keylen);
+				return B_UNSUPPORTED;
+			}
+
+			MutexLocker keyLocker(fLock);
+			if (isPairwise) {
+				memcpy(fSupplicantTk, key.ik_keydata, 16);
+				fSupplicantTkValid = true;
+				// The supplicant addresses the pairwise key to the peer,
+				// which is the access point. Trust that over our own
+				// join state, since the supplicant owns this session.
+				static const uint8 zeros[6] = { 0, 0, 0, 0, 0, 0 };
+				if (memcmp(key.ik_macaddr, zeros, 6) != 0)
+					memcpy(fJoinBssid, key.ik_macaddr, 6);
+			} else {
+				memcpy(fSupplicantGtk, key.ik_keydata, 16);
+				fSupplicantGtkId = (uint8)(key.ik_keyix & 0x03);
+				fSupplicantGtkValid = true;
+			}
+
+			if (!fSupplicantTkValid || !fSupplicantGtkValid) {
+				dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY: holding, "
+					"have tk=%d gtk=%d\n", fSupplicantTkValid ? 1 : 0,
+					fSupplicantGtkValid ? 1 : 0);
+				return B_OK;
+			}
+
+			uint8 tk[16];
+			uint8 gtk[16];
+			uint8 gtkId = fSupplicantGtkId;
+			uint8 apMac[6];
+			memcpy(tk, fSupplicantTk, 16);
+			memcpy(gtk, fSupplicantGtk, 16);
+			memcpy(apMac, fJoinBssid, 6);
+			keyLocker.Unlock();
+
+			status_t keyStatus = _InstallSessionKeys(tk, gtk, 16, gtkId,
+				apMac);
+			if (keyStatus != B_OK) {
+				dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY: CAM install "
+					"failed: %s\n", strerror(keyStatus));
+				return keyStatus;
+			}
+
+			// Arm the software cipher as well, exactly as the in-driver
+			// handshake does on success. Programming the CAM alone is not
+			// enough: this driver does CCMP in software, and the encrypt
+			// and decrypt paths read the temporal key from fPtk + 32 and
+			// the group key from fGtk. Without this the supplicant would
+			// finish the handshake, we would report success, and every
+			// subsequent frame would go out in the clear and arrive
+			// undecryptable -- an association that looks perfect and
+			// carries nothing, which is how DHCP failed here at first.
+			keyLocker.Lock();
+			memcpy(fPtk + 32, tk, 16);
+			fPtkValid = true;
+			memcpy(fGtk, gtk, 16);
+			fGtkKeyId = gtkId;
+			fGtkValid = true;
+			fCcmpEnabled = true;
+			// A PN must never repeat under a given key, so restart the
+			// counters whenever keys are installed.
+			fTxPnPairwise = 1;
+			fTxPnGroup = 1;
+			keyLocker.Unlock();
+
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_WPAKEY: supplicant keys "
+				"installed, CCMP enabled\n");
 			return B_OK;
 		}
 
@@ -1788,6 +1877,44 @@ RTL8814AUDevice::_Get80211(void* userArgs, size_t length)
 				return status;
 
 			// Write the (possibly-shrunk) length back to user space.
+			return user_memcpy(userArgs, &request, sizeof(request));
+		}
+
+		case IEEE80211_IOC_SSID:
+		{
+			// wpa_supplicant reads the SSID back immediately after an
+			// association event, to confirm which network it landed on --
+			// wpa_driver_bsd_get_ssid. Returning an error here is fatal to
+			// the whole supplicant-driven path: it concludes the
+			// association is not real and sends a DEAUTH, which is exactly
+			// what happened. The trace read
+			//
+			//   IOC_MLME op=1(ASSOC) ... ASSOCIATED ... AID=12
+			//   fired B_NETWORK_WLAN_JOINED
+			//   SIOCG80211 unsupported i_type=1 i_val=0 i_len=32
+			//   IOC_MLME op=3(DEAUTH) reason=3
+			//
+			// and that DEAUTH had long been attributed to net_server
+			// tearing down its own join. It was ours to fix.
+			//
+			// The SSID goes back unterminated with its length in i_len,
+			// which is the net80211 convention.
+			if (fJoinSsidLength == 0)
+				return B_ERROR;
+			if (request.i_data == NULL
+				|| request.i_len < fJoinSsidLength) {
+				return B_BAD_VALUE;
+			}
+			status_t copyStatus = user_memcpy(request.i_data, fJoinSsid,
+				fJoinSsidLength);
+			if (copyStatus != B_OK)
+				return copyStatus;
+			request.i_len = fJoinSsidLength;
+			dprintf(RTL8814AU_DRIVER_NAME ": IOC_SSID GET: '%s' (%"
+				B_PRIu32 " bytes)\n", fJoinSsid, fJoinSsidLength);
+			// The header has to go back too, or the caller never sees the
+			// length. This dispatcher writes it per-case rather than once
+			// at the end.
 			return user_memcpy(userArgs, &request, sizeof(request));
 		}
 
@@ -3022,6 +3149,24 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	// PMK supplied via IOC_HAIKU_JOIN's rich struct, then program the
 	// derived PTK + GTK directly into the chip's security CAM.
 	if (llc[6] == 0x88 && llc[7] == 0x8E) {
+		// Only intercept EAPOL if we are the ones running the handshake.
+		//
+		// fPmkValid is the discriminator, and it is exactly the right one:
+		// the in-driver path gets its PMK from IOC_HAIKU_JOIN's rich
+		// struct, so without a PMK there is nothing to run a four-way
+		// handshake with. That is the case whenever wpa_supplicant is
+		// driving -- which is every join started from the Deskbar or the
+		// Network preflet, because net_server always defers to the
+		// supplicant.
+		//
+		// Swallowing EAPOL in that case is what made the Deskbar route
+		// impossible: the frames were consumed here and the supplicant,
+		// which had correctly bound an AF_LINK socket for ethertype
+		// 0x888E, waited forever for a handshake it could not see.
+		if (!device->fPmkValid) {
+			// Fall through to the ordinary data path so the frame reaches
+			// the stack and, from there, the supplicant.
+		} else {
 		// EAPOL in the four-way handshake is always unicast to us, and it
 		// only counts if it came from the access point we are joining.
 		// Same reasoning as the management-frame handlers: accepting
@@ -3069,6 +3214,7 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		// is waiting.
 		release_sem_etc(device->fEapolReady, 1, B_DO_NOT_RESCHEDULE);
 		return;
+		}	// end of the in-driver-handshake branch
 	}
 
 	if (ethLen > kRxRingFrameMaxSize) {

@@ -147,6 +147,19 @@ struct rtl_haiku_join_psk {
 #ifndef IEEE80211_MICBUF_SIZE
 #	define IEEE80211_MICBUF_SIZE	8
 #endif
+// Key-index sentinel: wpa_supplicant passes this in ik_keyix for a pairwise
+// key, and 0..3 for a group key slot.  That is the discriminator between the
+// two, since ik_flags does not reliably carry a group bit here.
+#ifndef IEEE80211_KEYIX_NONE
+#	define IEEE80211_KEYIX_NONE	((uint16)-1)
+#endif
+
+// ik_flags bits.
+#define IEEE80211_KEY_XMIT		0x01
+#define IEEE80211_KEY_RECV		0x02
+#define IEEE80211_KEY_GROUP		0x04
+#define IEEE80211_KEY_DEFAULT	0x80
+
 struct ieee80211req_key {
 	uint8	ik_type;	// cipher type (CCMP, TKIP, ...)
 	uint8	ik_pad;

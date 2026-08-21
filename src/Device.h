@@ -266,6 +266,18 @@ private:
 	bool						fPtkValid;
 	uint64						fM1ReplayCounter;	// echoed back in M2
 
+	// Keys handed to us by wpa_supplicant through IOC_WPAKEY.
+	//
+	// _InstallSessionKeys programs the pairwise and group keys together,
+	// because that is how the in-driver handshake produces them -- but
+	// wpa_supplicant installs them in two separate calls, pairwise first.
+	// Hold each until both have arrived, then install.
+	uint8						fSupplicantTk[16];
+	bool						fSupplicantTkValid;
+	uint8						fSupplicantGtk[16];
+	uint8						fSupplicantGtkId;
+	bool						fSupplicantGtkValid;
+
 	// Set true once _InstallSessionKeys has programmed the chip CAM
 	// and flipped kRegSecCfg.  When true, Write() marks outbound data
 	// frames as CCMP-encrypted (Protected=1, secType=AES) so the chip's
