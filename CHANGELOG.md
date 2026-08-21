@@ -1,5 +1,80 @@
 # Changelog
 
+## 0.3.0 — 2026-08-21
+
+**5 GHz works, and so does connecting from the Deskbar.** 0.2.0 could only
+use 2.4 GHz, and only via the bundled `wifi-join` helper.
+
+| | 2.4 GHz | 5 GHz |
+|---|---|---|
+| Transmit | 11-32 Mbit/s | **53.9 Mbit/s** |
+| Receive | 2.4-3.1 Mbit/s | **15.1 Mbit/s** |
+| Packet loss | 0-5% | **0%** at every payload size |
+
+5 GHz is much the better band. Both are verified end to end: association,
+four-way handshake, CCMP keys, DHCP lease, ICMP at every ping size from 56 to
+1472 bytes, and a full SSH session over the air.
+
+### 5 GHz
+
+Three faults in the band switch, found by capturing the vendor Linux driver
+associating to the same 5 GHz network over USB and diffing the register writes.
+
+- **The RFE pinmux path D was only ever written when switching *to* 5 GHz.**
+  After any visit to 5 GHz -- including the 5 GHz leg of an ordinary scan --
+  path D kept the 5 GHz routing and 2.4 GHz went deaf. This is why every scan
+  after the first returned nothing until a reboot.
+- **The 5 GHz pinmux values were wrong**: 0x54775477 on all four paths, where
+  the hardware wants 0x33173317 on paths A, B and C and 0x77177717 on path D.
+  The coex register follows the same pattern.
+- **One bit of the TX path register is band state.** It must be set for
+  2.4 GHz and clear for 5 GHz. Leaving it set made 5 GHz receive perfectly and
+  transmit nothing the access point ever answered.
+
+### Connecting from the Deskbar
+
+The Deskbar network menu, the Network preferences panel and
+`ifconfig join <ssid> <passphrase>` all work now. They share one route:
+`net_server` hands the join to `wpa_supplicant`, which runs the handshake and
+passes the keys to the driver. `wifi-join` still works and still runs the
+handshake inside the driver.
+
+- **The SSID read-back had no handler.** `wpa_supplicant` reads the SSID back
+  the moment it sees an association event; the failure made it conclude the
+  association was not real and tear it down. This single missing ioctl was
+  enough to make the whole route impossible.
+- **The driver consumed every EAPOL frame**, so the supplicant never saw the
+  handshake it was waiting for. It now stands aside when the supplicant is
+  driving.
+- **Key installation was a stub** that logged the supplicant's keys and
+  dropped them.
+
+**A correction.** Earlier releases said the Deskbar could not work because of
+a Haiku kernel bug -- that EAPOL frames were not delivered to userland
+`AF_LINK` packet sockets. That was wrong. Haiku delivers EAPOL correctly, and
+the fault was entirely in this driver. Apologies to the Haiku project for the
+misattribution.
+
+### Also
+
+- A failed join no longer leaves the radio unable to scan.
+- Buffer allocation failure is reported instead of leaving a silently dead
+  receive path.
+
+### Known limitations
+
+- **Receive throughput on 2.4 GHz** is roughly a tenth of transmit. Each
+  bulk-IN buffer stops receiving while its contents are processed and there
+  are only four of them. 5 GHz is much less affected.
+- No transmit rate adaptation; every data frame goes out at a fixed rate.
+- CCMP runs in software rather than on the chip's engine.
+- A-MPDU aggregation is disabled.
+- **Open (unencrypted) networks do not work.** They must go through
+  `net_server`, which tears the association down immediately. This one is not
+  the driver's doing.
+- No WEP, WPA3 or enterprise (802.1X) authentication.
+- Tested on one access point and two adapter models.
+
 ## 0.2.0 — 2026-08-21
 
 **The driver carries traffic.** Previous releases could scan and associate but

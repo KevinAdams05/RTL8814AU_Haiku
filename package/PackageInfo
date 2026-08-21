@@ -1,5 +1,5 @@
 name			rtl8814au
-version			0.2.0-1
+version			0.3.0-1
 architecture	x86_64
 summary			"RTL8814AU USB WiFi driver (unofficial)"
 
@@ -39,8 +39,8 @@ copyrights {
 }
 
 provides {
-	rtl8814au = 0.2.0
-	cmd:wifi_join = 0.2.0
+	rtl8814au = 0.3.0
+	cmd:wifi_join = 0.3.0
 }
 
 requires {

@@ -1,0 +1,132 @@
+rtl8814au (unofficial) 0.3.0 — how to connect
+=============================================
+
+You can connect from the Deskbar network menu, from the Network preferences
+panel, or from Terminal. All of them work. The Terminal route is written out
+below because it is the one that can be scripted and pasted into a bug report.
+
+
+1. Install the driver
+---------------------
+
+    pkgman install rtl8814au-0.3.0-1-x86_64.hpkg
+
+Then REBOOT. This is not optional: packagefs keeps serving the previously
+loaded driver until the machine restarts, so without a reboot you are still
+running whatever was there before (or nothing at all).
+
+After the reboot, check the device exists:
+
+    ls /dev/net/rtl8814au/0
+
+If that is missing, the driver did not attach. Look in the syslog for the
+line "found bulk OUT endpoint" — if it is absent, enumeration failed; if it
+is present but nothing follows, firmware loading is the next suspect.
+
+
+2. Scan, and WAIT
+-----------------
+
+    ifconfig /dev/net/rtl8814au/0 scan
+
+Then wait about 20 seconds before doing anything else.
+
+The scan sweeps 42 channels across both bands and takes roughly 6 seconds,
+and it *empties* the network list before it starts refilling it. Reading the
+results immediately after the command returns gives you nothing, and joining
+immediately after fails because the network you want is not in the list yet.
+This is the single most common way to get a confusing failure.
+
+To see what it found:
+
+    ifconfig /dev/net/rtl8814au/0 list
+
+
+3. Join
+-------
+
+Easiest: click the Deskbar network icon and pick your network. Or use
+Terminal:
+
+    ifconfig /dev/net/rtl8814au/0 join "YourNetworkName" "YourPasswordHere"
+
+Substitute your own SSID and passphrase. Quote both — SSIDs and passphrases
+containing spaces or shell characters will otherwise be mangled.
+
+There is also a bundled helper which does the same job by a different route:
+
+    wifi-join /dev/net/rtl8814au/0 "YourNetworkName" "YourPasswordHere"
+
+The difference is who runs the WPA2 handshake. "ifconfig join" and the Deskbar
+hand it to Haiku's wpa_supplicant; wifi-join has the driver run it internally.
+Both work. If one misbehaves, trying the other is a genuinely useful thing to
+report.
+
+WPA2-PSK with CCMP is what this has been tested against, on both 2.4 and
+5 GHz. Give it a few seconds.
+
+4. Get an address
+-----------------
+
+    ifconfig /dev/net/rtl8814au/0 auto-config
+
+Then confirm:
+
+    ifconfig /dev/net/rtl8814au/0
+
+You want to see an "inet addr:" line with a real address, and the status
+field reading "link auto-configured". If it says "link configuring" and stays
+that way, DHCP is not completing — the association may be up without the
+handshake having finished.
+
+
+Putting it together
+-------------------
+
+    ifconfig /dev/net/rtl8814au/0 scan
+    sleep 20
+    wifi-join /dev/net/rtl8814au/0 "YourNetworkName" "YourPasswordHere"
+    sleep 10
+    ifconfig /dev/net/rtl8814au/0 auto-config
+    ifconfig /dev/net/rtl8814au/0
+
+
+What works, and what does not
+-----------------------------
+
+Works, on both 2.4 GHz and 5 GHz:
+  - WPA2-PSK with CCMP: association, four-way handshake, key installation
+  - DHCP
+  - ICMP at every packet size, and TCP (a full SSH session has been verified)
+  - Connecting from the Deskbar, the Network preflet, ifconfig or wifi-join
+
+Not supported:
+  - Open (unencrypted) networks. These have to go through net_server, which
+    tears the association down again immediately. This is a Haiku-side
+    behaviour, not something the driver is doing.
+  - WEP, WPA3, and enterprise (802.1X) authentication.
+
+Speed, measured against a home router:
+
+                  2.4 GHz        5 GHz
+    sending       11-32 Mbit/s   54 Mbit/s
+    receiving     2-3 Mbit/s     15 Mbit/s
+
+**Prefer 5 GHz if you have it** — it is several times faster in both
+directions here. The low 2.4 GHz receive figure is a known driver limitation
+rather than a problem with your link: there is no transmit rate adaptation
+yet, encryption runs in software rather than on the chip, and frame
+aggregation is disabled.
+
+
+Reporting problems
+------------------
+
+Attach the output of "listdev", the relevant part of /var/log/syslog, and
+what you were doing. Two notes on the syslog: it contains binary data, so use
+"grep -a" or grep will silently misbehave, and it spans reboots, so check you
+are reading the right boot.
+
+    grep -a rtl8814au /var/log/syslog | tail -50
+
+Issues: https://github.com/KevinAdams05/rtl8814au_unofficial
