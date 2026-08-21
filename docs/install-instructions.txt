@@ -94,12 +94,20 @@ Putting it together
 What works, and what does not
 -----------------------------
 
-Works, on both 2.4 GHz and 5 GHz (tested on an ASUS USB-AC68; on an Edimax
-AC1750, 2.4 GHz works and 5 GHz associates but then stops passing traffic):
+Works, on both 2.4 GHz and 5 GHz (tested on an ASUS USB-AC68, and on 2.4 GHz
+with an Edimax AC1750):
   - WPA2-PSK with CCMP: association, four-way handshake, key installation
   - DHCP
   - ICMP at every packet size, and TCP (a full SSH session has been verified)
   - Connecting from the Deskbar, the Network preflet, ifconfig or wifi-join
+
+Known problem, and how to recognise it: on some attempts the interface
+associates and then never gets an address, and the syslog fills with
+"TX wait timed out on pipe 2". The data queue has stalled and the WPA2
+handshake never starts. Retrying the join usually works -- most attempts are
+fine. If you hit it, note that "ifconfig" on the device will hang, so read
+/var/log/syslog rather than trying to query the interface. This is a driver
+bug, not a problem with your network.
 
 Not supported:
   - Open (unencrypted) networks. These have to go through net_server, which

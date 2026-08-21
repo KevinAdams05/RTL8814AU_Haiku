@@ -15,9 +15,11 @@
 >**5 GHz is much the better band**: about 54 Mbit/s sending and 15 receiving,
 >against 11-32 and 2-3 on 2.4 GHz.
 >
->Those results are from an ASUS USB-AC68. On an Edimax AC1750, 2.4 GHz is
->verified to the same standard, but **5 GHz associates and then stalls** —
->the data queue stops draining. That one is open; see the CHANGELOG.
+>Those results are from an ASUS USB-AC68. An Edimax AC1750 reaches the same
+>standard on 2.4 GHz and associates on 5 GHz, but both are subject to an
+>**intermittent stall of the data queue just after association**: most runs
+>are clean, and when it happens the handshake never starts, so you get an
+>association with no address. That one is open; see the CHANGELOG.
 >
 >The main shortfall is receive throughput on 2.4 GHz. Three deliberate
 >simplifications account for most of it — every data frame is sent at a fixed

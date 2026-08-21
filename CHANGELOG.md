@@ -16,8 +16,10 @@ both bands are verified end to end: association, four-way handshake, CCMP
 keys, DHCP lease, ICMP at every ping size from 56 to 1472 bytes, and a full
 SSH session over the air.
 
-On an Edimax AC1750, **2.4 GHz is verified to the same standard** but **5 GHz
-associates and then stalls**: the data queue stops draining. See below.
+On an Edimax AC1750, 2.4 GHz reaches the same standard, and 5 GHz associates.
+Both are subject to an **intermittent stall of the data queue just after
+association** -- most runs are clean, but when it happens the handshake never
+starts. See the known limitations below.
 
 ### 5 GHz
 
@@ -149,11 +151,14 @@ evidence for what you decode out of it.
   `net_server`, which tears the association down immediately. This one is not
   the driver's doing.
 - No WEP, WPA3 or enterprise (802.1X) authentication.
-- **5 GHz on the Edimax AC1750 associates and then stalls.** Bulk transfers on
-  the best-effort data endpoint stop completing and fill every slot
-  (`TX wait timed out on pipe 2` in the syslog). 2.4 GHz on the same adapter
-  and both bands on the ASUS USB-AC68 are unaffected. Not yet root-caused. A
-  side effect worth knowing while it lasts: `ifconfig` on the device hangs
+- **An intermittent stall of the data queue just after association**, on
+  either band. Bulk transfers on the best-effort endpoint stop completing and
+  fill every slot, and the syslog fills with `TX wait timed out on pipe 2`.
+  When it happens the four-way handshake never starts, so the symptom is an
+  association that never gets an address. Most runs are clean. It has only
+  been observed on the Edimax AC1750 so far, and was briefly and wrongly
+  written up as a 5 GHz-specific problem on the strength of single runs. Not
+  yet root-caused. Side effect worth knowing: `ifconfig` on the device hangs
   once this happens, so read the syslog instead.
 - Tested on one access point and two adapter models: ASUS USB-AC68 and Edimax
   AC1750. Both report RF front-end class 1; an adapter of another class is

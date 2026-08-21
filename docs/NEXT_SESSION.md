@@ -10,10 +10,12 @@ Current state at a glance:
 | | ASUS USB-AC68 | Edimax AC1750 |
 |---|---|---|
 | 2.4 GHz | works | works |
-| 5 GHz | works (54/15 Mbit/s) | **associates, then the data queue stalls** |
+| 5 GHz | works (54/15 Mbit/s) | associates; not yet carrying traffic |
 
-The one open failure is 5 GHz on the Edimax -- see section 8. Everything below
-about 2.4 GHz was verified end to end on both adapters:
+**There is one open failure and it affects both bands: an intermittent stall
+of the data queue just after association (section 7).** Most runs are clean,
+which is why it was briefly mistaken for a 5 GHz-only problem. Everything
+below was verified end to end, on runs that did not hit it:
 
 | Test | Result |
 |---|---|
@@ -260,39 +262,58 @@ still a hypothesis.
 Still genuinely Haiku-side: **open (unencrypted) networks** must go through
 net_server, which tears the association down immediately. Not the driver.
 
-### 7. 5 GHz on the Edimax: associates, then the data queue stalls (OPEN)
+### 7. Intermittent: associates, then the data queue stalls (OPEN)
 
-**This is the one open failure.** On an Edimax AC1750, a 5 GHz join now
-associates (`ASSOCIATED to '...-5G' AID=6`) and then the best-effort data
-queue stops draining:
+**This is the one open failure, and it is the most important thing in this
+document.** After a successful association the best-effort data queue
+sometimes stops draining:
 
 ```
 rtl8814au: TX queue 2 full, waiting
 rtl8814au: TX wait timed out on pipe 2
 ```
 
-repeating indefinitely. Bulk OUT transfers on endpoint 0x04 are submitted and
-never complete, so all four slots fill. 2.4 GHz on the same adapter and the
-same build is clean, and both bands on the ASUS are unaffected.
+repeating indefinitely, with no EAPOL exchange at all -- the stall lands
+between `post-assoc RA_INFO: No error` and M1, so the handshake never starts:
 
-Not root-caused. What is known:
+```
+rtl8814au: ASSOCIATED to 'AdamsFamily02' AID=12
+rtl8814au: post-assoc RA_INFO: No error
+rtl8814au: TX queue 2 full, waiting
+rtl8814au: TX wait timed out on pipe 2
+```
 
-- It is **downstream of association**, which now succeeds -- it used to fail
-  earlier, with the AP refusing the assoc request outright, so data TX on
-  5 GHz had never been exercised on this adapter before. It is therefore
-  unknown whether this predates the 2026-08-21 changes.
-- The USB layer is not obviously at fault: the same endpoint carries data
-  fine on 2.4 GHz on this adapter.
+**It is intermittent and it is not band-specific.** It was first seen on a
+5 GHz join and initially written up here as a 5 GHz problem; it then appeared
+on a 2.4 GHz join on a build whose only functional difference was the RA_INFO
+`rate_id`, after several consecutive clean 2.4 GHz runs on either side of it.
+Treat "2.4 GHz works, 5 GHz stalls" as a wrong characterisation that came from
+too few runs -- **the same failure hits both bands, and most runs succeed.**
+
+What is known:
+
+- **The transfers are genuinely outstanding, not leaked.** All four pipe-2
+  slots have `inUse` set with no completions arriving. Both paths that can
+  fail after claiming a slot clear the flag, and no `queue_bulk failed for TX`
+  ever appears, so this is not a slot-accounting bug: the USB bulk OUT
+  submissions on endpoint 0x04 are accepted and never complete.
+- It is **downstream of association and of the post-assoc H2C**, both of which
+  report success.
+- Whether it predates the 2026-08-21 changes is **unknown**. It has only ever
+  been observed on the Edimax, but that is also the only adapter that has been
+  in the machine since the per-pipe logging that makes it legible was added.
 - **`ifconfig` on the device hangs unkillably once this happens.** Read
-  `/var/log/syslog` instead; do not try to get the interface state out of
-  `ifconfig`, and expect an `ssh` running it to hang until it is killed.
+  `/var/log/syslog` instead, and expect an `ssh` that runs `ifconfig` to hang
+  until it is killed.
 
-Suggested starting points, cheapest first: whether the chip's TX report or
-queue-status registers show the BE queue backed up (frames accepted but not
-drained implies no free TX pages or a halted scheduler); whether the 5 GHz
-data rate (`kRateOFDM24`) is at fault, by forcing `_LowestBasicRate()` for
-data frames temporarily; and a vendor capture of a 5 GHz session on this
-adapter, diffed the same way the RTS bug was found.
+**Before anything else, get a failure rate.** Run `deploy-test.sh` in a loop
+and count; every conclusion in this section rests on single runs, which is
+exactly how it got mischaracterised the first time. Then, cheapest first:
+whether the chip's TX report or queue-status registers show the BE queue
+backed up (accepted but not drained implies no free TX pages or a halted
+scheduler); whether cancelling and resubmitting the stuck transfers recovers
+it, which would separate a chip stall from a USB-stack one; and a vendor
+capture across the same window, diffed the way the RTS bug was found.
 
 ### 8. Loose ends
 
