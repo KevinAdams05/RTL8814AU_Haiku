@@ -57,6 +57,8 @@ RTL8814AURxPath::RTL8814AURxPath(RTL8814AURegisterIO* registerIO,
 	fTransfersCompleted(0),
 	fFramesReceived(0),
 	fFramesDropped(0),
+	fDropsFromWalk(0),
+	fDropsFromIcv(0),
 	fCrcErrors(0),
 	fInitStatus(B_NO_INIT)
 {
@@ -309,7 +311,9 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 	// padded transfer can be walked one descriptor too far.  That is the
 	// source of the remaining "frame extends beyond transfer" messages.
 	// See docs/NEXT_SESSION.md.
+	uint32 frameIndex = 0;
 	while (offset + kRxDescSize <= length) {
+		frameIndex++;
 		// Parse the RX descriptor at the current position
 		RxFrameInfo info;
 		_ParseDescriptor(data + offset, &info);
@@ -342,6 +346,25 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 		uint32 payloadOffset = offset + headerSize;
 		uint32 payloadLength = info.packetLength;
 
+		// The length to advance by is NOT the length we deliver.
+		//
+		// _ParseDescriptor strips the 4-byte FCS from info.packetLength,
+		// which is right for handing the frame to the stack and wrong for
+		// walking to the next one: the chip laid the aggregate out using the
+		// full on-air length. The reference driver computes its pkt_offset
+		// from the raw pkt_len and only subtracts the FCS afterwards.
+		//
+		// Using the stripped length lost 4 bytes and then, because the result
+		// is rounded up to 8, usually landed a whole 8 bytes early -- for a
+		// real frame with pkt_len 345 and a 32-byte PHY block,
+		// aligned(24+32+341) is 400 where aligned(24+32+345) is 408. The next
+		// descriptor read then landed inside the previous frame's payload,
+		// produced a nonsense length, failed the bounds check, and the walk
+		// abandoned every remaining frame in the transfer. That was the whole
+		// of the driver's ~5% receive loss.
+		uint32 rawPacketLength = (dword0 & kRxDescPktLen_Mask)
+			>> kRxDescPktLen_Shift;
+
 		// The shift field indicates additional bytes to skip before payload
 		uint32 shift = (dword0 & kRxDescShift_Mask) >> kRxDescShift_Shift;
 		payloadOffset += shift;
@@ -366,11 +389,19 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 		// this now means a real misalignment rather than padding, so it is
 		// still worth counting and reporting.
 		if (payloadOffset + payloadLength > length) {
-			dprintf(RTL8814AU_DRIVER_NAME ": RX frame extends beyond "
-				"transfer (offset %" B_PRIu32 ", payload %" B_PRIu32
-				", transfer %" B_PRIu32 ")\n",
-				payloadOffset, payloadLength, length);
+			// Report where in the transfer this happened.  A bail on the
+			// first frame means the transfer itself was malformed; a bail on
+			// a later one with few bytes left is the walk running into the
+			// padding after the final frame, and every frame still ahead of
+			// it is abandoned by the break below without being counted.
+			dprintf(RTL8814AU_DRIVER_NAME ": RX bail frame#%" B_PRIu32
+				" descOffset %" B_PRIu32 " payload %" B_PRIu32
+				" transfer %" B_PRIu32 " remaining %" B_PRIu32
+				" drvinfo %" B_PRIu32 " shift %" B_PRIu32 "\n",
+				frameIndex, offset, payloadLength, length,
+				length - offset, drvInfoSize, shift);
 			fFramesDropped++;
+			fDropsFromWalk++;
 			break;
 		}
 
@@ -386,6 +417,7 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 			// Skip CRC-errored frames — don't deliver to stack
 		} else if (info.icvError) {
 			fFramesDropped++;
+			fDropsFromIcv++;
 			// ICV error = decryption failure — drop
 		} else if (payloadLength > 0 && fFrameCallback != NULL) {
 			// Deliver the valid frame to the registered callback
@@ -411,7 +443,7 @@ RTL8814AURxPath::_ProcessTransfer(const uint8* data, uint32 length)
 		// usually tripped the bounds check on the way out.  Broadcast
 		// traffic tends to arrive alone in a transfer and so came through,
 		// which is why receive looked like it worked.
-		uint32 totalFrameSize = headerSize + shift + payloadLength;
+		uint32 totalFrameSize = headerSize + shift + rawPacketLength;
 		uint32 aligned = (totalFrameSize + kRxAggregationAlign - 1)
 			& ~(kRxAggregationAlign - 1);
 		offset += aligned;
@@ -477,10 +509,14 @@ RTL8814AURxPath::_RxCallback(void* cookie, status_t status, void* data,
 	// panic.  Log first 8 to confirm RX comes alive at boot, then
 	// only every 4096 (~every 18 sec) as a heartbeat.
 	if (rxPath->fTransfersCompleted <= 8
-		|| (rxPath->fTransfersCompleted & 4095) == 0) {
-		dprintf(RTL8814AU_DRIVER_NAME ": RX cb #%" B_PRIu32 " status=%s len=%" B_PRIuSIZE " frames=%" B_PRIu32 " crc=%" B_PRIu32 " drop=%" B_PRIu32 "\n",
+		|| (rxPath->fTransfersCompleted & 511) == 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": RX cb #%" B_PRIu32 " status=%s len=%"
+			B_PRIuSIZE " frames=%" B_PRIu32 " crc=%" B_PRIu32 " drop=%"
+			B_PRIu32 " (walk=%" B_PRIu32 " icv=%" B_PRIu32 ")\n",
 			rxPath->fTransfersCompleted, strerror(status), actualLength,
-			rxPath->fFramesReceived, rxPath->fCrcErrors, rxPath->fFramesDropped);
+			rxPath->fFramesReceived, rxPath->fCrcErrors,
+			rxPath->fFramesDropped, rxPath->fDropsFromWalk,
+			rxPath->fDropsFromIcv);
 	}
 
 	// If the transfer was canceled or the device removed, don't re-submit

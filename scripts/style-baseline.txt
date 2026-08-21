@@ -6,14 +6,14 @@
 #
 # Format: <path>\t<rule>\t<line>
 #
-# 165 finding(s) by rule:
+# 163 finding(s) by rule:
 #     68  abbreviated-name
-#     31  line-over-target
+#     30  line-over-target
 #     19  non-ascii-str
 #     18  same-line-body
 #      7  goto-used
 #      7  implicit-bitmask
-#      7  line-too-long
+#      6  line-too-long
 #      3  const-k-prefix
 #      2  dprintf-prefix
 #      1  header-guard
@@ -117,12 +117,10 @@ src/PhyConfig.cpp	same-line-body	792
 src/RegisterIO.cpp	non-ascii-str	238
 src/RegisterIO.cpp	non-ascii-str	260
 src/RxPath.cpp	line-over-target	13
-src/RxPath.cpp	non-ascii-str	76
-src/RxPath.cpp	non-ascii-str	123
-src/RxPath.cpp	line-too-long	394
-src/RxPath.cpp	line-over-target	449
-src/RxPath.cpp	line-too-long	481
-src/RxPath.cpp	line-over-target	483
+src/RxPath.cpp	non-ascii-str	78
+src/RxPath.cpp	non-ascii-str	125
+src/RxPath.cpp	line-too-long	426
+src/RxPath.cpp	line-over-target	481
 src/TxPath.h	line-over-target	47
 src/WPA2Crypto.cpp	abbreviated-name	30
 src/WPA2Crypto.cpp	same-line-body	62

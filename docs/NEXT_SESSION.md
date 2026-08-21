@@ -40,87 +40,68 @@ handshake could complete and DHCP still fail.
 
 ## What to do next, in rough priority order
 
-### 1. Throughput — the bottleneck is RECEIVE, and it is one bug away
+### 1. Receive: loss is fixed, throughput is the remaining problem
 
-Measuring each direction separately is what made this tractable:
+| | Loss | Transmit | Receive |
+|---|---|---|---|
+| Start of the investigation | 5-20% | 9-27 Mbit/s | 1.0 Mbit/s |
+| Now | **0%** | 19 Mbit/s | 1.2 Mbit/s |
 
-| Direction | Throughput |
-|---|---|
-| shredder -> desktop (**transmit**) | **15-32 Mbit/s** |
-| desktop -> shredder (**receive**) | **3.5-4.6 Mbit/s** |
+**Packet loss is gone**, verified at 0% across three runs of twenty pings, with
+the driver's own drop counters reading `drop=0 (walk=0 icv=0)` and CRC errors
+at zero. That was the usability problem: a link shedding one packet in ten
+stalls page loads and hiccups SSH sessions regardless of its bandwidth.
 
-Receive started the session at 1.0 Mbit/s. Two register fixes doubled it
-twice: the aggregation threshold (below) and the retry limit. Transmit was
-never the problem.
+Getting there ruled out two suspects and found one real bug:
 
-So the transmit path -- the thing that took all of 2026-08-20 to fix -- now
-performs acceptably, and **receive is the whole problem.** That inverted the
-expectation completely: the assumption had been that missing rate adaptation
-and software CCMP encrypt were the limit, and they are not.
+- **Not RF.** CRC errors run at 1 in 7000 frames. Link margin and rate are
+  fine, so the fixed OFDM 24 Mbps data rate is not the problem and a rate
+  sweep is unnecessary.
+- **Not the ICV check.** Splitting the drop counter by reason showed
+  `icv=0` throughout. The concern that the chip might flag ICV errors
+  spuriously while we decrypt in software was unfounded.
+- **The aggregation walk advanced 4 bytes short, which rounding turned into
+  8.** `_ParseDescriptor` strips the 4-byte FCS from `packetLength`, which is
+  right for delivering a frame and wrong for finding the next one: the chip
+  laid the aggregate out using the full on-air length. Because the per-frame
+  offset is then rounded up to 8, losing 4 usually landed a whole 8 bytes
+  early. For a real frame with `pkt_len` 345 and a 32-byte PHY block,
+  `aligned(24+32+341)` is 400 where `aligned(24+32+345)` is 408 -- and 400 was
+  exactly what the logs showed. The next descriptor read landed inside the
+  previous frame's payload, produced a nonsense length, failed the bounds
+  check, and the walk then abandoned **every remaining frame in the
+  transfer** while counting only one drop. That under-counting is why 1.2%
+  of bails produced 5-20% of loss.
 
-**What was found.** `REG_RXDMA_AGG_PG_TH` (0x0280) holds the page threshold in
-byte 0 and the timeout in byte 1. It was set to `0x0520` -- threshold 0x20,
-timeout 0x05, the two values transposed. A 160 us timer against a 32-page
-threshold means the timer always wins, so the chip shipped a nearly-empty
-transfer every 160 us and RX aggregation was in effect off. The vendor writes
-`0x2005`: five pages, with the longer timeout as a backstop rather than the
-trigger. Correcting it doubled receive throughput, 1 -> 2 Mbit/s. A second,
-dead writer in `_EnableDMA` setting yet another value was removed --
-`_InitRxAggregation` ran after it and always won.
+  The reference computes its `pkt_offset` from the raw `pkt_len` and only
+  subtracts the FCS afterwards. Now so do we.
 
-**The retry limit was never programmed.** `REG_RETRY_LIMIT` (0x042A) holds the
-short and long retry counts -- how many times the MAC retransmits an
-unacknowledged frame before giving up. The constant was declared and never
-written, so the chip kept its power-on default and frames that missed their
-first acknowledgement were simply dropped. Writing the vendor's 0x3030 (48
-each way) took receive from 2.0 to 3.5-4.6 Mbit/s, measured over three runs.
+**How it was found**, because the technique generalises: dump the raw
+descriptor bytes at the failing offset alongside the first descriptor of the
+transfer. Frame 1's `dword0` pattern reappeared exactly 8 bytes into where we
+had looked, in three independent samples. That turns "the walk is misaligned
+somewhere" into "the advance is 8 bytes short", which is a solvable problem.
 
-**What is left.** Receive is still roughly a tenth of transmit, and ICMP loss
-sits at 5-20% and did not change when retries were enabled. Two contributing
-pieces of the aggregation walk are fixed:
+**What is left: receive throughput, now unmasked.** Eliminating the loss
+revealed a second ceiling that the loss had been hiding -- receive sits at
+1.2 Mbit/s against 19 for transmit. Note this is *lower* than the 3.5-4.6
+Mbit/s measured while frames were still being dropped, which makes sense: the
+walk now delivers every frame in a transfer instead of abandoning most of
+them, so the per-frame cost of the receive path is fully exposed for the first
+time.
 
-- The walk took `drvinfo_sz` as a hardcoded 32 whenever the PHY-status bit was
-  set. The reference takes it from the descriptor, and now so do we. A
-  single-frame transfer cannot detect the difference, which is why this
-  survived for as long as aggregation was off.
-- The per-frame offset is `kRxDescSize + drvinfo_sz + shift + packetLength`
-  rounded up to 8, matching the reference's `_RND8`.
+Software CCMP is **not** the suspect: transmit does software AES encrypt at
+19-32 Mbit/s, so the cipher is not a 1 Mbit/s bottleneck. The structural
+candidates, in order:
 
-- `drvinfo_sz` is taken from the descriptor when it reports a size, falling
-  back to 32 only when it reports zero. Both extremes were measured: trusting
-  the descriptor unconditionally roughly doubled the misalignment rate,
-  because on this chip the field frequently reads 0 while a 32-byte PHY status
-  block is present, and following the reference literally under-advances by
-  exactly that much.
-- A packet length of zero now terminates the walk cleanly, as the reference
-  does, instead of being parsed as a frame.
-
-What remains is that **the loop is still bounded only by bytes remaining**, so
-a transfer padded past its final frame can be walked one descriptor too far.
-That accounts for 45-70 bail events per 4 MB transfer -- about 1.5% of frames,
-so it is real but too small to explain the 5-20% loss or the receive shortfall
-on its own. The loss is the thing to chase next, and its direction has not
-been established: it could be our transmitted acknowledgements failing rather
-than received frames being dropped.
-
-**Do not fix that by reading the chip's aggregate frame count.** It lives in
-the first descriptor at byte 12, bits 16-23, and the reference does read it --
-but the reference's own definition is annotated *"Check if it exist anymore"*,
-and on this chip it does not: bounding the walk by it dropped receive from
-2 Mbit/s to effectively zero, because it under-reports and the walk then
-abandons real frames. Tried, measured, reverted.
-
-Better next steps: work out how the chip actually signals the end of the
-aggregate — a zero packet length in the trailing descriptor is the obvious
-candidate, and the reference does check `pkt_len <= 0` and bail — or take a
-usbmon RX capture of the vendor driver and see exactly how it terminates.
-
-**Measure properly before changing anything.** A single 4 MB `scp` has enough
-variance to invent results: transmit measured 9, 17, 28, 32 and 15 Mbit/s
-across the session on builds that differed in nothing relevant. Take at least
-three samples, and beware integer division in the reporting -- 16079 ms for
-4 MB is 1.99 Mbit/s, which prints as "1" and looks like a regression from
-"2". That cost real confusion this session.
+1. **The RX ring holds 64 slots and silently drops the oldest when full**
+   (`Device.cpp`, the enqueue path) -- those drops are not counted anywhere.
+   Add a counter first; if it is non-zero under load, the ring is the ceiling.
+2. **`Read()` returns one frame per call**, and both it and the RX enqueue
+   take the device-wide `fLock`, which transmit also takes. Contention on a
+   single mutex across the whole driver is a plausible cap.
+3. Per-frame work in the enqueue path: an 802.11-to-ethernet rebuild with two
+   `memcpy` calls into the ring slot, under that lock.
 
 ### 2. Throughput, after that
 

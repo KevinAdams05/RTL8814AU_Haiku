@@ -156,6 +156,11 @@ private:
 	uint32						fTransfersCompleted;
 	uint32						fFramesReceived;
 	uint32						fFramesDropped;
+	// Split by reason, so the two are distinguishable in the log.  A drop
+	// rate of ~5% was visible in the aggregate long before it was clear
+	// whether the aggregation walk or the ICV check was responsible.
+	uint32						fDropsFromWalk;
+	uint32						fDropsFromIcv;
 	uint32						fCrcErrors;
 
 	status_t					fInitStatus;
