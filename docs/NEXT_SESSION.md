@@ -164,7 +164,68 @@ violation and the fix stands on its own, but an access point's duplicate
 filtering was evidently not what was costing bandwidth. The constants remain
 for anyone who wants the hardware path instead.
 
-### 5. 5 GHz association
+### 5. 5 GHz association — tested 2026-08-21, and the band switch is the problem
+
+It was attempted for the first time and it does not work. The failure is
+specific and the diagnosis is coherent, so this is a real starting point
+rather than an open question.
+
+**What works.** `AdamsFamily02-5G` appears in the scan on channel 149 at
+signal 86. `_DoJoin` resolves it, `SetChannel(149)` reports
+`band 5 GHz (band switch)`, the band switch runs (`switching band to 5 GHz`,
+`reloading AGC tables for 5 GHz`), MSR stays 0x02, and the authentication
+request goes out at `rate=0x04` -- OFDM 6 Mbps, which is correct for 5 GHz
+where CCK does not exist. **Receive works too**: beacons pour in, 14456 of
+them, with 862 from the target access point specifically.
+
+**What does not.** `auth(11)=0`. The access point never answers. We hear its
+beacons and it does not hear our authentication request, so **5 GHz transmit
+is not reaching the air** even though 5 GHz receive is fine.
+
+**And switching back leaves the radio deaf.** After the failed 5 GHz attempt,
+every subsequent scan returned **zero** networks across all 42 channels --
+`IOC_SCAN_RESULTS retlen=0`, no `BSS +` lines at all -- and stayed that way
+until a reboot, which restored it immediately (22 networks). Note this is not
+the "connected" guard in `_ScanSweep` refusing to hop: that logs
+`scan-sweep: connected, staying on channel` and it never appeared. The sweep
+genuinely ran and heard nothing.
+
+**The single explanation that covers all of it: the 2.4 <-> 5 GHz band switch
+is incomplete in both directions.** It does enough to receive on 5 GHz but not
+to transmit, and coming back to 2.4 GHz leaves the PHY in a state where the
+radio hears nothing until full PHY initialisation runs again at boot.
+
+Where to look, from `phy-channel-and-band.md`:
+
+- **RFE pinmux.** rfe_type 20 wants `0x77777777` for 2.4 GHz (path D
+  untouched) and `0x54775477` for 5 GHz across all four paths, plus
+  `0x1ABC[27:20]` 0x77 vs 0x54. A runtime readback during earlier work showed
+  `0x77777777` when 5 GHz was expected, so this is the first thing to verify
+  on both transitions.
+- **TX power.** The EFUSE layout puts the 5 GHz base 14 bytes at offset +18
+  within each 42-byte path block. Confirm `_SetTxPower` is re-applied *after*
+  the band switch, not before, and that the 5 GHz indices are the ones being
+  read.
+- **`fc_area` (0x0860) and `RF_MOD_AG` band bits.** RF register 0x18 should
+  read `0x53195` on channel 149 against `0x13124` on channel 36; check what it
+  actually reads after the switch.
+
+**Reproducer**, and note the reboot is not optional -- the wedged radio
+survives everything short of it:
+
+    (reboot first)
+    ifconfig /dev/net/rtl8814au/0 scan
+    sleep 22
+    ifconfig /dev/net/rtl8814au/0 list          # confirm the 5 GHz SSID is there
+    wifi-join /dev/net/rtl8814au/0 <5GHz-SSID> <passphrase>
+    grep -a rtl8814au /var/log/syslog | tail -20
+
+**Worth fixing regardless of 5 GHz:** a failed join should not leave the radio
+unable to scan. Whatever the band-switch fault turns out to be, `_DoJoin`
+failing partway needs to restore the PHY to a known state rather than leaving
+it wherever it got to.
+
+### 5b. 5 GHz association (original notes)
 
 Receive works and has since 2026-08-19, but association on 5 GHz has never
 been attempted. `AdamsFamily02-5G` is on channel 149 and measured *stronger*
