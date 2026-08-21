@@ -255,6 +255,42 @@ RTL8814AUPhyConfig::SetChannel(uint8 channel, ChannelBandwidth bandwidth)
 	fCurrentBandwidth = bandwidth;
 	fCurrentBand = newBand;
 
+	// Read back the registers that decide whether this band can actually
+	// transmit and receive, so a band switch can be checked rather than
+	// assumed.  5 GHz receive works and 5 GHz transmit does not, and the
+	// difference has to be visible in one of these.
+	//
+	// RF register 0x18 carries the channel number together with a
+	// band-select code, so it is the one value that proves the RF chain
+	// agrees with the MAC about where it is: expect roughly 0x13124 on
+	// channel 36 and 0x53195 on channel 149, all-zero in the upper digits
+	// across 2.4 GHz.  The RFE pinmux is the antenna routing -- rfe_type 20
+	// wants 0x77777777 for 2.4 GHz and 0x54775477 for 5 GHz -- and TX power
+	// is included because a correct-looking chain that transmits at zero
+	// power looks exactly like a chain that does not transmit at all.
+	if (bandChanged || newBand == kBand5GHz) {
+		dprintf(RTL8814AU_DRIVER_NAME ": [band %s ch%u] "
+			"RFE A=0x%08x B=0x%08x C=0x%08x D=0x%08x fc_area=0x%08x\n",
+			newBand == kBand5GHz ? "5G" : "2.4G", channel,
+			(unsigned)fRegisterIO->Read32(kRegBBRfePinmux0),
+			(unsigned)fRegisterIO->Read32(kRegBBRfePinmuxPathB),
+			(unsigned)fRegisterIO->Read32(kRegBBRfePinmuxPathC),
+			(unsigned)fRegisterIO->Read32(kRegBBRfePinmuxPathD),
+			(unsigned)fRegisterIO->Read32(kRegBBFcArea));
+		dprintf(RTL8814AU_DRIVER_NAME ": [band %s ch%u] "
+			"RF0x18 A=0x%05x B=0x%05x C=0x%05x D=0x%05x  "
+			"txpwr A=%u B=%u C=%u D=%u\n",
+			newBand == kBand5GHz ? "5G" : "2.4G", channel,
+			(unsigned)_ReadRF(0, kRfRegChannelStandalone),
+			(unsigned)_ReadRF(1, kRfRegChannelStandalone),
+			(unsigned)_ReadRF(2, kRfRegChannelStandalone),
+			(unsigned)_ReadRF(3, kRfRegChannelStandalone),
+			(unsigned)_GetTxPowerIndex(0, channel),
+			(unsigned)_GetTxPowerIndex(1, channel),
+			(unsigned)_GetTxPowerIndex(2, channel),
+			(unsigned)_GetTxPowerIndex(3, channel));
+	}
+
 	return B_OK;
 }
 
@@ -375,8 +411,20 @@ RTL8814AUPhyConfig::_SetRfePinmux(ChannelBand band)
 	fRegisterIO->Write32(kRegBBRfePinmuxPathB, pinmux);
 	fRegisterIO->Write32(kRegBBRfePinmuxPathC, pinmux);
 
-	if (is5GHz)
-		fRegisterIO->Write32(kRegBBRfePinmuxPathD, pinmux);
+	// Path D is written on **both** transitions.
+	//
+	// It used to be written only when switching to 5 GHz, on the reading
+	// that 2.4 GHz leaves path D untouched.  That holds only for a radio
+	// that has never been to 5 GHz: once it has, path D keeps the 5 GHz
+	// routing for good, and a readback on 2.4 GHz channel 1 showed exactly
+	// that -- A, B and C at 0x77777777 with D still at 0x54775477.
+	//
+	// The consequence was worse than a wrong register. After any 5 GHz
+	// excursion, including a failed join, 2.4 GHz reception was dead: scans
+	// swept all 42 channels and heard nothing at all, and only a reboot
+	// fixed it, because only a reboot re-ran the PHY init that sets path D
+	// correctly in the first place.
+	fRegisterIO->Write32(kRegBBRfePinmuxPathD, pinmux);
 
 	fRegisterIO->MaskedWrite32(kRegBBRfePinmuxCoex, kBBRfePinmuxCoexMask,
 		is5GHz ? kRfePinmuxCoex5GHz : kRfePinmuxCoex2_4GHz);
