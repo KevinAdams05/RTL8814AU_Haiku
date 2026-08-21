@@ -275,6 +275,55 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 
 	locker.Unlock();
 
+	// One-shot descriptor dump per pipe, for byte-level comparison against a
+	// usbmon capture of the vendor driver. The descriptor is the whole
+	// interface to the chip's transmit engine, so a field-by-field diff
+	// against a known-good frame settles questions that no amount of reading
+	// our own code can.
+	{
+		static uint32 sDumped[kBulkOutEndpointCount] = {};
+		if (pipeIndex < kBulkOutEndpointCount && sDumped[pipeIndex] < 1) {
+			sDumped[pipeIndex]++;
+			const uint32* words
+				= reinterpret_cast<const uint32*>(transfer->buffer);
+			dprintf(RTL8814AU_DRIVER_NAME ": TXDESC pipe=%" B_PRIu32
+				" q=%d len=%" B_PRIu32 "\n"
+				"  dw 0=%08x 1=%08x 2=%08x 3=%08x 4=%08x\n"
+				"  dw 5=%08x 6=%08x 7=%08x 8=%08x 9=%08x\n",
+				pipeIndex, (int)queueSelect, totalLength,
+				(unsigned)words[0], (unsigned)words[1], (unsigned)words[2],
+				(unsigned)words[3], (unsigned)words[4], (unsigned)words[5],
+				(unsigned)words[6], (unsigned)words[7], (unsigned)words[8],
+				(unsigned)words[9]);
+			const uint8* frame = transfer->buffer + kTxDescSize
+				+ packetOffset * 8;
+			dprintf(RTL8814AU_DRIVER_NAME ": TXDESC hdr "
+				"%02x %02x %02x %02x  %02x%02x%02x%02x%02x%02x "
+				"%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x "
+				"%02x %02x\n",
+				frame[0], frame[1], frame[2], frame[3],
+				frame[4], frame[5], frame[6], frame[7], frame[8], frame[9],
+				frame[10], frame[11], frame[12], frame[13], frame[14],
+				frame[15], frame[16], frame[17], frame[18], frame[19],
+				frame[20], frame[21], frame[22], frame[23]);
+		}
+	}
+
+	// Per-pipe submission trace. Paired with the per-pipe completion trace
+	// in _TxCallback, this separates "the frame was never submitted on this
+	// pipe" from "it was submitted and never came back" -- the two have
+	// completely different causes and the same symptom.
+	{
+		static uint32 sSubmitted[kBulkOutEndpointCount] = {};
+		if (pipeIndex < kBulkOutEndpointCount
+			&& sSubmitted[pipeIndex] < 8) {
+			sSubmitted[pipeIndex]++;
+			dprintf(RTL8814AU_DRIVER_NAME ": TX submit pipe=%" B_PRIu32
+				" queue=%d len=%" B_PRIu32 " rate=0x%02x\n",
+				pipeIndex, (int)queueSelect, totalLength, dataRate);
+		}
+	}
+
 	// Submit the USB bulk OUT transfer
 	status_t status = fUSBModule->queue_bulk(fBulkOut[pipeIndex],
 		transfer->buffer, totalLength, _TxCallback, transfer);
@@ -577,7 +626,19 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 		effectiveMacID = 1;
 	}
 
-	uint32 rateID = 8;	// chip's default rate set, OFDM 6-54 Mbps
+	// RATE_ID selects which of the MAC's rate sets this frame belongs to.
+	//
+	// This was 8, commented as "the chip's default rate set, OFDM 6-54
+	// Mbps". Value 8 is RATEID_IDX_B in the reference driver's enum: the
+	// 802.11b CCK-only set, very nearly the opposite of what the comment
+	// claimed. It happened to be consistent for the CCK frames this driver
+	// sends at the lowest basic rate, and inconsistent for every OFDM data
+	// frame, which asked the MAC for an OFDM rate out of a CCK-only set.
+	//
+	// 12 is RATEID_IDX_MIX2, the mixed set, and is what the vendor driver
+	// puts on its data frames on this chip -- confirmed by decoding the
+	// descriptors in a usbmon capture rather than by reading its source.
+	uint32 rateID = 12;	// RATEID_IDX_MIX2 — mixed CCK/OFDM/HT rate set
 
 	// DWORD 1: MACID, queue select, rate ID, security type, and the
 	// padding gap between descriptor and frame in units of 8 bytes.
@@ -638,21 +699,28 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 	// USE_RATE (bit 8) tells the chip to use the rate in dword 4 rather than
 	// waiting for a rate-adaptation hint.
 	uint32 dword3 = (1 << 8);	// USE_RATE
-	if (isData) {
-		// Virtual carrier sense.  The vendor driver protects data frames
-		// with RTS/CTS and leaves management unprotected, which is what the
-		// usbmon capture of a working handshake on this chip shows.
-		dword3 |= kTxDescRtsEnable;
-	}
+
+	// No RTS/CTS, on any frame.
+	//
+	// Data frames used to set RTS_ENABLE here, RTS_RATE in dword 4 and
+	// RTS_SHORT in dword 5, on the stated grounds that "the vendor driver
+	// protects data frames with RTS/CTS ... which is what the usbmon capture
+	// of a working handshake on this chip shows". Going back to that same
+	// capture and decoding the descriptors: the vendor sets RTS_ENABLE on
+	// none of its data frames, at any size from 64 to 1528 bytes. The claim
+	// was simply wrong.
+	//
+	// It was not harmless. With RTS_ENABLE the MAC must win an RTS/CTS
+	// exchange before it will transmit the frame at all, so a missing CTS
+	// means the frame is dropped inside the chip -- the USB write completes,
+	// the transmit counter increments, and nothing reaches the air. That is
+	// an unusually hard failure to attribute, and whether the exchange
+	// succeeds depends on antenna wiring and transmit power, which is why it
+	// passed on one adapter and stalled the four-way handshake on another.
 
 	// DWORD 4: transmit rate, and the retry limit for management frames.
 	// DATA_SHORT is NOT here — see dword 5.
 	uint32 dword4 = (dataRate & kTxDescDataRate_Mask);
-	if (isData) {
-		// RTS at OFDM 24 Mbps, matching the vendor driver.
-		dword4 |= ((uint32)kRateOFDM24 << kTxDescRtsRate_Shift)
-			& kTxDescRtsRate_Mask;
-	}
 	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
 		// The reference gives management frames an explicit retry limit and
 		// leaves fallback alone.  We used to set DISABLE_FB and NAV_USE_HDR
@@ -666,8 +734,6 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 	uint32 dword5 = 0;
 	if (dataRate <= kRateCCK11)
 		dword5 |= kTxDescDataShort;
-	if (isData)
-		dword5 |= kTxDescRtsShort;
 
 	// DWORD 6: SW_DEFINE.  Bit 0 is the firmware's "the driver picked the
 	// rate" flag and pairs with USE_RATE, which we always set.
@@ -812,12 +878,19 @@ RTL8814AUTxPath::_TxCallback(void* cookie, status_t status, void* data,
 	// truncated frame it can never put on the air, which is one explanation
 	// for large frames vanishing while small ones get through.
 	{
-		static uint32 sLogged = 0;
+		// Budget the logging PER PIPE, not globally. A single global counter
+		// is spent entirely on the firmware download -- which all goes to
+		// pipe 0 -- so every later completion on the data pipes is invisible,
+		// and "no log line for pipe 2" reads as "pipe 2 failed" when it
+		// actually means "we never looked". That cost real debugging time.
+		static uint32 sLogged[kBulkOutEndpointCount] = {};
 		bool bad = status != B_OK
 			|| actualLength != (size_t)transfer->submitLength;
-		if (bad || sLogged < 12) {
+		const uint32 pipe = transfer->pipeIndex < kBulkOutEndpointCount
+			? transfer->pipeIndex : 0;
+		if (bad || sLogged[pipe] < 8) {
 			if (!bad)
-				sLogged++;
+				sLogged[pipe]++;
 			dprintf(RTL8814AU_DRIVER_NAME ": TX done pipe=%" B_PRIu32
 				" status=%s actual=%" B_PRIuSIZE "/%" B_PRIu32 "%s\n",
 				transfer->pipeIndex, strerror(status), actualLength,

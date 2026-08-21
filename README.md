@@ -15,6 +15,10 @@
 >**5 GHz is much the better band**: about 54 Mbit/s sending and 15 receiving,
 >against 11-32 and 2-3 on 2.4 GHz.
 >
+>Those results are from an ASUS USB-AC68. On an Edimax AC1750, 2.4 GHz is
+>verified to the same standard, but **5 GHz associates and then stalls** —
+>the data queue stops draining. That one is open; see the CHANGELOG.
+>
 >The main shortfall is receive throughput on 2.4 GHz. Three deliberate
 >simplifications account for most of it — every data frame is sent at a fixed
 >rate with no rate adaptation, CCMP runs in software rather than on the chip's

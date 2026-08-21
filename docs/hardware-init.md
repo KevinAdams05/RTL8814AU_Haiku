@@ -52,8 +52,14 @@ decoded map):
 
 | Offset | Field | Use |
 |---|---|---|
-| 0x00E | antenna config | bitmask of which RF paths are wired (this hardware = `12` = paths C+D) |
-| 0x010 | RFE type | board variant index, drives RFE pinmux choice |
+| 0x0C1 | board option | RF board option byte |
+| 0x0C9 | antenna config | bitmask of which RF paths are wired |
+| 0x0CA | RFE type | board class; drives the RFE pinmux choice. Mask with `0x7F` — the top bit is a flag |
+
+These were previously read from `0x00E` and `0x010`, offsets belonging to a
+different chip's map. Both returned unrelated bytes (`12` and `20`), and the
+board-class decisions built on them were reasoning about noise. Read from the
+correct offsets, both adapters tested report RFE type **1**.
 | 0x100 | thermal calibration | currently unused |
 | 0x0D8..0x0DD | MAC address | per-device, e.g. `2c:4d:54:cb:6c:fd` |
 

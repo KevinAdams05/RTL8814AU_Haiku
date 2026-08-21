@@ -667,6 +667,42 @@ static const uint32 kRfePinmux5GHzPathD		= 0x77177717;
 // The coex register's [27:20] follows the same pattern: 0x77 for 2.4 GHz,
 // and 0x33 for 5 GHz where this used to say 0x54.
 static const uint32 kRfePinmuxCoex2_4GHz	= 0x07700000;	// [27:20] = 0x77
+// RFE pinmux values per RF front-end class (EFUSE 0xCA & 0x7F).
+//
+// This is the chip's own mechanism for coping with different board wiring,
+// and the reason a single hardcoded set of values is not portable: an adapter
+// of a different class wants different routing through the same registers.
+// The values below are the classes the vendor driver distinguishes for this
+// chip. Both adapters tested here report class 1.
+//
+// Class 0 and the fallback share one set; class 2 has its own. An adapter
+// reporting anything else is genuinely unknown to us -- see _SetRfePinmux,
+// which warns rather than silently applying another class's routing.
+struct RfePinmuxClass {
+	uint8	rfeType;
+	uint32	value2_4GHz;		// paths A, B, C
+	uint32	value2_4GHzPathD;
+	uint32	value5GHz;			// paths A, B, C
+	uint32	value5GHzPathD;
+	uint32	coex2_4GHz;			// 0x1ABC [27:20], pre-shifted
+	uint32	coex5GHz;
+};
+
+static const RfePinmuxClass kRfePinmuxClasses[] = {
+	// class 1 -- both adapters tested
+	{ 1, 0x77777777, 0x77777777, 0x33173317, 0x77177717,
+		0x07700000, 0x03300000 },
+	// class 2
+	{ 2, 0x72707270, 0x77707770, 0x37173717, 0x77177717,
+		0x07200000, 0x03700000 },
+	// class 0 and the vendor's default fallback
+	{ 0, 0x77777777, 0x77777777, 0x54775477, 0x54775477,
+		0x07700000, 0x05400000 },
+};
+
+static const uint32 kRfePinmuxClassCount
+	= sizeof(kRfePinmuxClasses) / sizeof(kRfePinmuxClasses[0]);
+
 static const uint32 kRfePinmuxCoex5GHz		= 0x03300000;	// [27:20] = 0x33
 
 // SYS_CFG3.  Bit 16 gates the CCK and OFDM clocks; the reference driver
@@ -1302,8 +1338,16 @@ enum C2HEventID {
 // ---------------------------------------------------------------------------
 
 static const uint16 kEfuseMacAddr			= 0x0D8;	// 6 bytes (USB variant)
-static const uint16 kEfuseAntennaConfig		= 0x00E;	// TX + RX path config
-static const uint16 kEfuseRfeType			= 0x010;	// RF front-end type (0-6)
+// EFUSE offsets for the RF front-end description. These are the values the
+// vendor driver uses (EEPROM_TRX_ANTENNA_OPTION_8814 / EEPROM_RFE_OPTION_8814
+// in its hal_pg.h). They were previously read from 0x00E and 0x010, which
+// belong to a different chip's map, so both came back as unrelated bytes --
+// and the board-class decisions built on top of them were reasoning about
+// noise. The RFE type carries a flag in the top bit and must be masked.
+static const uint16 kEfuseAntennaConfig		= 0x0C9;	// TX + RX path config
+static const uint16 kEfuseRfeType			= 0x0CA;	// RF front-end type
+static const uint8 kEfuseRfeTypeMask		= 0x7F;
+static const uint16 kEfuseBoardOption		= 0x0C1;	// RF board option
 static const uint16 kEfuseTxPwr2G			= 0x020;	// 2.4 GHz power table
 static const uint16 kEfuseTxPwr5G			= 0x060;	// 5 GHz power table
 

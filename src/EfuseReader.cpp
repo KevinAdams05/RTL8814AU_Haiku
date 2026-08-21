@@ -79,10 +79,11 @@ RTL8814AUEfuseReader::ReadEfuseMap()
 	fMapValid = true;
 
 	// Dump key EFUSE regions for debugging
-	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x00E] antenna=%02x\n",
-		fMap[kEfuseAntennaConfig]);
-	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x010] rfe=%02x\n",
-		fMap[kEfuseRfeType]);
+	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE antenna[0x0C9]=%02x "
+		"rfe[0x0CA]=%02x (type %u) board[0x0C1]=%02x\n",
+		fMap[kEfuseAntennaConfig], fMap[kEfuseRfeType],
+		(unsigned)(fMap[kEfuseRfeType] & kEfuseRfeTypeMask),
+		fMap[kEfuseBoardOption]);
 	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x100] thermal=%02x\n",
 		fMap[kEfuseThermalMeter]);
 	dprintf(RTL8814AU_DRIVER_NAME ": EFUSE map[0x0D8..0x0DD] MAC: "
@@ -107,14 +108,16 @@ RTL8814AUEfuseReader::Map() const
 
 
 /*! Return the RFE (RF Front End) type from EFUSE. Determines PA/LNA
-    wiring configuration. Range: 0–6.
+    wiring configuration. The stored byte carries a flag in its top bit,
+    which the vendor driver masks off before using the value as a board
+    class, so mask it here too rather than at every call site.
 */
 uint8
 RTL8814AUEfuseReader::RfeType() const
 {
 	if (!fMapValid)
 		return 0;
-	return fMap[kEfuseRfeType];
+	return fMap[kEfuseRfeType] & kEfuseRfeTypeMask;
 }
 
 

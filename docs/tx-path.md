@@ -96,13 +96,12 @@ sitting next to them in the same tree.
 | 0 | 0 | `OFFSET` | 16-23 | 40 — where the frame starts |
 | 0 | 0 | `BMC` | 24 | group-addressed frames |
 | 0 | 0 | `LAST_SEG` | 26 | always |
-| 0 | 0 | `DISQSELSEQ` | 31 | always, paired with `HWSEQ_EN` |
+| 0 | 0 | `DISQSELSEQ` | 31 | every non-QoS frame |
 | 1 | 4 | `MACID` | 0-6 | 1 |
 | 1 | 4 | `QUEUE_SEL` | 8-12 | `QSLT_*` — see below |
-| 1 | 4 | `RATE_ID` | 16-20 | 8 |
+| 1 | 4 | `RATE_ID` | 16-20 | 12 (`RATEID_IDX_MIX2`) |
 | 1 | 4 | `SEC_TYPE` | 22-23 | 0; crypto is done in software |
 | 2 | 8 | `BK` | 16 | non-management frames |
-| 2 | 8 | `SPE_RPT` | 19 | ask for a per-frame TX report |
 | 3 | 12 | `USE_RATE` | 8 | always |
 | 4 | 16 | `TX_RATE` | 0-6 | `DESC_RATE*` index |
 | 4 | 16 | `RETRY_LIMIT_ENABLE` | 17 | management frames |
@@ -110,7 +109,6 @@ sitting next to them in the same tree.
 | 5 | 20 | `DATA_SHORT` | 4 | short preamble, CCK rates only |
 | 6 | 24 | `SW_DEFINE` | 0-11 | bit 0 — "the driver fixed the rate" |
 | 7 | 28 | `TX_DESC_CHECKSUM` | 0-15 | 16-bit XOR, see below |
-| 8 | 32 | `HWSEQ_EN` | 15 | always |
 
 `FIRST_SEG` (dword 0 bit 27) is deliberately left clear: it is a
 ring-descriptor concept and the reference's USB path has it commented out.
@@ -121,12 +119,45 @@ ring descriptor where it hands ownership to the DMA engine. Defining both
 names and setting both is harmless only because they are the same bit — but it
 makes "clear OWN" look like a change when it is a no-op.
 
+### No RTS/CTS, on any frame
+
+`RTS_ENABLE` (dword 3 bit 12), `RTS_RATE` (dword 4 bits 24-28) and
+`RTS_SHORT` (dword 5 bit 12) are all left clear.
+
+Data frames used to set all three, on the stated grounds that the vendor
+driver protects data frames with RTS/CTS "which is what the usbmon capture of
+a working handshake on this chip shows".  Decoding the descriptors in that
+same capture: the vendor sets `RTS_ENABLE` on **none** of its data frames, at
+any size from 64 to 1528 bytes.  The claim was simply wrong.
+
+It was not a harmless extra.  With `RTS_ENABLE` set, the MAC must win an
+RTS/CTS exchange before it transmits the frame at all, so a missing CTS means
+the frame is dropped **inside the chip**: the USB write completes, the
+transmit counter increments, and nothing reaches the air.  Whether the
+exchange succeeds depends on antenna wiring and transmit power, so this
+passed on one adapter and stalled the four-way handshake at M2 on another —
+the AP re-sent M1 four times and gave up with a reason-15 timeout.
+
+The general lesson, which cost two separate bugs in this driver: a capture is
+only evidence for what you actually decode out of it.  Both this and the
+`0x0A04` override were written as "what the capture shows" and neither
+survived contact with the bytes.
+
 ### The sequence number does not go in the descriptor
 
-The descriptor's `SEQ` field is at byte 36, bits 12-23. We do not write it,
-and neither does the reference on this path: `HWSEQ_EN` asks the hardware to
-assign sequence numbers, and the reference only writes `SEQ` for QoS frames,
-which supply their own and leave `HWSEQ_EN` clear.
+The descriptor's `SEQ` field is at byte 36, bits 12-23, and we leave it zero.
+`HWSEQ_EN` (dword 8 bit 15) is also left clear.
+
+Both were previously set, asking the MAC to assign sequence numbers — a
+service `REG_HWSEQ_CTRL` was never written to enable, so the number stayed at
+whatever the header carried, which was zero.  `Transmit()` now writes a real
+sequence counter into the frame header itself, which needs neither the bit nor
+the register.
+
+The vendor driver takes the other route on its QoS data frames: it writes the
+sequence into descriptor `SEQ` *and* the header, leaving `HWSEQ_EN` clear.
+Either is fine; what does not work is asking for hardware sequencing without
+enabling it.
 
 This is worth stating explicitly because getting it wrong is expensive. A
 12-bit software counter was previously written at dword 3 bits 16-27. Those

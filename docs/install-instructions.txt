@@ -94,7 +94,8 @@ Putting it together
 What works, and what does not
 -----------------------------
 
-Works, on both 2.4 GHz and 5 GHz:
+Works, on both 2.4 GHz and 5 GHz (tested on an ASUS USB-AC68; on an Edimax
+AC1750, 2.4 GHz works and 5 GHz associates but then stops passing traffic):
   - WPA2-PSK with CCMP: association, four-way handshake, key installation
   - DHCP
   - ICMP at every packet size, and TCP (a full SSH session has been verified)

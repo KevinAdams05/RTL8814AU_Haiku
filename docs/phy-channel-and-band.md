@@ -124,17 +124,33 @@ cannot deliver is pointless.  These registers connect the chip's RF pins
 to the dongle's external LNA, PA and antenna switch, and the 2.4 GHz
 routing physically cannot deliver 5 GHz to the receiver.
 
-Our EFUSE reports `rfe_type` 20, which lands in the reference driver's
-default branch — one word repeated across the paths, differing only by
-band:
+The routing depends on the board's **RF front-end class**, read from EFUSE
+`0x0CA` and masked with `0x7F`.  This is the chip's own mechanism for coping
+with differently wired boards: the same registers want different values
+depending on how the dongle is built, so a single hardcoded set is only ever
+correct for adapters that share a class with the one it was derived from.
+
+Both adapters tested here — an ASUS USB-AC68 and an Edimax AC1750 — report
+class **1**:
 
 | Band | Paths A/B/C (`0x0CB0`, `0x0EB0`, `0x18B4`) | Path D (`0x1AB4`) | Coex (`0x1ABC`, bits 27:20) |
 |---|---|---|---|
-| 2.4 GHz | `0x77777777` | *left alone* | `0x77` |
-| 5 GHz | `0x54775477` | `0x54775477` | `0x54` |
+| 2.4 GHz | `0x77777777` | `0x77777777` | `0x77` |
+| 5 GHz | `0x33173317` | `0x77177717` | `0x33` |
 
-Leaving path D alone in the 2.4 GHz case matches the reference; it is not
-an oversight.
+Confirmed independently by decoding a usbmon capture of the vendor driver on
+the Edimax, which settles on exactly these values.
+
+`_SetRfePinmux` carries the classes the vendor driver distinguishes (1, 2, and
+0/default) and selects by the EFUSE value.  An adapter reporting a class we do
+not carry falls back to the default routing **and logs a warning**, because
+applying one board's routing to another is a plausible way to produce an
+adapter that associates and then carries no data — the single hardest failure
+here to attribute.
+
+Path D is written on both transitions.  Writing it only when switching *to*
+5 GHz leaves it holding 5 GHz routing afterwards, which kills 2.4 GHz receive
+until the next reboot.
 
 **Demodulator configuration** then differs by band, because CCK does not
 exist above 2.4 GHz:
@@ -173,10 +189,17 @@ write in the band switch happens, and they would all be dropped.
 This was not theoretical: an earlier version of `_SwitchBand` did gate the
 clock, and the readbacks showed the band switch had changed nothing.
 
-**It does not touch the TX/RX path masks** (`0x080C`, `0x0A04`).  The
-reference programs generic per-band values; ours are tuned to this
-dongle's actual antenna wiring — paths C+D, per EFUSE `0x00E` = `0x0C` —
-and overwriting them would regress the working 2.4 GHz path.
+**It does not touch the TX/RX path masks** (`0x080C`, `0x0A04`) beyond the
+one band bit in `0x080C`.  These are left to the PHY initialisation replay,
+which is what the vendor's own cold-start sequence programs them with.
+
+`0x0A04` used to be overwritten with a hardcoded `0x46ff800c` after init.
+That value was taken from the middle of the vendor's sequence, which writes
+the register four times — `0x46ff800c`, `0x46ff800c`, `0x45ff800c`,
+`0x45ff800c` — so the override was undoing the last two writes of the very
+trace it claimed to be following.  The rule that came out of it: do not layer
+hand-derived register constants on top of the init replay.  The replay is the
+per-device mechanism; if it leaves a register wrong, fix the replay.
 
 Also checked and found *not* to matter at 20 MHz: the reference's
 `phy_SetBwRegAdc_8814A` and `phy_SetBwRegAgc_8814A` write identical

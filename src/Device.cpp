@@ -1069,27 +1069,37 @@ RTL8814AUDevice::_DumpRxState(const char* tag)
 status_t
 RTL8814AUDevice::_ConfigTrxPath()
 {
-	// 1) CCK TX/RX path mask: write the exact value morrownr/8814au
-	//    writes during cold-start (frame 11100 of the cold-start
-	//    trace) for this hardware variant — 0x46ff800c.
-	//    bits 31:28 = 0x4  (CCK TX path B)
-	//    bits 27:24 = 0x6  (CCK RX paths B+C)
-	//    Our BB init table leaves bits 24-27 = 0x1 (only path A),
-	//    which doesn't match the physical antennas on this 4-stream
-	//    hardware (EFUSE antenna=12 → paths C+D, rfe_type=20).
-	uint32 cckBefore = fRegisterIO->Read32(kRegBBCckRxPath);
-	fRegisterIO->Write32(kRegBBCckRxPath, 0x46ff800cu);
-	uint32 cckAfter = fRegisterIO->Read32(kRegBBCckRxPath);
+	// Verify what the PHY initialisation replay left behind. This function
+	// deliberately does not write anything.
+	//
+	// It used to stamp 0x46ff800c into CCK_RX_PATH, justified as "the value
+	// the vendor driver writes for this hardware variant". That was a
+	// misreading of the capture. kFullInitSequence is the vendor's own
+	// cold-start sequence, and it writes this register four times:
+	// 0x46ff800c, 0x46ff800c, 0x45ff800c, 0x45ff800c. The value being
+	// copied here was an intermediate one, taken from the middle of a
+	// sequence whose later frames overwrite it -- so the override was
+	// undoing the last two writes of the very trace it claimed to follow.
+	//
+	// The general rule this cost us two adapters to learn: do not layer
+	// hand-derived register constants on top of the init replay. The replay
+	// is the per-device mechanism. If it leaves a register wrong, fix the
+	// replay, because a constant patched in afterwards is tuned to whichever
+	// adapter happened to be plugged in when it was written.
+	const uint32 cckRxPath = fRegisterIO->Read32(kRegBBCckRxPath);
+	const uint32 ofdmCckEn = fRegisterIO->Read32(kRegBBOfdmCckEn);
 
-	// 2) OFDM+CCK demodulator enable: 0x0808 bits 28-29 = 11.
-	uint32 ofdmBefore = fRegisterIO->Read32(kRegBBOfdmCckEn);
-	fRegisterIO->Write32(kRegBBOfdmCckEn, ofdmBefore | 0x30000000u);
-	uint32 ofdmAfter = fRegisterIO->Read32(kRegBBOfdmCckEn);
+	// Both are demodulator-enable bits; without them nothing is received at
+	// all, so a mismatch here is worth a log line rather than silence.
+	if ((ofdmCckEn & 0x30000000u) != 0x30000000u) {
+		dprintf(RTL8814AU_DRIVER_NAME ": WARNING: PHY init left the OFDM/CCK "
+			"demodulators disabled (OFDMCCK_EN 0x%08x)\n",
+			(unsigned)ofdmCckEn);
+	}
 
-	dprintf(RTL8814AU_DRIVER_NAME ": TRX path configured "
-		"(CCK_RX_PATH 0x%08x->0x%08x, OFDMCCK_EN 0x%08x->0x%08x)\n",
-		(unsigned)cckBefore, (unsigned)cckAfter,
-		(unsigned)ofdmBefore, (unsigned)ofdmAfter);
+	dprintf(RTL8814AU_DRIVER_NAME ": TRX path from PHY init: "
+		"CCK_RX_PATH 0x%08x OFDMCCK_EN 0x%08x\n",
+		(unsigned)cckRxPath, (unsigned)ofdmCckEn);
 	return B_OK;
 }
 
@@ -3579,13 +3589,31 @@ RTL8814AUDevice::_SendAssocRequest()
 	memcpy(frame + i, fJoinSsid, fJoinSsidLength);
 	i += fJoinSsidLength;
 
-	// Supported Rates IE — 1, 2, 5.5, 11, 6, 9, 12, 18 Mbps
+	// Supported Rates IE, which depends on the band.
+	//
+	// This used to advertise 1, 2, 5.5 and 11 Mbps as basic rates in every
+	// association request, on both bands. Those are CCK rates and CCK does
+	// not exist above 2.4 GHz, so a 5 GHz request claimed four basic rates
+	// the radio cannot use and the band does not define. An access point is
+	// entitled to refuse that outright.
 	frame[i++] = 1;	// IE id
-	frame[i++] = 8;	// length
-	frame[i++] = 0x82; frame[i++] = 0x84;	// 1, 2 (basic)
-	frame[i++] = 0x8B; frame[i++] = 0x96;	// 5.5, 11 (basic)
-	frame[i++] = 0x0C; frame[i++] = 0x12;	// 6, 9
-	frame[i++] = 0x18; frame[i++] = 0x24;	// 12, 18
+	const bool is5GHz = fPhyConfig != NULL
+		&& fPhyConfig->CurrentBand() == kBand5GHz;
+	if (is5GHz) {
+		// 5 GHz: OFDM only, with 6, 12 and 24 as the basic rates the
+		// standard requires a station to support up here.
+		frame[i++] = 8;							// length
+		frame[i++] = 0x8C; frame[i++] = 0x12;	// 6 (basic), 9
+		frame[i++] = 0x98; frame[i++] = 0x24;	// 12 (basic), 18
+		frame[i++] = 0xB0; frame[i++] = 0x48;	// 24 (basic), 36
+		frame[i++] = 0x60; frame[i++] = 0x6C;	// 48, 54
+	} else {
+		frame[i++] = 8;							// length
+		frame[i++] = 0x82; frame[i++] = 0x84;	// 1, 2 (basic)
+		frame[i++] = 0x8B; frame[i++] = 0x96;	// 5.5, 11 (basic)
+		frame[i++] = 0x0C; frame[i++] = 0x12;	// 6, 9
+		frame[i++] = 0x18; frame[i++] = 0x24;	// 12, 18
+	}
 
 	// RSN IE (WPA2, element 48) — verbatim from IOC_APPIE.  fWpaIe already
 	// includes the IE header (id 0x30 + length), so just memcpy.
@@ -3607,11 +3635,16 @@ RTL8814AUDevice::_SendAssocRequest()
 		i += fWpaIeLength;
 	}
 
-	// Extended Supported Rates IE (element 50) — 24, 36, 48, 54 Mbps
-	frame[i++] = 50;	// IE id
-	frame[i++] = 4;
-	frame[i++] = 0x30; frame[i++] = 0x48;
-	frame[i++] = 0x60; frame[i++] = 0x6C;
+	// Extended Supported Rates IE (element 50) — 24, 36, 48, 54 Mbps.
+	// Only on 2.4 GHz: the 5 GHz rate set above already carries all eight
+	// OFDM rates in the base IE, and repeating them here would advertise
+	// several of them twice.
+	if (!is5GHz) {
+		frame[i++] = 50;	// IE id
+		frame[i++] = 4;
+		frame[i++] = 0x30; frame[i++] = 0x48;
+		frame[i++] = 0x60; frame[i++] = 0x6C;
+	}
 
 	// No WMM Information Element (vendor-specific, element 221).
 	//

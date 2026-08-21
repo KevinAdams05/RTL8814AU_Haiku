@@ -11,9 +11,13 @@ use 2.4 GHz, and only via the bundled `wifi-join` helper.
 | Receive | 2.4-3.1 Mbit/s | **15.1 Mbit/s** |
 | Packet loss | 0-5% | **0%** at every payload size |
 
-5 GHz is much the better band. Both are verified end to end: association,
-four-way handshake, CCMP keys, DHCP lease, ICMP at every ping size from 56 to
-1472 bytes, and a full SSH session over the air.
+5 GHz is much the better band. Those figures are from an ASUS USB-AC68, where
+both bands are verified end to end: association, four-way handshake, CCMP
+keys, DHCP lease, ICMP at every ping size from 56 to 1472 bytes, and a full
+SSH session over the air.
+
+On an Edimax AC1750, **2.4 GHz is verified to the same standard** but **5 GHz
+associates and then stalls**: the data queue stops draining. See below.
 
 ### 5 GHz
 
@@ -55,11 +59,73 @@ a Haiku kernel bug -- that EAPOL frames were not delivered to userland
 the fault was entirely in this driver. Apologies to the Haiku project for the
 misattribution.
 
+### A second adapter, and the bug it found
+
+Everything above was developed against an ASUS USB-AC68. Moving to an Edimax
+AC1750 on the same chip broke 2.4 GHz immediately: association succeeded, then
+the four-way handshake stalled at M2 with the access point re-sending M1 four
+times and giving up with a reason-15 timeout.
+
+- **Data frames asked for RTS/CTS protection, and the vendor driver never
+  does.** With `RTS_ENABLE` set the MAC must win an RTS/CTS exchange before it
+  will transmit at all, so a missing CTS means the frame is discarded inside
+  the chip — the USB write completes, the transmit counter increments, and
+  nothing reaches the air. Whether the exchange succeeds depends on antenna
+  wiring and transmit power, which is why it passed on one adapter and not the
+  other. Decoding the vendor's own descriptors showed it sets `RTS_ENABLE` on
+  none of its data frames at any size from 64 to 1528 bytes. Removing it fixed
+  the Edimax outright: handshake, CCMP keys, DHCP lease, and no packet loss.
+
+- **Two EFUSE fields were read from the wrong offsets.** The antenna
+  configuration and RF front-end class came from `0x00E` and `0x010`, which
+  belong to a different chip's map, so both returned unrelated bytes. They are
+  at `0x0C9` and `0x0CA` (the latter masked with `0x7F`). Every decision that
+  had been made "per this adapter's EFUSE" was reasoning about noise.
+
+- **The RFE pinmux is now chosen by board class** rather than hardcoded. The
+  class comes from EFUSE `0x0CA` and is the chip's own mechanism for coping
+  with differently wired boards. Both adapters tested report class 1, and the
+  values previously hardcoded are exactly that class's — so this is not a
+  behaviour change for either, but an adapter of another class no longer
+  silently receives routing meant for someone else's board. An unrecognised
+  class falls back to the vendor's default and says so in the syslog.
+
+- **A post-init override of the CCK path register is gone.** It stamped
+  `0x46ff800c` over `0x0A04`, a value taken from the middle of the vendor's
+  cold-start sequence — which writes that register four times and settles on
+  `0x45ff800c`. The override was undoing the last two writes of the trace it
+  claimed to follow.
+
+- **`RATE_ID` was 8, documented as "OFDM 6-54 Mbps".** Value 8 is
+  `RATEID_IDX_B`, the CCK-only set — very nearly the opposite. It is now 12
+  (`RATEID_IDX_MIX2`), matching the vendor, so OFDM data frames no longer ask
+  the MAC for an OFDM rate out of a CCK-only table.
+
+- **Association requests advertised CCK rates on 5 GHz.** The Supported Rates
+  element claimed 1, 2, 5.5 and 11 Mbps as *basic* rates on both bands, and
+  CCK does not exist above 2.4 GHz — so a 5 GHz request claimed four basic
+  rates the band does not define. This access point answered with a DEAUTH
+  carrying reason 2, "previous authentication no longer valid", which is a
+  thoroughly misleading way to say "your association request is
+  unacceptable". The element is now band-dependent: OFDM only above channel
+  14, with 6, 12 and 24 Mbps basic, and the extended-rates element is emitted
+  on 2.4 GHz only. This bug was latent on the ASUS, where the access point
+  tolerated it.
+
+Both of the first two were written as "what the usbmon capture shows", and
+neither survived being checked against the actual bytes. A capture is only
+evidence for what you decode out of it.
+
 ### Also
 
 - A failed join no longer leaves the radio unable to scan.
 - Buffer allocation failure is reported instead of leaving a silently dead
   receive path.
+- Transmit logging is budgeted per bulk endpoint instead of globally. A single
+  counter was spent entirely on the firmware download, which all goes to one
+  endpoint, so completions on the data endpoints were invisible — and "no log
+  line for that pipe" reads as "that pipe failed" when it means "we never
+  looked".
 
 ### Known limitations
 
@@ -73,7 +139,15 @@ misattribution.
   `net_server`, which tears the association down immediately. This one is not
   the driver's doing.
 - No WEP, WPA3 or enterprise (802.1X) authentication.
-- Tested on one access point and two adapter models.
+- **5 GHz on the Edimax AC1750 associates and then stalls.** Bulk transfers on
+  the best-effort data endpoint stop completing and fill every slot
+  (`TX wait timed out on pipe 2` in the syslog). 2.4 GHz on the same adapter
+  and both bands on the ASUS USB-AC68 are unaffected. Not yet root-caused. A
+  side effect worth knowing while it lasts: `ifconfig` on the device hangs
+  once this happens, so read the syslog instead.
+- Tested on one access point and two adapter models: ASUS USB-AC68 and Edimax
+  AC1750. Both report RF front-end class 1; an adapter of another class is
+  untested and will log a warning.
 
 ## 0.2.0 — 2026-08-21
 

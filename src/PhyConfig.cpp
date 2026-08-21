@@ -420,8 +420,37 @@ RTL8814AUPhyConfig::_SwitchBand(ChannelBand band)
 void
 RTL8814AUPhyConfig::_SetRfePinmux(ChannelBand band)
 {
-	bool is5GHz = (band == kBand5GHz);
-	uint32 pinmux = is5GHz ? kRfePinmux5GHz : kRfePinmux2_4GHz;
+	const bool is5GHz = (band == kBand5GHz);
+
+	// Pick the routing for this board's RF front-end class rather than
+	// assuming one. The class comes from EFUSE 0xCA and is the chip's own
+	// answer to "how is this particular dongle wired" -- the same registers
+	// want different values on a differently built board, so a single
+	// hardcoded set is only ever correct for the adapters that happen to
+	// share a class with the one it was derived from.
+	const uint8 rfeType = fEfuseReader->RfeType();
+	const RfePinmuxClass* selected = NULL;
+	for (uint32 i = 0; i < kRfePinmuxClassCount; i++) {
+		if (kRfePinmuxClasses[i].rfeType == rfeType) {
+			selected = &kRfePinmuxClasses[i];
+			break;
+		}
+	}
+
+	if (selected == NULL) {
+		// Fall back to the vendor's default class, but say so. Applying
+		// another class's routing to an unknown board is a plausible way to
+		// get an adapter that associates and then passes no data, which is
+		// exactly the failure that is hardest to attribute.
+		selected = &kRfePinmuxClasses[kRfePinmuxClassCount - 1];
+		dprintf(RTL8814AU_DRIVER_NAME ": WARNING: unknown RF front-end class "
+			"%u; falling back to the default routing. If this adapter "
+			"associates but carries no data, this line is the first "
+			"suspect.\n", (unsigned)rfeType);
+	}
+
+	const uint32 pinmux = is5GHz
+		? selected->value5GHz : selected->value2_4GHz;
 
 	fRegisterIO->Write32(kRegBBRfePinmux0, pinmux);
 	fRegisterIO->Write32(kRegBBRfePinmuxPathB, pinmux);
@@ -440,12 +469,11 @@ RTL8814AUPhyConfig::_SetRfePinmux(ChannelBand band)
 	// swept all 42 channels and heard nothing at all, and only a reboot
 	// fixed it, because only a reboot re-ran the PHY init that sets path D
 	// correctly in the first place.
-	// Path D takes its own value in 5 GHz; in 2.4 GHz it matches the rest.
-	fRegisterIO->Write32(kRegBBRfePinmuxPathD,
-		is5GHz ? kRfePinmux5GHzPathD : pinmux);
+	fRegisterIO->Write32(kRegBBRfePinmuxPathD, is5GHz
+		? selected->value5GHzPathD : selected->value2_4GHzPathD);
 
 	fRegisterIO->MaskedWrite32(kRegBBRfePinmuxCoex, kBBRfePinmuxCoexMask,
-		is5GHz ? kRfePinmuxCoex5GHz : kRfePinmuxCoex2_4GHz);
+		is5GHz ? selected->coex5GHz : selected->coex2_4GHz);
 }
 
 
