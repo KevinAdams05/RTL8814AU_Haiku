@@ -372,12 +372,28 @@ RTL8814AUPhyConfig::_SwitchBand(ChannelBand band)
 		_ApplyBBTable(kAGCTable2G, kAGCTable2GCount);
 	}
 
-	// One thing the reference driver also does here, left out on purpose:
+	// The TX path register needs one band-dependent bit.
 	//
-	//  - The TX/RX path masks (kRegBBTxPath, kRegBBCckRxPath).  The
-	//    reference programs generic per-band values; ours are tuned for
-	//    this dongle's actual antenna wiring (paths C+D per EFUSE) and
-	//    overwriting them would regress the working 2.4 GHz path.
+	// This function used to leave kRegBBTxPath alone entirely, on the
+	// grounds that the reference programs generic per-band values while ours
+	// are derived from this adapter's EFUSE, so overwriting it would regress
+	// the working 2.4 GHz path.  That reasoning still holds for the register
+	// as a whole -- which chains transmit is a property of how a dongle is
+	// wired, not of the band -- but bit 5 is different: a usbmon capture of
+	// the vendor driver shows it set for 2.4 GHz and clear for 5 GHz on one
+	// and the same adapter, 0x1000002F against 0x1000000F.
+	//
+	// Leaving it set in 5 GHz is a strong candidate for why 5 GHz receives
+	// perfectly well and transmits nothing the access point ever answers.
+	// So flip just that bit and leave every other chain-selection bit as the
+	// EFUSE-derived value put it.
+	fRegisterIO->MaskedWrite32(kRegBBTxPath, kBBTxPath2_4GHzBit,
+		band == kBand5GHz ? 0 : kBBTxPath2_4GHzBit);
+
+	// Still left alone on purpose: kRegBBCckRxPath.  The vendor changes it
+	// per band too (0x45FF800C against 0x4FFF800C) but CCK does not exist in
+	// 5 GHz, so the CCK receive path cannot be what stops 5 GHz transmit,
+	// and ours is tuned for this adapter.
 
 	return B_OK;
 }
@@ -424,7 +440,9 @@ RTL8814AUPhyConfig::_SetRfePinmux(ChannelBand band)
 	// swept all 42 channels and heard nothing at all, and only a reboot
 	// fixed it, because only a reboot re-ran the PHY init that sets path D
 	// correctly in the first place.
-	fRegisterIO->Write32(kRegBBRfePinmuxPathD, pinmux);
+	// Path D takes its own value in 5 GHz; in 2.4 GHz it matches the rest.
+	fRegisterIO->Write32(kRegBBRfePinmuxPathD,
+		is5GHz ? kRfePinmux5GHzPathD : pinmux);
 
 	fRegisterIO->MaskedWrite32(kRegBBRfePinmuxCoex, kBBRfePinmuxCoexMask,
 		is5GHz ? kRfePinmuxCoex5GHz : kRfePinmuxCoex2_4GHz);

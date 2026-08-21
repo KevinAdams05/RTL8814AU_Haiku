@@ -608,6 +608,18 @@ static const uint32 kBBOfdmCckEnCck			= 0x10000000;	// CCK demod enable
 static const uint32 kBBOfdmCckEnOfdm			= 0x20000000;	// OFDM demod enable
 static const uint32 kBBRxPathMaskShift		= 8;		// 4-bit path mask in bits 8-11
 static const uint16 kRegBBTxPath			= 0x080C;
+
+// Bit 5 of the TX path register is band-dependent: the vendor driver sets it
+// for 2.4 GHz and clears it for 5 GHz (0x1000002F against 0x1000000F on the
+// same adapter, bracketed by the respective RFE pinmux writes).
+//
+// Only this one bit is touched on a band change.  The rest of the register
+// selects which of the four chains actually transmit, and that is a property
+// of how a particular dongle is wired rather than of the band -- our value is
+// derived from this adapter's EFUSE, and overwriting it wholesale with the
+// figure captured from a different-brand adapter would be replacing something
+// measured with something borrowed.
+static const uint32 kBBTxPath2_4GHzBit		= (1u << 5);
 static const uint16 kRegBBCckRxPath			= 0x0A04;
 static const uint16 kRegBBCckCheck			= 0x0454;
 static const uint8 kBBCckCheck5GHz			= 0x80;		// CCK invalid in 5 GHz
@@ -636,10 +648,26 @@ static const uint32 kBBRfePinmuxCoexMask	= 0x0FF00000;
 // Our dongle reports rfe_type 20, which falls through the reference
 // driver's default branch: one pinmux word for 2.4 GHz and another for
 // 5 GHz, the same value on every path.
+// RF front-end pinmux, per path.  These route the external switch that
+// selects between the transmit amplifier, the receive amplifier and bypass,
+// so getting them wrong can leave receive working while transmit goes
+// nowhere -- which is exactly what 5 GHz did.
+//
+// The 5 GHz values were 0x54775477 on all four paths.  A usbmon capture of
+// the vendor driver associating to a 5 GHz network shows something quite
+// different: 0x33173317 on paths A, B and C, and 0x77177717 on path D.  Path
+// D is not the same as the others, so the previous assumption that 5 GHz
+// wants one value everywhere was wrong on both counts.
+//
+// 2.4 GHz is 0x77777777 on all four, which was already right.
 static const uint32 kRfePinmux2_4GHz		= 0x77777777;
-static const uint32 kRfePinmux5GHz			= 0x54775477;
+static const uint32 kRfePinmux5GHz			= 0x33173317;
+static const uint32 kRfePinmux5GHzPathD		= 0x77177717;
+
+// The coex register's [27:20] follows the same pattern: 0x77 for 2.4 GHz,
+// and 0x33 for 5 GHz where this used to say 0x54.
 static const uint32 kRfePinmuxCoex2_4GHz	= 0x07700000;	// [27:20] = 0x77
-static const uint32 kRfePinmuxCoex5GHz		= 0x05400000;	// [27:20] = 0x54
+static const uint32 kRfePinmuxCoex5GHz		= 0x03300000;	// [27:20] = 0x33
 
 // SYS_CFG3.  Bit 16 gates the CCK and OFDM clocks; the reference driver
 // drops it for the duration of a band switch and restores it after, so
