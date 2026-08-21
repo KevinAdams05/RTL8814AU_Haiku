@@ -2862,7 +2862,6 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		static uint32 sDataProtected = 0;
 		static uint32 sDataBroadcast = 0;
 		static uint32 sFromOurAp = 0;
-		static uint32 sFromApLogged = 0;
 		uint8 fc1 = frameData[1];
 		bool prot = (fc1 & 0x40) != 0;
 		bool bcast = (frameData[4] & 0x01) != 0;	// Addr1 (RA) multicast bit
@@ -2876,20 +2875,6 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 		if (prot) sDataProtected++;
 		if (bcast) sDataBroadcast++;
 		if (fromOurAp) sFromOurAp++;
-		if (fromOurAp && sFromApLogged < 16) {
-			sFromApLogged++;
-			dprintf(RTL8814AU_DRIVER_NAME ": RX from AP #%u fc=%02x:%02x "
-				"prot=%d bcast=%d swdec=%d icverr=%d len=%u "
-				"@24:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
-				(unsigned)sFromOurAp, frameData[0], fc1,
-				prot ? 1 : 0, bcast ? 1 : 0,
-				info != NULL && info->swDecNeeded ? 1 : 0,
-				info != NULL && info->icvError ? 1 : 0,
-				(unsigned)frameLength,
-				frameData[24], frameData[25], frameData[26],
-				frameData[27], frameData[28], frameData[29],
-				frameData[30], frameData[31]);
-		}
 		// Unicast is counted, not logged per frame: the heartbeat below
 		// carries the total, and a unicast count that stays at zero while
 		// broadcast climbs is the interesting signal.
@@ -3900,65 +3885,17 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		dprintf(RTL8814AU_DRIVER_NAME ": built M2 (%u bytes)\n",
 			(unsigned)m2Len);
 
-		// Dump the ANonce and the finished M2 so the whole derivation can
-		// be recomputed off-box and compared: the PMK follows from the
-		// passphrase and SSID, the PTK from the PMK plus both MACs and
-		// both nonces, and the MIC from the KCK over these exact bytes
-		// with the MIC field zeroed.  The AP keeps retransmitting M1,
-		// which means it is rejecting this frame, and this says whether
-		// the fault is ours.  No key material is logged — everything here
-		// is already on the air in the clear.
-		{
-			char line[160];
-			uint32 pos = 0;
-			for (uint32 b = 0; b < 32; b++)
-				pos += snprintf(line + pos, sizeof(line) - pos, "%02x",
-					fAnonce[b]);
-			dprintf(RTL8814AU_DRIVER_NAME ": ANONCE %s\n", line);
-
-			for (uint32 chunk = 0; chunk * 48 < m2Len; chunk++) {
-				pos = 0;
-				for (uint32 b = chunk * 48;
-						b < m2Len && b < (chunk + 1) * 48; b++) {
-					pos += snprintf(line + pos, sizeof(line) - pos, "%02x",
-						m2[b]);
-				}
-				dprintf(RTL8814AU_DRIVER_NAME ": M2[%u] %s\n",
-					(unsigned)(chunk * 48), line);
-			}
-		}
-
 		// Wrap M2 in an 802.11 data frame + LLC/SNAP and TX it.  Layout
 		// matches the eth -> 802.11 conversion in Write() except the
 		// ethertype is fixed (EAPOL = 0x888E) and we splice the EAPOL
 		// bytes directly without going through the data ring.  Protected
 		// bit stays clear because the chip has no keys yet.
-		uint16 emptyBefore = fTxPath != NULL
-			? fTxPath->ReadTxQueueEmpty() : 0;
-
 		status_t txStatus = _TxEapolDataFrame(senderMac, m2, m2Len);
 		if (txStatus != B_OK) {
 			dprintf(RTL8814AU_DRIVER_NAME ": M2 TX failed: %s\n",
 				strerror(txStatus));
 			// Stay in WaitM1 so an AP retry of M1 gets us another shot.
 			return;
-		}
-
-		// Did the chip actually put it on the air?  A successful submit
-		// only proves the USB stack took the frame.  If the queue was empty
-		// before and is still non-empty a few milliseconds later, the frame
-		// is stuck in the chip's packet buffer — which is the difference
-		// between "we never delivered it" and "the chip will not send it".
-		// This runs on the EAPOL worker thread, so register reads are safe.
-		if (fTxPath != NULL) {
-			snooze(5000);
-			uint16 emptyAfter = fTxPath->ReadTxQueueEmpty();
-			snooze(20000);
-			uint16 emptySettled = fTxPath->ReadTxQueueEmpty();
-			dprintf(RTL8814AU_DRIVER_NAME ": M2 queue-empty before=0x%04x "
-				"after5ms=0x%04x after25ms=0x%04x\n",
-				(unsigned)emptyBefore, (unsigned)emptyAfter,
-				(unsigned)emptySettled);
 		}
 
 		fEapolState = kEapolWaitM3;

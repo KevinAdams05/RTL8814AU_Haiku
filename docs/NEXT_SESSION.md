@@ -147,7 +147,7 @@ The tree carries deliberate instrumentation that earned its place and should
 now go: the ANonce and M2 hex dumps, the per-frame "RX from AP" dump, the
 `M2 queue-empty` sampling, the `queue_bulk` failure dump, the unicast counter
 in the heartbeat, and the deauth reason logging. Then bump the version -- the
-repo still says 0.1.1 and only the build server has ever seen `0.1.2~test`.
+version is now 0.2.0.
 
 ### 4. REG_HWSEQ_CTRL (0x0423) -- sidestepped
 
