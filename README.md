@@ -4,16 +4,20 @@
 >[!WARNING]
 >This is alpha version code. It works, but it is not finished.
 >
->Current state in short: scanning works across both bands, and on **2.4 GHz**
->a WPA2-PSK network associates, completes the four-way handshake, installs
->CCMP keys, gets a DHCP lease, and carries ICMP and TCP — a full SSH session
->over the air has been verified, at every ping payload size from 56 to 1472
->bytes. 5 GHz networks are visible to a scan and receive works there, but
->**associating over 5 GHz has not been tested**.
+>Current state in short: **both bands work, and so do both ways of
+>connecting.** A WPA2-PSK network associates, completes the four-way
+>handshake, installs CCMP keys, gets a DHCP lease, and carries ICMP and TCP
+>on 2.4 GHz *and* 5 GHz — verified with a full SSH session over the air at
+>every ping payload size from 56 to 1472 bytes. You can connect from the
+>Deskbar network menu, the Network preferences panel, `ifconfig join`, or the
+>bundled `wifi-join` helper.
 >
->The main shortfall now is **throughput: around 2 Mbit/s**. Three deliberate
->simplifications account for it — every data frame is sent at a fixed rate
->with no rate adaptation, CCMP runs in software rather than on the chip's
+>**5 GHz is much the better band**: about 54 Mbit/s sending and 15 receiving,
+>against 11-32 and 2-3 on 2.4 GHz.
+>
+>The main shortfall is receive throughput on 2.4 GHz. Three deliberate
+>simplifications account for most of it — every data frame is sent at a fixed
+>rate with no rate adaptation, CCMP runs in software rather than on the chip's
 >engine, and A-MPDU aggregation is disabled. All three are addressable.
 
 **Bug reports (please attach listdev output, syslog and/or screenshots) and PRs welcome! See "Logging Bugs / How to Help" section below**
@@ -210,15 +214,18 @@ ifconfig /dev/net/rtl8814au/0 join <SSID>
 ifconfig /dev/net/rtl8814au/0 auto-config
 ```
 
-The Deskbar Network app also works for open networks.
-
 ### Join a WPA2-PSK network
 
-> ⚠️  **The Deskbar Network app and `ifconfig join SSID password`
-> currently do NOT work for WPA2 networks on this driver.**  Use the
-> bundled `wifi-join` helper below.  See
-> [the "Why" section](#why-doesnt-the-deskbar-app-work-for-wpa2) for
-> background.
+Any of these work:
+
+- the **Deskbar** network menu
+- the **Network** preferences panel
+- `ifconfig /dev/net/rtl8814au/0 join <SSID> <passphrase>`
+- the bundled `wifi-join` helper, below
+
+The first three go through Haiku's `net_server`, which hands the join to
+`wpa_supplicant`; `wifi-join` instead drives the handshake inside the driver.
+Both routes are supported and end in the same place.
 
 ```
 wifi-join /dev/net/rtl8814au/0 <SSID> <passphrase>
@@ -290,22 +297,35 @@ behavior can also be achieved by dropping an executable shell script
 into the per-user-launch directory at `~/config/settings/boot/launch/`
 if you prefer to keep boot commands separated by purpose.
 
-### Why doesn't the Deskbar app work for WPA2?
+### Why are there two ways to connect?
 
-This driver runs the WPA2 4-way handshake **inside the kernel
-driver** rather than letting Haiku's `wpa_supplicant` do it.  The
-reason is a Haiku kernel bug: EAPOL frames (the bytes that carry the
-4-way handshake) are not delivered from the network stack to
-userland `AF_LINK` packet sockets, so `wpa_supplicant` never sees
-them and the handshake stalls.
+Both work, and they get there differently.
 
-This is an upstream Haiku issue — fixing it would help every Wi-Fi
-driver, not just this one — but it's out of scope for an unofficial
-driver package.  Until the kernel fix lands, the driver bypasses
-`wpa_supplicant` entirely by running the handshake itself.  The
-catch is that nobody on the Haiku side passes the network
-passphrase to the driver, so we ship the `wifi-join` userland helper
-to fill that gap.
+The **Deskbar and `ifconfig join`** route goes through Haiku's `net_server`,
+which always hands a wireless join to `wpa_supplicant`. The supplicant runs
+the four-way handshake and passes the resulting keys down to the driver. This
+is the normal Haiku path and the one to prefer.
+
+**`wifi-join`** instead hands the driver the passphrase directly and lets it
+run the handshake itself, in the kernel. It exists because it worked first,
+and it is still useful: it needs no `net_server` round trip, which makes it a
+better tool for scripting and for diagnosing the driver in isolation.
+
+An earlier version of this file claimed the Deskbar route was impossible
+because of a Haiku kernel bug — that EAPOL frames were not delivered to
+userland `AF_LINK` packet sockets. **That was wrong, and worth correcting
+plainly since it was an accusation against Haiku rather than this driver.**
+Haiku's stack delivers EAPOL correctly; a test binding an `AF_LINK` socket
+for ethertype 0x888E succeeds. What actually blocked the Deskbar was three
+faults in this driver: it swallowed every EAPOL frame before the supplicant
+could see one, it never implemented the ioctl that installs the supplicant's
+keys, and it failed the SSID read-back the supplicant performs right after
+associating — which made the supplicant conclude the association was not real
+and tear it down.
+
+One genuine Haiku-side limitation remains: **open (unencrypted) networks**
+have to go through `net_server`, and it tears the association down again
+immediately. That one is not the driver's doing.
 
 See [docs/wpa2-in-driver.md](docs/wpa2-in-driver.md) for the full
 design.

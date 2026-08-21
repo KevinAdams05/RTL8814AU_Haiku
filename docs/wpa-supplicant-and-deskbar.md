@@ -139,14 +139,29 @@ reference implementation is `ieee80211_notify_node_join` in
 
 This driver already publishes `SCANNED` and `JOINED` in that format.
 
-## 6. So why does it not work yet
+## 6. It works now — and what was actually wrong
 
-**The handshake is no longer the reason.** This section spent a long time
-describing a four-way handshake that would not complete; as of 2026-08-20 it
-does, and the link carries DHCP, ICMP and TCP. See
-[wpa2-in-driver.md](wpa2-in-driver.md).
+As of 2026-08-21 connecting from the Deskbar works, and so does
+`ifconfig join <ssid> <passphrase>`, which takes the same route.
 
-What remains is a design conflict, and it is the whole of the problem now.
+Everything above about the chain, the media type and the notification contract
+was already right. The obstacles were narrower and all three were ours:
+
+- **`IEEE80211_IOC_SSID` had no GET handler.** The supplicant reads the SSID
+  back the moment it sees an association event; the failure made it decide the
+  association was not real and deauthenticate.
+- **Every EAPOL frame was consumed by the in-driver handshake**, so the
+  supplicant's correctly-bound `AF_LINK` socket never saw one. The diversion is
+  now conditional on the driver actually having a PMK to run a handshake with.
+- **`IOC_WPAKEY` logged the supplicant's keys and dropped them**, and once
+  implemented had to arm the software cipher too, not just the chip's CAM.
+
+**A correction worth stating plainly.** The DEAUTH that ended every attempt was
+described in this file as net_server tearing down its own join, on the strength
+of it still happening with wpa_supplicant killed. That reasoning was wrong: it
+was our failed SSID read-back, and the ioctl trace showed it immediately once
+the unsupported call was logged. The observation was real; the attribution was
+a guess that read like a finding.
 
 **net_server undoes its own join.** Joining an open network has to go through
 net_server, because there is no passphrase for `wifi-join` to take. Doing so

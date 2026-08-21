@@ -164,77 +164,73 @@ violation and the fix stands on its own, but an access point's duplicate
 filtering was evidently not what was costing bandwidth. The constants remain
 for anyone who wants the hardware path instead.
 
-### 5. 5 GHz association — tested 2026-08-21, and the band switch is the problem
+### 5. 5 GHz — WORKING as of 2026-08-21
 
-It was attempted for the first time and it does not work. The failure is
-specific and the diagnosis is coherent, so this is a real starting point
-rather than an open question.
+| Direction | 2.4 GHz | **5 GHz** |
+|---|---|---|
+| Transmit | 11-32 Mbit/s | **53.9 Mbit/s** |
+| Receive | 2.4-3.1 Mbit/s | **15.1 Mbit/s** |
+| Loss | 0-5% | **0%** at every payload size |
 
-**What works.** `AdamsFamily02-5G` appears in the scan on channel 149 at
-signal 86. `_DoJoin` resolves it, `SetChannel(149)` reports
-`band 5 GHz (band switch)`, the band switch runs (`switching band to 5 GHz`,
-`reloading AGC tables for 5 GHz`), MSR stays 0x02, and the authentication
-request goes out at `rate=0x04` -- OFDM 6 Mbps, which is correct for 5 GHz
-where CCK does not exist. **Receive works too**: beacons pour in, 14456 of
-them, with 862 from the target access point specifically.
+**5 GHz is much the better band**, and its receive figure being five times
+2.4 GHz's reframes the receive investigation above: a good part of that
+ceiling was the 2.4 GHz link rate rather than the driver.
 
-**What does not.** `auth(11)=0`. The access point never answers. We hear its
-beacons and it does not hear our authentication request, so **5 GHz transmit
-is not reaching the air** even though 5 GHz receive is fine.
+Three faults, all in the band switch:
 
-**And switching back leaves the radio deaf.** After the failed 5 GHz attempt,
-every subsequent scan returned **zero** networks across all 42 channels --
-`IOC_SCAN_RESULTS retlen=0`, no `BSS +` lines at all -- and stayed that way
-until a reboot, which restored it immediately (22 networks). Note this is not
-the "connected" guard in `_ScanSweep` refusing to hop: that logs
-`scan-sweep: connected, staying on channel` and it never appeared. The sweep
-genuinely ran and heard nothing.
+1. **RFE pinmux path D was written only when switching *to* 5 GHz.** After any
+   5 GHz excursion -- including the 5 GHz leg of a routine scan sweep -- path D
+   kept the 5 GHz routing and 2.4 GHz went deaf, which is why every scan after
+   the first returned zero networks until a reboot.
+2. **The 5 GHz pinmux values were wrong.** `0x54775477` on all four paths,
+   where the vendor writes `0x33173317` on A/B/C and `0x77177717` on D -- so
+   the assumption that 5 GHz wants one value everywhere was wrong too. Coex
+   `0x1ABC` bits [27:20] are 0x33 for 5 GHz, not 0x54. The register addresses
+   were already correct, which is why this looked plausible for so long.
+3. **Bit 5 of TX_PATH (0x080C) is band state, not wiring.** The vendor sets it
+   for 2.4 GHz and clears it for 5 GHz on one and the same adapter. Leaving it
+   set is what made 5 GHz receive perfectly and transmit nothing the access
+   point answered. Only that bit is touched; chain selection stays at its
+   EFUSE-derived value.
 
-**The single explanation that covers all of it: the 2.4 <-> 5 GHz band switch
-is incomplete in both directions.** It does enough to receive on 5 GHz but not
-to transmit, and coming back to 2.4 GHz leaves the PHY in a state where the
-radio hears nothing until full PHY initialisation runs again at boot.
+**The lesson worth keeping:** reading `_SwitchBand` did not find any of this,
+and I judged the function reasonable -- it was. The post-band-switch readback
+did, by showing everything *correct* on channel 149 and so proving the fault
+lay in a register the switch never touched. Add the readback earlier next time.
 
-Where to look, from `phy-channel-and-band.md`:
+### 6. The Deskbar route — WORKING as of 2026-08-21
 
-- **RFE pinmux.** rfe_type 20 wants `0x77777777` for 2.4 GHz (path D
-  untouched) and `0x54775477` for 5 GHz across all four paths, plus
-  `0x1ABC[27:20]` 0x77 vs 0x54. A runtime readback during earlier work showed
-  `0x77777777` when 5 GHz was expected, so this is the first thing to verify
-  on both transitions.
-- **TX power.** The EFUSE layout puts the 5 GHz base 14 bytes at offset +18
-  within each 42-byte path block. Confirm `_SetTxPower` is re-applied *after*
-  the band switch, not before, and that the 5 GHz indices are the ones being
-  read.
-- **`fc_area` (0x0860) and `RF_MOD_AG` band bits.** RF register 0x18 should
-  read `0x53195` on channel 149 against `0x13124` on channel 36; check what it
-  actually reads after the switch.
+Connecting from the Deskbar network menu or the Network preflet works.
+`net_server` always delegates a wireless join to `wpa_supplicant`, so
+`ifconfig join <ssid> <passphrase>` takes the identical path -- which is how to
+test it without touching the GUI.
 
-**Reproducer**, and note the reboot is not optional -- the wedged radio
-survives everything short of it:
+Three things were missing:
 
-    (reboot first)
-    ifconfig /dev/net/rtl8814au/0 scan
-    sleep 22
-    ifconfig /dev/net/rtl8814au/0 list          # confirm the 5 GHz SSID is there
-    wifi-join /dev/net/rtl8814au/0 <5GHz-SSID> <passphrase>
-    grep -a rtl8814au /var/log/syslog | tail -20
+1. **`IEEE80211_IOC_SSID` had no GET handler**, and that alone was fatal. The
+   supplicant reads the SSID back immediately after associating; our failure
+   made it conclude the association was not real and deauthenticate. Note this
+   dispatcher writes the request header back **per-case**, so a GET must
+   `user_memcpy(userArgs, &request, ...)` or the caller never sees `i_len`.
+2. **The EAPOL diversion was unconditional**, so the supplicant waited forever
+   for frames the driver was consuming. Now gated on `fPmkValid`: the
+   in-driver path takes its PMK from `IOC_HAIKU_JOIN`, so no PMK means the
+   supplicant is driving and the driver stands down.
+3. **`IOC_WPAKEY` was a logging stub.** It now installs the keys, buffering
+   pairwise and group until both arrive, **and arms the software cipher** --
+   programming the CAM alone is not enough when encrypt and decrypt are in
+   software, and skipping it gives an association that looks perfect and
+   carries nothing.
 
-**Worth fixing regardless of 5 GHz:** a failed join should not leave the radio
-unable to scan. Whatever the band-switch fault turns out to be, `_DoJoin`
-failing partway needs to restore the PHY to a known state rather than leaving
-it wherever it got to.
+**A documentation lesson from this one.** The DEAUTH that killed the Deskbar
+route was recorded in `wpa-supplicant-and-deskbar.md` for days as net_server
+tearing down its own join, complete with a note that it happened even with the
+supplicant killed. It was ours all along, and the ioctl log said so as soon as
+the unsupported call was visible. A confidently written note in our own docs is
+still a hypothesis.
 
-### 5b. 5 GHz association (original notes)
-
-Receive works and has since 2026-08-19, but association on 5 GHz has never
-been attempted. `AdamsFamily02-5G` is on channel 149 and measured *stronger*
-than the 2.4 GHz radio (-65 to -69 dBm against -72 to -74).
-
-### 6. The Deskbar route
-
-See `wpa-supplicant-and-deskbar.md`. Needs a supplicant-owned mode: the
-in-driver handshake and wpa_supplicant cannot both own the four-way.
+Still genuinely Haiku-side: **open (unencrypted) networks** must go through
+net_server, which tears the association down immediately. Not the driver.
 
 ### 7. Loose ends
 
