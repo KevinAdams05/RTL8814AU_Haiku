@@ -75,6 +75,27 @@ typedef void (*RxFrameCallback)(void* cookie, const uint8* frameData,
 // Number of pre-allocated RX transfer buffers. Multiple buffers keep
 // the USB pipeline full — while one is being processed, another is
 // waiting in the USB stack for incoming data.
+// Bulk-IN buffers kept in flight.
+//
+// This was 4, and the receive path resubmits a buffer only *after* it has
+// finished walking the transfer -- so during processing that buffer is not
+// receiving, and four of them cap the pipeline. Measured at 4 buffers the
+// driver managed about 200 transfers a second; the frames themselves were
+// arriving intact, so the ceiling was the gap between a completion and its
+// resubmission rather than anything on the air.
+//
+// Resubmitting before processing is not an option while the data still lives
+// in the buffer being processed, so widening the pipeline is the obvious move
+// -- but raising this to 12 was tried and the driver would not come up at all,
+// twice in a row: no scan results, no association. 12 x kUsbRxBufferSize is
+// 384 KB of kernel allocation, which is evidently too much to ask for here.
+//
+// The idea is still right, and there is room to do it properly: measured
+// transfers run about 1.6 KB even with the aggregation threshold raised, so a
+// 32 KB buffer is wildly oversized. Shrinking kUsbRxBufferSize would buy more
+// buffers for *less* total memory -- 12 x 8 KB is 96 KB against the 128 KB
+// four 32 KB buffers use today. That needs the chip's maximum aggregate size
+// established first, so a large aggregate is never truncated.
 static const uint32 kRxTransferCount = 4;
 
 

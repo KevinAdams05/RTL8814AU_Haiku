@@ -82,26 +82,44 @@ transfer. Frame 1's `dword0` pattern reappeared exactly 8 bytes into where we
 had looked, in three independent samples. That turns "the walk is misaligned
 somewhere" into "the advance is 8 bytes short", which is a solvable problem.
 
-**What is left: receive throughput, now unmasked.** Eliminating the loss
-revealed a second ceiling that the loss had been hiding -- receive sits at
-1.2 Mbit/s against 19 for transmit. Note this is *lower* than the 3.5-4.6
-Mbit/s measured while frames were still being dropped, which makes sense: the
-walk now delivers every frame in a transfer instead of abandoning most of
-them, so the per-frame cost of the receive path is fully exposed for the first
-time.
+**What is left: receive throughput.** Currently 2.4-3.1 Mbit/s against 11-21
+for transmit, with loss at 0-5%.
+
+The mechanism is understood and measured. Receive throughput is capped by the
+*number of bulk-IN transfers per second*, not by anything on the air:
+
+| | transfers/sec | frames/transfer | receive |
+|---|---|---|---|
+| aggregation threshold 5 pages | 82 | 1.59 | 1.2 Mbit/s |
+| threshold raised to 0x20 pages | ~200 | ~1.0 | 2.4-3.1 Mbit/s |
+
+Raising the threshold grew the transfers (sampled lengths went from ~400 bytes
+to ~1600) and roughly tripled the transfer rate. The remaining cap is that
+**`_RxCallback` resubmits its buffer only after `_ProcessTransfer` returns**,
+so each of the four buffers stops receiving while its contents are walked,
+CCMP-decrypted and copied into the ring.
 
 Software CCMP is **not** the suspect: transmit does software AES encrypt at
-19-32 Mbit/s, so the cipher is not a 1 Mbit/s bottleneck. The structural
-candidates, in order:
+11-21 Mbit/s, so the cipher is not a 3 Mbit/s bottleneck.
+
+**Widening the pipeline is the right move but not naively.** Raising
+`kRxTransferCount` from 4 to 12 was tried and the driver would not come up at
+all, twice in a row -- no scan results, no association. That is 384 KB of
+kernel allocation. The promising version is to shrink `kUsbRxBufferSize`
+first: transfers run about 1.6 KB even with the threshold raised, so 32 KB per
+buffer is wildly oversized, and twelve 8 KB buffers would be 96 KB against the
+128 KB four 32 KB buffers use now -- more pipelining for less memory. Establish
+the chip's maximum aggregate size before shrinking, so a large aggregate is
+never truncated.
+
+Two other structural candidates, unmeasured:
 
 1. **The RX ring holds 64 slots and silently drops the oldest when full**
-   (`Device.cpp`, the enqueue path) -- those drops are not counted anywhere.
-   Add a counter first; if it is non-zero under load, the ring is the ceiling.
-2. **`Read()` returns one frame per call**, and both it and the RX enqueue
-   take the device-wide `fLock`, which transmit also takes. Contention on a
-   single mutex across the whole driver is a plausible cap.
-3. Per-frame work in the enqueue path: an 802.11-to-ethernet rebuild with two
-   `memcpy` calls into the ring slot, under that lock.
+   (`Device.cpp`, the enqueue path) -- those drops are counted nowhere. Add a
+   counter; if it is non-zero under load, the ring is a second ceiling.
+2. **`Read()` returns one frame per call**, and both it and the RX enqueue take
+   the device-wide `fLock`, which transmit also takes. Contention on one mutex
+   across the whole driver is plausible at these rates.
 
 ### 2. Throughput, after that
 

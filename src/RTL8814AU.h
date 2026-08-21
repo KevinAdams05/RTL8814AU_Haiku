@@ -414,7 +414,20 @@ static const uint16 kTrxDmaCtrlRxDmaAggEn	= 0x0004;
 // instead of batching, and receive throughput sat at about 1 Mbit/s while
 // transmit managed 27.  The vendor driver writes 0x2005: five pages, with the
 // longer timeout as the backstop rather than the trigger.
-static const uint16 kRxDmaAggUsb2Value = 0x2005;	// time<<8 | size
+// Threshold 0x20 pages with timeout 0x20, i.e. fill a large transfer and let
+// the timer act only as a backstop.
+//
+// Both halves matter and both have been measured wrong. The original 0x0520
+// was the two fields transposed -- a 32-page threshold against a very short
+// timer, so the timer always won and the chip shipped nearly-empty transfers.
+// Correcting that to the vendor's 0x2005 fixed the transposition but left the
+// threshold at five pages, which the traffic reaches almost immediately: 82
+// transfers per second carrying 1.59 frames each, every one of them costing a
+// USB round-trip and a processing pass before its buffer is resubmitted.
+//
+// Raising the threshold while keeping the long timeout gets both: big
+// transfers when traffic is flowing, prompt delivery when it is not.
+static const uint16 kRxDmaAggUsb2Value = 0x2020;	// time<<8 | size
 static const uint16 kRxDmaAggUsb3Value		= 0x1a07;
 
 // REG_RXDMA_PRO controls RX-DMA burst behavior to USB.  Layout:
