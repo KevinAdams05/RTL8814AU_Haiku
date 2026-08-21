@@ -43,7 +43,8 @@ in any browser.
 | [tx-pipeline.svg](diagrams/tx-pipeline.svg) | TX flow from the Haiku network stack through SW CCMP encrypt to the chip |
 | [scan-flow.svg](diagrams/scan-flow.svg) | `ifconfig scan` walk-through from userland to `B_NETWORK_WLAN_SCANNED` |
 | [rf-register-access.svg](diagrams/rf-register-access.svg) | The separate write (3-wire LSSI) and read (direct-mapped window) routes to an RF register |
-| [deskbar-to-driver.svg](diagrams/deskbar-to-driver.svg) | Deskbar to driver: commands down through net_server and wpa_supplicant, events back up, and where it currently breaks |
+| [deskbar-to-driver.svg](diagrams/deskbar-to-driver.svg) | Deskbar to driver: commands down through `net_server` and `wpa_supplicant`, and events back up. This route works; the diagram's description used to say "where it currently breaks" |
+| [rfe-board-class.svg](diagrams/rfe-board-class.svg) | How the RF front-end board class from EFUSE `0x0CA` picks the per-band RFE pinmux values, and what happens on an unrecognised class |
 
 ## Conventions
 

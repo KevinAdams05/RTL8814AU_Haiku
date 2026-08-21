@@ -101,6 +101,16 @@ times and giving up with a reason-15 timeout.
   (`RATEID_IDX_MIX2`), matching the vendor, so OFDM data frames no longer ask
   the MAC for an OFDM rate out of a CCK-only table.
 
+- **The same wrong value, in the rate-adaptation handshake.** The RA_INFO H2C
+  command sent `rate_id` 8, commented "OFDM-only rate group", so the firmware
+  was told this peer used CCK while the accompanying rate mask offered it
+  nothing but OFDM. `rate_id` shares the descriptor's rate-group namespace;
+  decoding the vendor's own RA_INFO out of the HMEBOX register writes gives
+  12, agreeing with its descriptors. The rate mask stays deliberately
+  narrower than the vendor's: every frame sets `USE_RATE`, which overrides the
+  rate-adaptation engine, so it is close to inert until there is real rate
+  adaptation to feed.
+
 - **Association requests advertised CCK rates on 5 GHz.** The Supported Rates
   element claimed 1, 2, 5.5 and 11 Mbps as *basic* rates on both bands, and
   CCK does not exist above 2.4 GHz — so a 5 GHz request claimed four basic

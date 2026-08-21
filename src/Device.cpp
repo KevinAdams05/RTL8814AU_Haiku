@@ -4615,7 +4615,7 @@ RTL8814AUDevice::_PostAssocLoop()
          filter recognises traffic from / to this BSS.  (We already
          wrote it in _DoJoin, but Associate() in WiFiManager does it
          too — keep consistent.)
-      2. Send RA_INFO H2C — MACID 0, rate_id 8 (OFDM), BW 20 MHz,
+      2. Send RA_INFO H2C — MACID 0, rate_id 12 (mixed), BW 20 MHz,
          rate mask covering OFDM 6–54 Mbps.  The rate adaptation
          engine uses this to pick a rate per data-frame TX.
       3. Send MEDIA_STATUS_RPT H2C — connect=1, MACID=0.
@@ -4658,7 +4658,22 @@ RTL8814AUDevice::_DoPostAssocSetup()
 	//      bytes 3..6:    rate mask (32 bits, low first) — we send the
 	//                     low 24 bits since H2C payload is 6 bytes.
 	const uint8 kMacID = 0;
-	const uint8 kRateId = 8;	// OFDM-only rate group
+
+	// rate_id is the same 5-bit rate-group namespace as the TX descriptor's
+	// RATE_ID field. This was 8, commented "OFDM-only rate group"; 8 is
+	// RATEID_IDX_B, the CCK-only group, so the firmware was told this peer
+	// used CCK while the mask below offered it nothing but OFDM. Decoding the
+	// vendor driver's own RA_INFO out of the HMEBOX writes in a usbmon
+	// capture gives rate_id 12 (RATEID_IDX_MIX2), which agrees with the 12 in
+	// its transmit descriptors.
+	const uint8 kRateId = 12;	// RATEID_IDX_MIX2
+
+	// The rate mask is deliberately left narrower than the vendor's. Every
+	// frame this driver sends sets USE_RATE, which overrides the rate
+	// adaptation engine's choice, so the mask is close to inert; offering
+	// only rates we can actually produce is the conservative option while
+	// there is no rate adaptation and no HT aggregation. The vendor's mask
+	// was not decoded reliably enough from the capture to copy.
 	uint32 rateMask = 0x000FF0u;	// OFDM 6–54 Mbps (bits 4-11)
 	uint8 raPayload[6] = { 0 };
 	raPayload[0] = kMacID;

@@ -124,6 +124,8 @@ cannot deliver is pointless.  These registers connect the chip's RF pins
 to the dongle's external LNA, PA and antenna switch, and the 2.4 GHz
 routing physically cannot deliver 5 GHz to the receiver.
 
+![RF front-end board class](diagrams/rfe-board-class.svg)
+
 The routing depends on the board's **RF front-end class**, read from EFUSE
 `0x0CA` and masked with `0x7F`.  This is the chip's own mechanism for coping
 with differently wired boards: the same registers want different values

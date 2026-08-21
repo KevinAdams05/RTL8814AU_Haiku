@@ -264,10 +264,11 @@ RTL8814AUPhyConfig::SetChannel(uint8 channel, ChannelBandwidth bandwidth)
 	// band-select code, so it is the one value that proves the RF chain
 	// agrees with the MAC about where it is: expect roughly 0x13124 on
 	// channel 36 and 0x53195 on channel 149, all-zero in the upper digits
-	// across 2.4 GHz.  The RFE pinmux is the antenna routing -- rfe_type 20
-	// wants 0x77777777 for 2.4 GHz and 0x54775477 for 5 GHz -- and TX power
-	// is included because a correct-looking chain that transmits at zero
-	// power looks exactly like a chain that does not transmit at all.
+	// across 2.4 GHz.  The RFE pinmux is the antenna routing -- on the class-1
+	// boards tested here that is 0x77777777 across all four paths for
+	// 2.4 GHz, and 0x33173317 on A/B/C with 0x77177717 on D for 5 GHz -- and
+	// TX power is included because a correct-looking chain that transmits at
+	// zero power looks exactly like a chain that does not transmit at all.
 	if (bandChanged || newBand == kBand5GHz) {
 		dprintf(RTL8814AU_DRIVER_NAME ": [band %s ch%u] "
 			"RFE A=0x%08x B=0x%08x C=0x%08x D=0x%08x fc_area=0x%08x\n",
@@ -407,10 +408,18 @@ RTL8814AUPhyConfig::_SwitchBand(ChannelBand band)
     Read back at runtime, our dongle sits at the 2.4 GHz value, so this
     had to be programmed before 5 GHz could receive anything.
 
-    Our EFUSE reports rfe_type 20, which lands in the reference driver's
-    default branch: one word repeated across the paths, differing only by
-    band.  Note the reference's 2.4 GHz default case deliberately leaves
-    path D alone, and we match that.
+    The values depend on the board's RF front-end class, read from EFUSE
+    0x0CA and masked with 0x7F.  Both adapters tested report class 1.
+
+    That offset matters: the class used to be read from 0x010, which belongs
+    to a different chip's map and returned an unrelated byte (20), so the
+    branch this function took was chosen by noise.  It happened to land on
+    values that were right for class 1 anyway, which is why it worked -- see
+    kRfePinmuxClasses in RTL8814AU.h.
+
+    Path D is written on both band transitions.  Writing it only on the way
+    to 5 GHz leaves it holding 5 GHz routing afterwards, and 2.4 GHz then
+    receives nothing until the next reboot.
 
     Writing these registers used to provoke a device check-sum error and a
     USB disconnect, which is why they were long left untouched.  That was

@@ -158,8 +158,22 @@ and the chip silently drops every queued data frame.
 and on each release issues the H2C sequence:
 
 1.  Re-write BSSID register (idempotent with `_DoJoin`).
-2.  RA_INFO H2C (cmd 0x40): MACID 0, rate_id 8 (OFDM), BW 20 MHz,
-    rate mask covering OFDM 6–54 Mbps.
+2.  RA_INFO H2C (cmd 0x40): MACID 0, rate_id 12 (`RATEID_IDX_MIX2`),
+    BW 20 MHz, rate mask covering OFDM 6–54 Mbps.
+
+    `rate_id` shares the TX descriptor's 5-bit rate-group namespace. It
+    was 8, described here and in the code as "OFDM"; 8 is
+    `RATEID_IDX_B`, the **CCK-only** group, so the firmware was told
+    this peer used CCK while the mask offered it only OFDM. Decoding the
+    vendor driver's own RA_INFO from the HMEBOX register writes in a
+    usbmon capture gives 12, matching the `RATE_ID` in its transmit
+    descriptors.
+
+    The rate mask stays narrower than the vendor's on purpose: every
+    frame sets `USE_RATE`, which overrides the rate-adaptation engine,
+    so the mask is close to inert, and advertising only rates the driver
+    can actually produce is the conservative choice while there is no
+    rate adaptation and no HT aggregation.
 3.  MEDIA_STATUS_RPT H2C (cmd 0x01): connect=1, MACID=0.
 
 After that, the chip is fully ready to TX/RX user data.  The TX

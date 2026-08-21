@@ -645,9 +645,9 @@ static const uint16 kRegBBRfePinmuxPathD	= 0x1AB4;
 static const uint16 kRegBBRfePinmuxCoex		= 0x1ABC;
 static const uint32 kBBRfePinmuxCoexMask	= 0x0FF00000;
 
-// Our dongle reports rfe_type 20, which falls through the reference
-// driver's default branch: one pinmux word for 2.4 GHz and another for
-// 5 GHz, the same value on every path.
+// Per-band pinmux values for the board class this adapter reports; see
+// kRfePinmuxClasses above for the full table and how the class is chosen.
+// The constants below are class 1, which is what both adapters tested report.
 // RF front-end pinmux, per path.  These route the external switch that
 // selects between the transmit amplifier, the receive amplifier and bypass,
 // so getting them wrong can leave receive working while transmit goes

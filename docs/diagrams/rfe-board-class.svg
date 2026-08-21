@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 640" width="900" height="640" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <style>
+    .bg { fill: #ffffff; }
+    .title { font-size: 19px; font-weight: 600; fill: #1b1b1b; }
+    .sub { font-size: 13px; fill: #555555; }
+    .box { fill: #f6f7f9; stroke: #9aa3ad; stroke-width: 1.2; rx: 6; }
+    .boxsel { fill: #e8f2e8; stroke: #4f8a4f; stroke-width: 1.6; rx: 6; }
+    .boxwarn { fill: #fdf1e7; stroke: #b9762f; stroke-width: 1.4; rx: 6; }
+    .lbl { font-size: 13px; fill: #1b1b1b; }
+    .lblb { font-size: 13px; font-weight: 600; fill: #1b1b1b; }
+    .mono { font-size: 12px; font-family: "DejaVu Sans Mono", monospace; fill: #1b1b1b; }
+    .monos { font-size: 11px; font-family: "DejaVu Sans Mono", monospace; fill: #444444; }
+    .muted { font-size: 11.5px; fill: #666666; }
+    .arrow { stroke: #6b7480; stroke-width: 1.4; fill: none; marker-end: url(#a); }
+    .note { font-size: 11.5px; fill: #8a5320; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7480"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="900" height="640"/>
+  <text class="title" x="30" y="34">RF front-end board class</text>
+  <text class="sub" x="30" y="55">How the same registers get different values on differently wired dongles &#8212; and why hardcoding them is not portable.</text>
+
+  <!-- EFUSE source -->
+  <rect class="box" x="30" y="80" width="250" height="86"/>
+  <text class="lblb" x="44" y="102">EFUSE</text>
+  <text class="mono" x="44" y="122">0x0CA &amp; 0x7F</text>
+  <text class="muted" x="44" y="140">&#8594; rfe_type (board class)</text>
+  <text class="monos" x="44" y="157">0x0C9 antenna &#183; 0x0C1 board</text>
+
+  <path class="arrow" d="M 280 123 L 340 123"/>
+
+  <!-- selector -->
+  <rect class="box" x="340" y="80" width="230" height="86"/>
+  <text class="lblb" x="354" y="102">_SetRfePinmux</text>
+  <text class="muted" x="354" y="121">look up the class in</text>
+  <text class="mono" x="354" y="139">kRfePinmuxClasses[]</text>
+  <text class="muted" x="354" y="157">no match &#8594; default + warning</text>
+
+  <!-- class 1 -->
+  <rect class="boxsel" x="30" y="205" width="400" height="150"/>
+  <text class="lblb" x="44" y="228">class 1 &#8212; both adapters tested</text>
+  <text class="muted" x="44" y="246">ASUS USB-AC68 and Edimax AC1750 both report this</text>
+  <text class="mono" x="44" y="272">2.4 GHz  A/B/C 0x77777777   D 0x77777777</text>
+  <text class="mono" x="44" y="292">         coex [27:20] 0x77</text>
+  <text class="mono" x="44" y="316">5 GHz    A/B/C 0x33173317   D 0x77177717</text>
+  <text class="mono" x="44" y="336">         coex [27:20] 0x33</text>
+
+  <!-- class 2 -->
+  <rect class="box" x="460" y="205" width="410" height="150"/>
+  <text class="lblb" x="474" y="228">class 2 &#8212; untested here</text>
+  <text class="muted" x="474" y="246">note path D differs from A/B/C on both bands</text>
+  <text class="mono" x="474" y="272">2.4 GHz  A/B/C 0x72707270   D 0x77707770</text>
+  <text class="mono" x="474" y="292">         coex [27:20] 0x72</text>
+  <text class="mono" x="474" y="316">5 GHz    A/B/C 0x37173717   D 0x77177717</text>
+  <text class="mono" x="474" y="336">         coex [27:20] 0x37</text>
+
+  <!-- default -->
+  <rect class="boxwarn" x="30" y="380" width="400" height="150"/>
+  <text class="lblb" x="44" y="403">class 0, and the fallback</text>
+  <text class="note" x="44" y="421">used for any class we do not carry &#8212; logs a warning</text>
+  <text class="mono" x="44" y="447">2.4 GHz  A/B/C 0x77777777   D 0x77777777</text>
+  <text class="mono" x="44" y="467">         coex [27:20] 0x77</text>
+  <text class="mono" x="44" y="491">5 GHz    A/B/C 0x54775477   D 0x54775477</text>
+  <text class="mono" x="44" y="511">         coex [27:20] 0x54</text>
+
+  <!-- registers -->
+  <rect class="box" x="460" y="380" width="410" height="150"/>
+  <text class="lblb" x="474" y="403">Registers written, per band switch</text>
+  <text class="mono" x="474" y="427">0x0CB0  path A</text>
+  <text class="mono" x="474" y="447">0x0EB0  path B</text>
+  <text class="mono" x="474" y="467">0x18B4  path C</text>
+  <text class="mono" x="474" y="487">0x1AB4  path D   &#8212; on BOTH transitions</text>
+  <text class="mono" x="474" y="507">0x1ABC  coex, bits 27:20</text>
+
+  <path class="arrow" d="M 455 280 L 455 280"/>
+  <path class="arrow" d="M 430 166 L 230 205"/>
+  <path class="arrow" d="M 500 166 L 640 205"/>
+  <path class="arrow" d="M 400 166 L 230 380"/>
+
+  <!-- footnotes -->
+  <text class="lblb" x="30" y="565">Two mistakes this encodes</text>
+  <text class="muted" x="30" y="585">Path D written only when switching TO 5 GHz left it holding 5 GHz routing afterwards, and 2.4 GHz went deaf until the next reboot.</text>
+  <text class="muted" x="30" y="603">The class was read from 0x010 instead of 0x0CA, returning an unrelated byte &#8212; so every &#8220;per this adapter&#8217;s EFUSE&#8221; decision was reasoning about noise.</text>
+  <text class="muted" x="30" y="621">Class 1&#8217;s values are exactly what used to be hardcoded, so neither tested adapter changes behaviour; only an adapter of another class does.</text>
+</svg>
