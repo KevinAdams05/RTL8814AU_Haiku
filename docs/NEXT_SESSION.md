@@ -343,10 +343,12 @@ Two further notes on method:
   tearing down the existing association fails. Use **one join per boot** for
   anything you intend to compare -- every historical sample was a
   first-join-after-boot. The third run does this.
-- **About one first-join in five still fails**, across both builds (1 no-assoc
-  and 1 timeout in 10). That is now the most common observable problem, more
-  frequent than the stall, and it is not the stall: nothing hangs, and the
-  interface either never associates or associates and starves.
+- **About one first-join in five failed**, across both builds. Chasing that
+  found a real bug with a clear mechanism -- a retransmitted EAPOL M1
+  restarted the key derivation, so the access point's M3 was verified against
+  the wrong PTK and dropped until the handshake timed out. Fixed; see the
+  CHANGELOG. Whether it accounts for *all* of the one-in-five is still being
+  measured, so do not assume the residue is zero.
 
 A third presentation turned up while measuring, distinct from the stall and
 worth its own investigation: an association that comes up with **broadcast

@@ -1204,7 +1204,7 @@ RTL8814AUDevice::_InitLLTTable()
 	// falsely claim success — report and let the caller decide.
 	if ((readback & kAutoLLTTrigger) == 0 && (before & kAutoLLTTrigger) == 0) {
 		dprintf(RTL8814AU_DRIVER_NAME ": LLT trigger write had no effect "
-			"— register may not be REG_AUTO_LLT on this chip\n");
+			"- register may not be REG_AUTO_LLT on this chip\n");
 		return B_OK;	// Continue — maybe LLT auto-runs on this variant
 	}
 
@@ -2430,7 +2430,7 @@ RTL8814AUDevice::Free(void* cookie)
 	int32 previousCount = atomic_add(&device->fOpenCount, -1);
 
 	dprintf(RTL8814AU_DRIVER_NAME ": device free (open count: "
-		"%" B_PRId32 " → %" B_PRId32 ")\n",
+		"%" B_PRId32 " -> %" B_PRId32 ")\n",
 		previousCount, previousCount - 1);
 
 	// If this was the last close and the device was unplugged, clean up
@@ -3206,7 +3206,7 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 
 		if (payloadLen > sizeof(device->fEapolInbox.payload)) {
 			dprintf(RTL8814AU_DRIVER_NAME ": RX EAPOL too large for "
-				"inbox: %u bytes (max %u) — dropping\n",
+				"inbox: %u bytes (max %u) - dropping\n",
 				(unsigned)payloadLen,
 				(unsigned)sizeof(device->fEapolInbox.payload));
 			return;
@@ -3482,7 +3482,7 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 		const BssEntry* match = fWiFiManager->FindBssBySsid(ssid, ssidLen);
 		if (match == NULL) {
 			dprintf(RTL8814AU_DRIVER_NAME ": _DoJoin: no BSS matching "
-				"'%s' in scan list — run a scan first\n", ssid);
+				"'%s' in scan list - run a scan first\n", ssid);
 			return B_NAME_NOT_FOUND;
 		}
 		memcpy(resolved, match->bssid, 6);
@@ -3518,9 +3518,51 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 		" (want 0x%02x)\n", msrBefore, msrAfter, kMSR_Infra);
 
 
-	// Set chip BSSID register so MAC frame filter accepts AP traffic
-	for (uint32 i = 0; i < 6; i++)
-		fRegisterIO->Write8(kRegBSSID + i, bssid[i]);
+	// Set the chip's BSSID register, and verify it.
+	//
+	// This is what makes the MAC's frame filter accept the access point's
+	// traffic, and it was written blind -- six byte writes with no readback,
+	// immediately followed by the authentication request. The MSR write just
+	// above is verified; this was not, and it matters more.
+	//
+	// The reason for checking: about one first join in five on this hardware
+	// fails with a signature that fits a wrong filter exactly. The scan finds
+	// the target, the authentication request goes out, and nothing comes
+	// back -- authTX=1, authRX=0 -- or the association completes and then not
+	// one frame from the access point is ever received (fromOurAp=0) while
+	// broadcast traffic from other networks arrives normally. Both are what a
+	// BSSID the MAC does not recognise would produce, and neither is
+	// distinguishable from bad reception without looking at the register.
+	//
+	// Verified once per join, so this costs six register reads at join time
+	// and nothing per frame. One retry, because a silently dropped register
+	// write is worth retrying and a persistently wrong one is worth saying
+	// out loud rather than leaving as unexplained packet loss.
+	for (uint32 attempt = 0; attempt < 2; attempt++) {
+		for (uint32 i = 0; i < 6; i++)
+			fRegisterIO->Write8(kRegBSSID + i, bssid[i]);
+
+		uint8 readback[6];
+		for (uint32 i = 0; i < 6; i++)
+			readback[i] = fRegisterIO->Read8(kRegBSSID + i);
+
+		if (memcmp(readback, bssid, 6) == 0)
+			break;
+
+		dprintf(RTL8814AU_DRIVER_NAME ": BSSID register mismatch on attempt "
+			"%u: wrote %02x:%02x:%02x:%02x:%02x:%02x read "
+			"%02x:%02x:%02x:%02x:%02x:%02x\n", (unsigned)(attempt + 1),
+			bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+			readback[0], readback[1], readback[2], readback[3],
+			readback[4], readback[5]);
+
+		if (attempt == 1) {
+			dprintf(RTL8814AU_DRIVER_NAME ": BSSID register will not take "
+				"the value; the access point's frames will be filtered "
+				"out\n");
+		}
+	}
+
 	memcpy(fJoinBssid, bssid, 6);
 	strlcpy(fJoinSsid, ssid, sizeof(fJoinSsid));
 	fJoinSsidLength = ssidLen;
@@ -3973,6 +4015,34 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 
 	// M1 -> M2: capture ANonce, derive PTK, build M2 with HMAC-SHA1 MIC.
 	if (pairwise && keyAck && !keyMicSet && !install) {
+		// A repeated M1 must not restart the key derivation.
+		//
+		// The access point re-sends M1 whenever M2 has not reached it yet,
+		// which happens routinely -- the two simply cross in flight. This
+		// used to regenerate the SNonce and re-derive the PTK every time,
+		// so a retransmitted M1 replaced the keys belonging to the M2 the
+		// access point was about to accept. It would then send M3 computed
+		// against the SNonce from the *first* M2, and we would check that
+		// MIC against a PTK derived from the *second* SNonce. The MIC can
+		// never match, the handshake never completes, and the access point
+		// eventually gives up with a four-way timeout:
+		//
+		//   EAPOL M1 / PTK derived / built M2 / WaitM3
+		//   EAPOL M1 / PTK derived / built M2 / WaitM3   <- keys replaced
+		//   EAPOL M3 / M3 MIC mismatch ... RX DEAUTH reason=15
+		//
+		// This was the most common failure on this hardware, roughly one
+		// first join in five, and it is intermittent precisely because it
+		// depends on the timing of an M1 retransmission.
+		//
+		// The SNonce is therefore fixed for as long as the access point
+		// keeps offering the same ANonce. A repeated M1 rebuilds M2 -- it
+		// has to, because M2 echoes the replay counter of the M1 it answers
+		// -- but rebuilds it from the same SNonce and the same PTK, which is
+		// what the standard's supplicant state machine does.
+		const bool sameAnonce = fPtkValid
+			&& memcmp(fAnonce, nonce, 32) == 0;
+
 		memcpy(fAnonce, nonce, 32);
 
 		// Echo back the M1 replay counter in M2.  Stored big-endian
@@ -3992,37 +4062,44 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			if (!sLoggedOnce) {
 				sLoggedOnce = true;
 				dprintf(RTL8814AU_DRIVER_NAME ": M1 received but no PMK"
-					" — invoke wifi-join with the WPA2 passphrase"
+					" - invoke wifi-join with the WPA2 passphrase"
 					" (Deskbar / wpa_supplicant cannot deliver it via"
 					" AF_LINK on Haiku)\n");
 			}
 			return;
 		}
 
-		// SNonce — kernel-side random.  Mix system_time, real-time
-		// clock, our MAC, and a counter through SHA-1 twice.  Not a
-		// CSPRNG but adequate freshness: the AP only needs SNonce
-		// to be unique per handshake, not unpredictable.
-		_GenerateSnonce(fSnonce);
+		if (sameAnonce) {
+			// Same handshake, repeated M1. Keep the SNonce and the PTK.
+			dprintf(RTL8814AU_DRIVER_NAME ": M1 repeated for the same "
+				"ANonce; keeping the existing SNonce and PTK, resending "
+				"M2\n");
+		} else {
+			// SNonce — kernel-side random.  Mix system_time, real-time
+			// clock, our MAC, and a counter through SHA-1 twice.  Not a
+			// CSPRNG but adequate freshness: the AP only needs SNonce
+			// to be unique per handshake, not unpredictable.
+			_GenerateSnonce(fSnonce);
 
-		// PTK = PRF-384(PMK, "Pairwise key expansion",
-		//               min(AA,SPA) || max(AA,SPA)
-		//            || min(ANonce,SNonce) || max(ANonce,SNonce))
-		uint8 ptkData[76];
-		const uint8* aa = senderMac;	// AP's MAC
-		const uint8* spa = fMacAddress;	// our MAC
-		bool aaIsMin = memcmp(aa, spa, 6) < 0;
-		memcpy(ptkData, aaIsMin ? aa : spa, 6);
-		memcpy(ptkData + 6, aaIsMin ? spa : aa, 6);
-		bool aNonceIsMin = memcmp(fAnonce, fSnonce, 32) < 0;
-		memcpy(ptkData + 12, aNonceIsMin ? fAnonce : fSnonce, 32);
-		memcpy(ptkData + 44, aNonceIsMin ? fSnonce : fAnonce, 32);
-		wpa2_crypto::prf_384(fPmk, 32,
-			"Pairwise key expansion", 22,
-			ptkData, 76, fPtk);
-		fPtkValid = true;
+			// PTK = PRF-384(PMK, "Pairwise key expansion",
+			//               min(AA,SPA) || max(AA,SPA)
+			//            || min(ANonce,SNonce) || max(ANonce,SNonce))
+			uint8 ptkData[76];
+			const uint8* aa = senderMac;	// AP's MAC
+			const uint8* spa = fMacAddress;	// our MAC
+			bool aaIsMin = memcmp(aa, spa, 6) < 0;
+			memcpy(ptkData, aaIsMin ? aa : spa, 6);
+			memcpy(ptkData + 6, aaIsMin ? spa : aa, 6);
+			bool aNonceIsMin = memcmp(fAnonce, fSnonce, 32) < 0;
+			memcpy(ptkData + 12, aNonceIsMin ? fAnonce : fSnonce, 32);
+			memcpy(ptkData + 44, aNonceIsMin ? fSnonce : fAnonce, 32);
+			wpa2_crypto::prf_384(fPmk, 32,
+				"Pairwise key expansion", 22,
+				ptkData, 76, fPtk);
+			fPtkValid = true;
 
-		dprintf(RTL8814AU_DRIVER_NAME ": M1 processed, PTK derived\n");
+			dprintf(RTL8814AU_DRIVER_NAME ": M1 processed, PTK derived\n");
+		}
 
 		// Build EAPOL-Key M2 frame in a stack buffer.  EAPOL header
 		// (4 bytes) + EAPOL-Key fixed (95 bytes) + RSN IE (key_data_len)
@@ -4031,7 +4108,7 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		uint32 keyDataLength = fWpaIeLength;
 		if (keyDataLength == 0 || keyDataLength > 80) {
 			dprintf(RTL8814AU_DRIVER_NAME ": M1 processed but no RSN "
-				"IE stored — skipping M2 build\n");
+				"IE stored - skipping M2 build\n");
 			return;
 		}
 		uint32 m2Len = 99 + keyDataLength;
@@ -4120,7 +4197,7 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		if (memcmp(receivedMic, computedMic, 16) != 0) {
 			dprintf(RTL8814AU_DRIVER_NAME ": M3 MIC mismatch "
 				"(received[0..3]=%02x%02x%02x%02x "
-				"computed[0..3]=%02x%02x%02x%02x) — dropping\n",
+				"computed[0..3]=%02x%02x%02x%02x) - dropping\n",
 				receivedMic[0], receivedMic[1], receivedMic[2], receivedMic[3],
 				computedMic[0], computedMic[1], computedMic[2], computedMic[3]);
 			return;
@@ -4135,7 +4212,7 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		if (keyDataLen < 16 || (keyDataLen % 8) != 0
 				|| keyDataLen - 8 > sizeof(plaintext)) {
 			dprintf(RTL8814AU_DRIVER_NAME ": M3 keyDataLen=%u not a "
-				"valid AES-key-wrap size — dropping\n",
+				"valid AES-key-wrap size - dropping\n",
 				(unsigned)keyDataLen);
 			return;
 		}
@@ -4146,7 +4223,7 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		uint32 ptLen = keyDataLen - 8;
 		if (!unwrapOk) {
 			dprintf(RTL8814AU_DRIVER_NAME ": M3 aes_unwrap failed "
-				"(IV mismatch) — dropping\n");
+				"(IV mismatch) - dropping\n");
 			return;
 		}
 		dprintf(RTL8814AU_DRIVER_NAME ": M3 MIC OK, %u plaintext bytes\n",
@@ -4186,7 +4263,7 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		}
 		if (gtkLen == 0) {
 			dprintf(RTL8814AU_DRIVER_NAME ": M3 unwrap OK but no GTK KDE "
-				"found in plaintext — dropping\n");
+				"found in plaintext - dropping\n");
 			return;
 		}
 		dprintf(RTL8814AU_DRIVER_NAME ": M3 GTK extracted: keyId=%u len=%u\n",
@@ -4464,6 +4541,38 @@ RTL8814AUDevice::_InstallSessionKeys(const uint8* tk, const uint8* gtk,
 	// frames bypass decrypt and arrive at the host still encrypted
 	// (verified empirically: SECCFG=0x01EC + valid CAM but RX
 	// frames at offset 24 still showed CCMP IV header).
+	// Before switching BSSID filtering on, check the BSSID register still
+	// holds the BSSID we joined.
+	//
+	// This is the moment the register starts to matter. Until now the filter
+	// has been deliberately BSSID-blind, so that scan beacons from every BSS
+	// reach the parser, and authentication and association responses are
+	// accepted on a physical-address match instead. Enabling CBSSID_DATA
+	// makes every data frame from the access point conditional on this
+	// register being right, and nothing between _DoJoin and here has
+	// re-checked it -- a scan, a channel change or a band switch in between
+	// would not announce that it had disturbed it.
+	//
+	// If it is wrong at this instant the failure is silent and total: the
+	// association stays up, transmit works, broadcast traffic from other
+	// networks still arrives, and not one frame from our own access point is
+	// ever received again. That is exactly the shape of the "associates and
+	// then starves" failure, where DHCP retries forever with fromOurAp=0.
+	uint8 bssidNow[6];
+	for (uint32 i = 0; i < 6; i++)
+		bssidNow[i] = fRegisterIO->Read8(kRegBSSID + i);
+	if (memcmp(bssidNow, fJoinBssid, 6) != 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": BSSID register drifted before "
+			"enabling BSSID filtering: have %02x:%02x:%02x:%02x:%02x:%02x, "
+			"want %02x:%02x:%02x:%02x:%02x:%02x - rewriting\n",
+			bssidNow[0], bssidNow[1], bssidNow[2], bssidNow[3],
+			bssidNow[4], bssidNow[5],
+			fJoinBssid[0], fJoinBssid[1], fJoinBssid[2], fJoinBssid[3],
+			fJoinBssid[4], fJoinBssid[5]);
+		for (uint32 i = 0; i < 6; i++)
+			fRegisterIO->Write8(kRegBSSID + i, fJoinBssid[i]);
+	}
+
 	uint32 oldRcr = fRegisterIO->Read32(kRegRCR);
 	uint32 newRcr = oldRcr
 		| kRCR_CBSSID_DATA | kRCR_CBSSID_BCN

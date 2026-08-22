@@ -128,6 +128,37 @@ Both of the first two were written as "what the usbmon capture shows", and
 neither survived being checked against the actual bytes. A capture is only
 evidence for what you decode out of it.
 
+### The four-way handshake could lose its own keys
+
+**A retransmitted M1 restarted the key derivation.** The access point re-sends
+M1 whenever M2 has not reached it yet, which happens routinely -- the two
+simply cross in flight. Every M1 generated a fresh SNonce and re-derived the
+PTK, so a retransmission discarded the keys belonging to the M2 the access
+point was about to accept. It then sent M3 computed against the first SNonce
+while the driver verified that MIC against a PTK derived from the second. The
+MIC cannot match, so M3 was dropped repeatedly and the access point eventually
+gave up with a four-way-handshake timeout.
+
+```
+EAPOL M1 / PTK derived / built M2 / WaitM3
+EAPOL M1 / PTK derived / built M2 / WaitM3     <- keys replaced here
+EAPOL M3 / M3 MIC mismatch ... RX DEAUTH reason=15
+```
+
+This was the most common failure on the Edimax, roughly one first join in
+five, and it is intermittent precisely because it depends on the timing of an
+M1 retransmission. The SNonce and PTK are now held fixed for as long as the
+access point offers the same ANonce; a repeated M1 still rebuilds M2, because
+M2 echoes the replay counter of the M1 it answers, but rebuilds it from the
+same keys.
+
+Worth recording how it was found, because the reasoning is reusable: M3
+*arrived*, so reception and the BSSID filter were fine; and an access point
+only sends M3 after accepting M2's MIC, so the key was right at that moment.
+M3 is also the only frame whose MIC this driver verifies -- M1 carries none,
+and M2's is generated locally. Generation proven correct while verification
+failed means the key changed in between.
+
 ### Also
 
 - A failed join no longer leaves the radio unable to scan.
@@ -151,10 +182,11 @@ evidence for what you decode out of it.
   `net_server`, which tears the association down immediately. This one is not
   the driver's doing.
 - No WEP, WPA3 or enterprise (802.1X) authentication.
-- **About one first-join in five fails**, across 26 measured joins: the
-  interface either never associates, or associates and then starves (no
-  unicast frames arrive, so DHCP retries forever). Retrying usually works.
-  This is the most common problem in the driver as it stands.
+- **About one first-join in five used to fail**, and the cause is now known
+  and fixed: a retransmitted EAPOL M1 restarted the key derivation. See
+  below. Some first joins may still fail for reasons not yet identified --
+  an association that never completes, or one that completes and receives
+  nothing from the access point.
 - **An intermittent stall of the data queue just after association**, on
   either band. Rarer than the above: **not once in 26 measured joins**, though
   it was seen several times before it was measured properly. There is now
