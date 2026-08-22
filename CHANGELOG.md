@@ -151,8 +151,17 @@ evidence for what you decode out of it.
   `net_server`, which tears the association down immediately. This one is not
   the driver's doing.
 - No WEP, WPA3 or enterprise (802.1X) authentication.
+- **About one first-join in five fails**, across 26 measured joins: the
+  interface either never associates, or associates and then starves (no
+  unicast frames arrive, so DHCP retries forever). Retrying usually works.
+  This is the most common problem in the driver as it stands.
 - **An intermittent stall of the data queue just after association**, on
-  either band. Bulk transfers on the best-effort endpoint stop completing and
+  either band. Rarer than the above: **not once in 26 measured joins**, though
+  it was seen several times before it was measured properly. There is now
+  recovery for it -- the stuck transfers are cancelled and the endpoint's halt
+  condition cleared -- but since the stall never recurred during measurement,
+  that recovery is untested against the real failure and is best regarded as
+  insurance rather than a fix. Bulk transfers on the best-effort endpoint stop completing and
   fill every slot, and the syslog fills with `TX wait timed out on pipe 2`.
   When it happens the four-way handshake never starts, so the symptom is an
   association that never gets an address. Most runs are clean. It has only

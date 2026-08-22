@@ -308,23 +308,45 @@ What is known:
 
 ### Measured, 2026-08-22
 
-A first pass at the failure rate, which is what the section below asks for.
-**16 joins on a build with stall recovery: 8 ok, 0 stalled, 6 no-assoc,
-2 timeout.**
+Two runs, and the honest conclusion is that **the stall is much rarer than
+first claimed and neither change has been shown to affect it.**
 
-Three things follow, and two of them are corrections:
+| Build | Joins | ok | stalled | recovered | other |
+|---|---|---|---|---|---|
+| no recovery (partial, v1 harness) | 6 | 4 | **1** | n/a | 1 |
+| recovery only | 16 | 8 | **0** | 0 | 8 |
+| recovery + `TX_HANG_CTRL`, one join per boot | 10 | 8 | **0** | 0 | 2 |
 
-- **The stall did not reproduce once in 16 joins.** The earlier "roughly one
-  run in five" came from a handful of `deploy-test.sh` runs and does not
-  survive being measured properly. Its real rate is unknown but lower.
-- **Recovery never fired** (`0 recovered`), so it is unproven, not proven. It
-  is sound and cheap, and worth keeping as insurance, but nothing here shows
-  it working. Do not let the code's existence be mistaken for evidence.
-- **The 6 no-assoc results are a harness artefact.** They cluster after the
-  first attempt in a boot, because re-joining without tearing down the
-  existing association fails. Use **one join per boot** for anything you
-  intend to compare against earlier numbers -- every historical sample was a
-  first-join-after-boot.
+**Zero stalls in 26 joins.** It is tempting to read that as a fix. It is not,
+for a reason worth stating plainly: **recovery cannot prevent a stall** -- it
+only reclaims the slots after one happens -- and `recovered` is 0, so no stall
+occurred for it to act on. Neither change has a mechanism that would produce
+0-in-26.
+
+What the arithmetic says instead: if the true rate were the 1-in-6 the first
+run suggested, seeing 0 in 26 has probability 0.009. At 1-in-20 it has
+probability 0.26. So the first estimate was almost certainly too high --
+it came from a handful of `deploy-test.sh` runs, not from a measurement --
+and the real rate is low enough that **26 joins cannot distinguish a fix from
+chance.** Anyone resuming this should budget for a much larger sample, or find
+a way to provoke the stall deliberately, before believing any fix.
+
+`TX_HANG_CTRL` stands on being a confirmed missing initialisation write that
+the vendor performs on both bands, not on a measured improvement. Recovery
+stands as cheap insurance against a failure that is currently permanent when
+it happens. Neither is evidence about the other.
+
+Two further notes on method:
+
+- **The 6 no-assoc results in the middle run are a harness artefact.** They
+  cluster after the first attempt in a boot, because re-joining without
+  tearing down the existing association fails. Use **one join per boot** for
+  anything you intend to compare -- every historical sample was a
+  first-join-after-boot. The third run does this.
+- **About one first-join in five still fails**, across both builds (1 no-assoc
+  and 1 timeout in 10). That is now the most common observable problem, more
+  frequent than the stall, and it is not the stall: nothing hangs, and the
+  interface either never associates or associates and starves.
 
 A third presentation turned up while measuring, distinct from the stall and
 worth its own investigation: an association that comes up with **broadcast
