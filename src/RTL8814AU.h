@@ -112,6 +112,10 @@ static const uint32 kAmpduMaxLength			= 0x1FFFF;	// 128 KB
 // ---------------------------------------------------------------------------
 
 static const uint32 kBulkOutEndpointCount	= 3;
+
+// Minimum gap between recovery attempts on one bulk OUT pipe. A pipe that is
+// genuinely dead must not turn stall recovery into a reset loop.
+static const bigtime_t kPipeRecoveryInterval	= 3000000;	// 3 seconds
 static const uint32 kBulkInEndpointCount	= 1;
 static const uint32 kInterruptInEndpointCount = 1;
 
@@ -785,6 +789,18 @@ static const uint16 kRegARFR4				= 0x049C;
 static const uint16 kRegARFR5				= 0x04A4;
 
 static const uint16 kRegAmpduMaxTime		= 0x0456;
+
+// Transmit-hang control. The vendor driver's 8814A MAC initialisation table
+// writes 0x04 here, and a usbmon capture confirms it doing so exactly once on
+// both bands. We never wrote it at all.
+//
+// The register's name is not incidental: the vendor's own watchdog
+// (sreset_xmit_status_check) treats "every transmit buffer in use with no
+// completion for four seconds" as a transmit hang and resets the MAC to clear
+// it. Leaving this at its power-on default is the leading suspect for the
+// intermittent stall of the best-effort data queue.
+static const uint16 kRegTxHangCtrl			= 0x045E;
+static const uint8 kTxHangCtrlInit			= 0x04;
 static const uint16 kRegAmpduMaxLength		= 0x0458;
 
 // Packet lifetime.  A frame that sits in a hardware queue longer than this is

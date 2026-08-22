@@ -851,6 +851,18 @@ RTL8814AUDevice::_InitMAC()
 	// to flatten TCP throughput.
 	fRegisterIO->Write16(kRegRetryLimit, kRetryLimitInit);
 
+	// Transmit-hang control, which was never written.
+	//
+	// The vendor's MAC initialisation table for this chip puts 0x04 here, and
+	// decoding its usbmon capture shows it doing so once on each band. Our
+	// omission left the register at its power-on default.
+	//
+	// This is the leading candidate for the intermittent stall where every
+	// transfer slot on the best-effort pipe ends up outstanding and no
+	// completion ever arrives -- the same condition the vendor's watchdog
+	// calls a transmit hang and answers with a MAC reset.
+	fRegisterIO->Write8(kRegTxHangCtrl, kTxHangCtrlInit);
+
 	// Program the rate-fallback tables and the response rate set.
 	//
 	// None of these were written.  The TX descriptor's RATE_ID field selects

@@ -306,6 +306,39 @@ What is known:
   `/var/log/syslog` instead, and expect an `ssh` that runs `ifconfig` to hang
   until it is killed.
 
+### Measured, 2026-08-22
+
+A first pass at the failure rate, which is what the section below asks for.
+**16 joins on a build with stall recovery: 8 ok, 0 stalled, 6 no-assoc,
+2 timeout.**
+
+Three things follow, and two of them are corrections:
+
+- **The stall did not reproduce once in 16 joins.** The earlier "roughly one
+  run in five" came from a handful of `deploy-test.sh` runs and does not
+  survive being measured properly. Its real rate is unknown but lower.
+- **Recovery never fired** (`0 recovered`), so it is unproven, not proven. It
+  is sound and cheap, and worth keeping as insurance, but nothing here shows
+  it working. Do not let the code's existence be mistaken for evidence.
+- **The 6 no-assoc results are a harness artefact.** They cluster after the
+  first attempt in a boot, because re-joining without tearing down the
+  existing association fails. Use **one join per boot** for anything you
+  intend to compare against earlier numbers -- every historical sample was a
+  first-join-after-boot.
+
+A third presentation turned up while measuring, distinct from the stall and
+worth its own investigation: an association that comes up with **broadcast
+receive working and unicast receive at zero**, so DHCP sends DISCOVER
+forever and no reply ever arrives.
+
+```
+data RX heartbeat: total=256 protected=256 bcast=256 unicast=0 fromOurAp=0
+SW CCMP encrypt OK #4 len=76 ethertype=0806 pn=4
+```
+
+Transmit is fine there and nothing stalls; healthy runs show `unicast=4246`.
+Whether this shares a root cause with the transmit stall is unknown.
+
 **Before anything else, get a failure rate.** Run `deploy-test.sh` in a loop
 and count; every conclusion in this section rests on single runs, which is
 exactly how it got mischaracterised the first time. Then, cheapest first:

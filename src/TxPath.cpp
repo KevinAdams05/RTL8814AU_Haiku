@@ -57,8 +57,10 @@ RTL8814AUTxPath::RTL8814AUTxPath(RTL8814AURegisterIO* registerIO,
 	memcpy(fBulkOut, bulkOut, sizeof(fBulkOut));
 	mutex_init(&fLock, "rtl8814au:tx");
 
-	for (uint32 p = 0; p < kBulkOutEndpointCount; p++)
+	for (uint32 p = 0; p < kBulkOutEndpointCount; p++) {
 		fPipeSlotFree[p] = -1;
+		fLastPipeRecovery[p] = 0;
+	}
 
 	// Allocate transfer buffers and semaphores for each slot
 	for (uint32 i = 0; i < kTxTotalTransfers; i++) {
@@ -198,6 +200,16 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 			dprintf(RTL8814AU_DRIVER_NAME ": TX wait timed out on pipe %u\n",
 				(unsigned)pipeIndex);
 			fFramesFailed++;
+
+			// Every slot on this pipe is outstanding and nothing is
+			// completing.  Left alone this is permanent -- the interface
+			// stays associated and passes nothing until the machine is
+			// rebooted -- so try to unstick the pipe before giving up on
+			// the frame.  Drop the lock first: recovery issues USB
+			// transfers, and the cancellations it triggers run the
+			// completion callback, which takes this same lock.
+			locker.Unlock();
+			_RecoverStalledPipe(pipeIndex);
 			return B_TIMED_OUT;
 		}
 
@@ -505,6 +517,64 @@ RTL8814AUTxPath::ClearBeaconPipeHalt()
 }
 
 
+/*! Try to unstick a bulk OUT pipe whose transfers have stopped completing.
+
+    The failure this addresses: after association, every transfer slot on the
+    best-effort data pipe ends up outstanding and no completion ever arrives.
+    It is intermittent -- most joins are clean -- and it is not band-specific.
+    Because nothing here used to recover, the result was an interface that
+    stayed associated and carried nothing until the machine was rebooted.
+
+    This is a condition the vendor driver expects. Its
+    sreset_xmit_status_check() for this chip watches for exactly two things:
+    a non-zero REG_TXDMA_STATUS, and "all transmit buffers in use with no
+    completion for four seconds" -- which it calls a tx hang. Its answer in
+    both cases is a silent reset of the MAC.
+
+    We do the cheaper USB-level recovery rather than a MAC reset, in two
+    steps, because either one alone is insufficient:
+
+      1. Cancel the queued transfers. This is what reclaims the slots: each
+         cancellation completes its transfer with B_CANCELED, which runs
+         _TxCallback, which clears inUse and releases the per-pipe semaphore.
+      2. Clear ENDPOINT_HALT on the pipe. If the endpoint has halted, no
+         bulk OUT transfer on it will ever be drained again, and freeing the
+         slots would just let the next frame wedge in the same way. Note the
+         driver only ever cleared halt on pipe 0, at init -- never on the
+         data pipes, and never after init.
+
+    REG_TXDMA_STATUS is read and logged first, because it is the vendor's own
+    discriminator and its value says whether the chip's transmit DMA has
+    faulted or the stall is confined to USB.
+
+    Rate-limited per pipe: a pipe that is genuinely dead must not turn this
+    into a reset loop.
+*/
+void
+RTL8814AUTxPath::_RecoverStalledPipe(uint32 pipeIndex)
+{
+	if (pipeIndex >= kBulkOutEndpointCount)
+		return;
+
+	const bigtime_t now = system_time();
+	if (fLastPipeRecovery[pipeIndex] != 0
+		&& now - fLastPipeRecovery[pipeIndex] < kPipeRecoveryInterval) {
+		return;
+	}
+	fLastPipeRecovery[pipeIndex] = now;
+
+	uint32 txDmaStatus = fRegisterIO->Read32(kRegTxDmaStatus);
+
+	fUSBModule->cancel_queued_transfers(fBulkOut[pipeIndex]);
+	status_t haltStatus = fUSBModule->clear_feature(fBulkOut[pipeIndex],
+		USB_FEATURE_ENDPOINT_HALT);
+
+	dprintf(RTL8814AU_DRIVER_NAME ": pipe %u stalled: TXDMA_STATUS=0x%08x, "
+		"cancelled queued transfers, clear_feature(ENDPOINT_HALT)=%s\n",
+		(unsigned)pipeIndex, (unsigned)txDmaStatus, strerror(haltStatus));
+}
+
+
 /*! Cancel all pending TX transfers. Called during device shutdown or
     removal. After this returns, no callbacks will fire.
 */
@@ -775,10 +845,13 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 
 /*! Map a TX queue selection to the bulk OUT pipe index.
 
-    The TxQueueSelect enum values are defined to equal the pipe index directly:
-      VO/VI/HIGH = 0 → pipe 0 (high priority)
-      BE/BK      = 1 → pipe 1 (normal priority)
-      MGT/CMD/BCN = 2 → pipe 2 (management)
+    This comment used to claim "the TxQueueSelect enum values are defined to
+    equal the pipe index directly", and listed BE/BK on pipe 1 with management
+    on pipe 2. That is the mapping this driver had when **no data frame ever
+    reached the air**, and it is backwards: management belongs on pipe 0 and
+    best-effort data on pipe 2. The enum carries queue identity, not a pipe
+    index, and deliberately so -- inferring the pipe from the value is what
+    collapsed distinct queues onto one pipe. See the table in the body.
 */
 uint32
 RTL8814AUTxPath::_QueueToPipeIndex(TxQueueSelect queue)

@@ -150,6 +150,12 @@ private:
 	// into fTransfers[], or -1 if all slots for that pipe are in use.
 	int32						_FindFreeTransfer(uint32 pipeIndex);
 
+	// Attempt to unstick a bulk OUT pipe whose transfers have stopped
+	// completing.  Must be called with fLock NOT held: it issues USB
+	// transfers, and the cancellations it triggers run the completion
+	// callback, which takes fLock itself.
+	void						_RecoverStalledPipe(uint32 pipeIndex);
+
 	// USB bulk OUT completion callback — called by the USB bus manager
 	// when a transfer finishes (success or failure).
 	static void					_TxCallback(void* cookie,
@@ -184,6 +190,10 @@ private:
 	uint32						fDescriptorsLogged;
 	uint32						fFramesSent;
 	uint32						fFramesFailed;
+
+	// Last time each pipe was given a recovery attempt, so a persistently
+	// dead pipe cannot turn into a loop of resets.
+	bigtime_t					fLastPipeRecovery[kBulkOutEndpointCount];
 
 	status_t					fInitStatus;
 };

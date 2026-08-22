@@ -16,6 +16,7 @@ For *using* the driver, see the [top-level README](../README.md).
 |---|---|
 | [architecture.md](architecture.md) | Driver structure, components, threading model, IOC layout |
 | [hardware-init.md](hardware-init.md) | Power-on sequence, EFUSE, MAC init, firmware load, PHY init |
+| [mac-init-gaps.md](mac-init-gaps.md) | MAC registers the vendor driver initialises and this one does not — a differences list, with the normalisation needed to make it meaningful |
 | [firmware.md](firmware.md) | Firmware blob layout, IDDMA load procedure, the 8-byte XOR trailers |
 | [rx-path.md](rx-path.md) | Bulk-IN flow, descriptor parsing, SW CCMP decrypt, 802.11 → ethernet conversion, EAPOL diversion |
 | [tx-path.md](tx-path.md) | Write() entry, ethernet → 802.11 conversion, SW CCMP encrypt, descriptor build, queue selection |
