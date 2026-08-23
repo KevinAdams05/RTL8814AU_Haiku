@@ -103,6 +103,15 @@ times and giving up with a reason-15 timeout.
   (`RATEID_IDX_MIX2`), matching the vendor, so OFDM data frames no longer ask
   the MAC for an OFDM rate out of a CCK-only table.
 
+- **`REG_TX_HANG_CTRL` (`0x045E`) is now written**, as the vendor's own MAC
+  initialisation table does on both bands. In fairness to the reader: a
+  readback shows the register **already holds `0x04` before the write**, so
+  this is a no-op on the hardware tested and fixes nothing. The write was
+  missing; the value was not. It is kept because the vendor programs it
+  explicitly and another board may default differently, and it is recorded
+  here rather than quietly dropped because it was previously described as a
+  promising lead for the transmit stall. It was not.
+
 - **The same wrong value, in the rate-adaptation handshake.** The RA_INFO H2C
   command sent `rate_id` 8, commented "OFDM-only rate group", so the firmware
   was told this peer used CCK while the accompanying rate mask offered it

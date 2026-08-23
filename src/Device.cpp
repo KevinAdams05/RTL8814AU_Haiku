@@ -857,11 +857,45 @@ RTL8814AUDevice::_InitMAC()
 	// decoding its usbmon capture shows it doing so once on each band. Our
 	// omission left the register at its power-on default.
 	//
-	// This is the leading candidate for the intermittent stall where every
-	// transfer slot on the best-effort pipe ends up outstanding and no
-	// completion ever arrives -- the same condition the vendor's watchdog
-	// calls a transmit hang and answers with a MAC reset.
+	// It was written up as the leading candidate for the intermittent stall
+	// where every transfer slot on the best-effort pipe ends up outstanding
+	// and no completion arrives -- the condition the vendor's watchdog calls
+	// a transmit hang and answers with a MAC reset.
+	//
+	// That claim cannot honestly be tested by measurement here: the stall did
+	// not occur once in 26 measured joins, and at a rate that low even a
+	// hundred joins would only have a 0.87 chance of producing a single
+	// instance. An A/B against the residual failures is no better -- at 16
+	// joins an arm, a difference of two failures is as likely to come from
+	// noise as from the write halving them.
+	//
+	// And the readback settles it: the register **already reads 0x04 before we
+	// write it**. The write is a no-op on this hardware -- the value was
+	// never wrong, only unwritten -- so it cannot have been causing the stall
+	// or anything else. It is kept because the vendor programs it explicitly
+	// and another board may not come up with the same default, but it must
+	// not be described as a fix.
+	//
+	// The general lesson, which applies to every other entry in
+	// docs/mac-init-gaps.md: "the vendor writes this register and we do not"
+	// is not the same claim as "this register holds the wrong value". Read it
+	// back before believing the second one.
+	// Guarded so an A/B measurement can turn exactly this one register write
+	// off and change nothing else. Defined to 1 in RTL8814AU.h; the control
+	// arm of the experiment builds with it 0. Without a control there is no
+	// way to attribute anything to this write, and the failure it targets is
+	// too rare to measure directly.
+#if RTL8814AU_WRITE_TX_HANG_CTRL
+	const uint8 txHangBefore = fRegisterIO->Read8(kRegTxHangCtrl);
 	fRegisterIO->Write8(kRegTxHangCtrl, kTxHangCtrlInit);
+	const uint8 txHangAfter = fRegisterIO->Read8(kRegTxHangCtrl);
+	dprintf(RTL8814AU_DRIVER_NAME ": TX_HANG_CTRL 0x%02x->0x%02x (want "
+		"0x%02x)%s\n", txHangBefore, txHangAfter, kTxHangCtrlInit,
+		txHangAfter == kTxHangCtrlInit ? "" : "  <-- DID NOT TAKE");
+#else
+	dprintf(RTL8814AU_DRIVER_NAME ": TX_HANG_CTRL deliberately NOT written "
+		"(control build)\n");
+#endif
 
 	// Program the rate-fallback tables and the response rate set.
 	//

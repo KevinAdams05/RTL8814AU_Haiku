@@ -794,11 +794,19 @@ static const uint16 kRegAmpduMaxTime		= 0x0456;
 // writes 0x04 here, and a usbmon capture confirms it doing so exactly once on
 // both bands. We never wrote it at all.
 //
-// The register's name is not incidental: the vendor's own watchdog
+// The name looked promising -- the vendor's own watchdog
 // (sreset_xmit_status_check) treats "every transmit buffer in use with no
-// completion for four seconds" as a transmit hang and resets the MAC to clear
-// it. Leaving this at its power-on default is the leading suspect for the
-// intermittent stall of the best-effort data queue.
+// completion for four seconds" as a transmit hang -- but a readback shows the
+// register already holds 0x04 before we write it. The write is therefore a
+// no-op on this hardware and explains nothing; it is kept only because the
+// vendor programs it explicitly and another board may default differently.
+// Set to 0 to build the control arm of the TX_HANG_CTRL experiment: the
+// register is left at its power-on default and a syslog line says so, with
+// every other difference held constant.
+#ifndef RTL8814AU_WRITE_TX_HANG_CTRL
+#define RTL8814AU_WRITE_TX_HANG_CTRL 1
+#endif
+
 static const uint16 kRegTxHangCtrl			= 0x045E;
 static const uint8 kTxHangCtrlInit			= 0x04;
 static const uint16 kRegAmpduMaxLength		= 0x0458;

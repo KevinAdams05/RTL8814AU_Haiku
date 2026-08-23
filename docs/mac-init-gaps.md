@@ -67,6 +67,24 @@ noting that the ARFR registers on this chip are 64-bit and non-contiguous —
 `0x0444`, `0x044C`, `0x048C`, `0x0494`, `0x049C`, `0x04A4` — so the four-byte
 stride in `hal_com_reg.h` does not apply here.
 
+## Read the register before believing the gap matters
+
+The register that prompted this document, `REG_TX_HANG_CTRL` (`0x045E`), turned
+out to **already hold the vendor's value before we wrote it**. A readback
+showed `0x04 -> 0x04`. The write was missing; the value was not. It was a
+no-op, and it explained nothing.
+
+So **"the vendor writes this register and we do not" is not the same claim as
+"this register holds the wrong value"**, and only the second one is a defect.
+Several of the entries below are probably in the same position: written by the
+vendor for consistency, but already correct here by power-on default or as a
+side effect of the PHY replay.
+
+The cheap first step for any entry is therefore a readback, not a write: log
+what the register contains after our initialisation and compare it with the
+value in the table. That costs one register read and settles whether there is
+anything to fix, without changing behaviour at all.
+
 ## How to use this list
 
 **One at a time, measuring in between.** Writing several of these together is

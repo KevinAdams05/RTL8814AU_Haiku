@@ -331,8 +331,12 @@ and the real rate is low enough that **26 joins cannot distinguish a fix from
 chance.** Anyone resuming this should budget for a much larger sample, or find
 a way to provoke the stall deliberately, before believing any fix.
 
-`TX_HANG_CTRL` stands on being a confirmed missing initialisation write that
-the vendor performs on both bands, not on a measured improvement. Recovery
+`TX_HANG_CTRL` turned out to be nothing at all. A readback shows the register
+**already holds `0x04` before we write it**, so the write is a no-op here: the
+write was missing, the value was not. It is kept only because the vendor
+programs it explicitly and another board may default differently. This is the
+cheapest lesson available for the rest of `mac-init-gaps.md` -- read the
+register before assuming an unwritten one is a wrong one. Recovery
 stands as cheap insurance against a failure that is currently permanent when
 it happens. Neither is evidence about the other.
 
