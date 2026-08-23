@@ -367,8 +367,31 @@ Two further notes on method:
     retries forever. The drift check now added at the point BSSID filtering is
     enabled would catch a stale BSSID here; it has not fired yet.
 
-  Both are receive-side: we transmit and the reply does not arrive. That is
-  the next thing to chase.
+  Measured further, over 29 boots with 5 failures, and they are **not one
+  mode** -- which matters, because treating them as one is what produced the
+  wrong rate estimates earlier:
+
+  | signature | reading | count |
+  |---|---|---|
+  | `authTX=0` -- auth never even transmitted | the join never started; the scan or the BSS list, quite possibly the test harness rather than the driver | 2 |
+  | auth succeeds (`authRX=1`), `assoc(1)=0` | authenticated, association never completed | 1 |
+  | associated, then `M1=0` and `fromOurAp=0` | **associated and then deaf to our own access point** | 2 |
+
+  The last of those is the real driver defect, roughly 2 in 29 boots. The
+  access point's M1 never arrives, so the handshake never starts. `fromOurAp=0`
+  alongside `bcast=256` says the broadcast traffic being received is from
+  *other* networks -- we stop hearing our own access point entirely, while
+  unicast management frames (the auth and association responses) had arrived
+  perfectly well moments earlier.
+
+  That last contrast is the lead: management frames reach us, data frames from
+  the same access point do not. Things to check, cheapest first -- whether
+  `kRCR_APM` (accept physical match) survives the association, since losing it
+  would drop unicast while broadcast still passed; and whether anything writes
+  RCR wholesale rather than OR-ing into it after `_InstallSessionKeys`.
+
+  **Do not** re-check the BSSID register or the descriptor checksum: both have
+  been instrumented and neither has ever reported a fault.
 
 A third presentation turned up while measuring, distinct from the stall and
 worth its own investigation: an association that comes up with **broadcast

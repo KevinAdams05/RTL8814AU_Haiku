@@ -200,10 +200,12 @@ predicts how often it should have been breaking, and it does.
 - No WEP, WPA3 or enterprise (802.1X) authentication.
 - **About one first-join in five used to fail**, and the cause is now known
   and fixed: a retransmitted EAPOL M1 restarted the key derivation. See
-  below. **Roughly one first join in six still fails for a different and
-  unidentified reason**: either the association never completes, or it
-  completes and then receives nothing from the access point. Neither reaches
-  M3, so neither is the handshake bug. Retrying works.
+  below. **Roughly one first join in eight still fails for a different and
+  unidentified reason.** The one that is clearly a driver fault, about 2 boots
+  in 29: the interface associates and then stops hearing the access point
+  altogether, so the handshake never starts and no address is obtained.
+  Unicast management frames arrive normally right up until association
+  completes, which is what makes it puzzling. Retrying works.
 - **An intermittent stall of the data queue just after association**, on
   either band. Rarer than the above: **not once in 26 measured joins**, though
   it was seen several times before it was measured properly. There is now
