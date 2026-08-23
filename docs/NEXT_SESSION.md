@@ -462,6 +462,34 @@ deterministically killed the post-association H2C path** -- the interface
 associated, `B_NETWORK_WLAN_JOINED` fired, and nothing after it ran. The MAC
 configuration was not the missing piece. Do not spend another afternoon there.
 
+## The test network is a measurement hazard
+
+A 16-boot run produced 4 successes and 11 never-associated, against 13 of 14 on
+the run before it. That looks exactly like a regression, and it was not one.
+The failures were consecutive from boot 7 onwards -- variation does not arrive
+in a block -- and a scan showed why: **`AdamsFamily02` was not in the BSS list
+at all.** The 5 GHz SSID from the same access point was present the whole time
+at -45 dBm. The 2.4 GHz network simply stopped being visible partway through
+the run, then came back later at a weakish -61 dBm.
+
+Two checks settled it in a couple of minutes, and both are worth repeating
+before believing any regression:
+
+- **Is the target actually in the scan list?** Not "did the join fail" but
+  "was there anything to join". Print the BSS list.
+- **Does the other band still work?** A successful join on 5 GHz while 2.4 GHz
+  cannot even see the access point separates the driver from the environment
+  immediately.
+
+The corroborating detail was that the code path I had just added logged
+`acquire_sem returned` zero times, so the change under test had never executed
+its new branch and could not have caused anything.
+
+Every failure-rate number in this document is only as good as the access point
+was on the day. When a run disagrees sharply with the one before it, suspect
+the network first. This is the same lesson the RadeonHD work learned twice from
+a sleepy monitor and a bad cable.
+
 ## Reading a capture: the mistake that cost two bugs
 
 Two register/descriptor decisions in this driver were justified in comments as
