@@ -3877,8 +3877,21 @@ RTL8814AUDevice::_HandleAssocResponse(const uint8* frame, uint32 length)
 	// Wake the post-assoc worker so it issues the firmware H2C setup
 	// (RA_INFO + MEDIA_STATUS_RPT) from a context that can safely
 	// block on USB control transfers.
-	if (fPostAssocSem >= 0)
+	//
+	// If the worker is not there to be woken, say so here rather than let it
+	// be inferred three layers away. Without that setup the radio stays in
+	// power save, so the access point buffers our unicast, the four-way
+	// handshake never starts and the association simply sits there receiving
+	// nothing -- a symptom that looks nothing like "a worker thread is
+	// missing". The setup is deliberately not run inline instead: this is the
+	// receive path, and it cannot safely block on USB control transfers.
+	if (fPostAssocSem >= 0) {
 		release_sem_etc(fPostAssocSem, 1, B_DO_NOT_RESCHEDULE);
+	} else {
+		dprintf(RTL8814AU_DRIVER_NAME ": WARNING: associated with no "
+			"post-assoc worker; power save will not be exited and the "
+			"handshake cannot start\n");
+	}
 }
 
 
@@ -4740,10 +4753,38 @@ RTL8814AUDevice::_GenerateSnonce(uint8 nonce[32])
 void
 RTL8814AUDevice::_PostAssocLoop()
 {
+	// This loop used to exit on *any* acquire_sem() result other than B_OK.
+	//
+	// That made a transient error fatal and silent. Once the thread left the
+	// loop nothing ever restarted it, so every later association skipped the
+	// post-assoc setup entirely -- and the comment below spells out what that
+	// costs: power save is never exited, so the access point buffers our
+	// unicast and the four-way handshake can never start. There was no log
+	// line for any of it. The failure signature is an association followed by
+	// no post-assoc output at all, no M1, and nothing received from the
+	// access point, which is exactly what turned up in 2 boots out of 29.
+	//
+	// So: only a real shutdown ends this thread, and if it ever does end for
+	// another reason it says so. A worker that dies quietly is much worse than
+	// one that dies loudly, because the symptom appears three layers away.
+	dprintf(RTL8814AU_DRIVER_NAME ": post-assoc worker running\n");
+
 	while (!fPostAssocStop) {
 		status_t status = acquire_sem(fPostAssocSem);
-		if (status != B_OK || fPostAssocStop)
+		if (fPostAssocStop)
 			break;
+		if (status == B_BAD_SEM_ID) {
+			dprintf(RTL8814AU_DRIVER_NAME ": post-assoc worker exiting: "
+				"semaphore gone\n");
+			break;
+		}
+		if (status != B_OK) {
+			// Transient -- an interruption, most likely. Retrying is
+			// correct; exiting is not.
+			dprintf(RTL8814AU_DRIVER_NAME ": post-assoc worker: acquire_sem "
+				"returned %s, continuing\n", strerror(status));
+			continue;
+		}
 		if (fRemoved)
 			continue;
 		// Out of power save first.  If the firmware is asleep in any sense
@@ -4759,6 +4800,8 @@ RTL8814AUDevice::_PostAssocLoop()
 		dprintf(RTL8814AU_DRIVER_NAME ": post-assoc setup: %s\n",
 			strerror(setupStatus));
 	}
+
+	dprintf(RTL8814AU_DRIVER_NAME ": post-assoc worker stopped\n");
 }
 
 

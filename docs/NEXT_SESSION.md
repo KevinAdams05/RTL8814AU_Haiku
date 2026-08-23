@@ -384,14 +384,38 @@ Two further notes on method:
   unicast management frames (the auth and association responses) had arrived
   perfectly well moments earlier.
 
-  That last contrast is the lead: management frames reach us, data frames from
-  the same access point do not. Things to check, cheapest first -- whether
-  `kRCR_APM` (accept physical match) survives the association, since losing it
-  would drop unicast while broadcast still passed; and whether anything writes
-  RCR wholesale rather than OR-ing into it after `_InstallSessionKeys`.
+  **Found, by comparing the post-assoc log lines across all 29 boots.** Every
+  boot that reached CCMP logged all three -- active power mode, RA_INFO,
+  MEDIA_STATUS_RPT. Both failures logged **none of them**: not an error, no
+  output at all. The post-assoc worker never ran its body.
 
-  **Do not** re-check the BSSID register or the descriptor checksum: both have
-  been instrumented and neither has ever reported a fault.
+  That is sufficient to explain everything else, and the worker's own comment
+  spells it out: without that setup the radio never leaves power save, so the
+  access point *buffers* our unicast rather than sending it. M1 never arrives,
+  the handshake never starts, and the association sits there receiving only
+  other networks' broadcasts. Unicast management frames had arrived fine
+  moments earlier because that is before any of this matters.
+
+  The mechanism was a silent, permanent death: the worker loop exited on *any*
+  `acquire_sem()` result other than `B_OK`, nothing ever restarted it, and
+  there was no log line for the exit. One transient error and every subsequent
+  association in that boot lost its setup.
+
+  Fixed: only a real shutdown ends the thread; a transient error is retried
+  and logged; the thread announces both start and stop; and the association
+  path warns if there is no worker to wake. A worker that dies quietly is far
+  worse than one that dies loudly, because the symptom surfaces three layers
+  away from the cause.
+
+  Ruled out along the way -- `kRCR_APM` survives association (all three RCR
+  writers either set it or preserve it), and in these failures
+  `_InstallSessionKeys` never ran at all. **Do not** re-check the BSSID
+  register or the descriptor checksum either: both are instrumented and
+  neither has ever reported a fault.
+
+  One latent problem noticed and not yet fixed: RCR is read-modify-written
+  from two places without synchronisation (`ETHER_SETPROMISC` and
+  `_InstallSessionKeys`), so a concurrent pair can lose an update.
 
 A third presentation turned up while measuring, distinct from the stall and
 worth its own investigation: an association that comes up with **broadcast
