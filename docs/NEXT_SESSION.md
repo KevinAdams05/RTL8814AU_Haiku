@@ -346,9 +346,25 @@ Two further notes on method:
 - **About one first-join in five failed**, across both builds. Chasing that
   found a real bug with a clear mechanism -- a retransmitted EAPOL M1
   restarted the key derivation, so the access point's M3 was verified against
-  the wrong PTK and dropped until the handshake timed out. Fixed; see the
-  CHANGELOG. Whether it accounts for *all* of the one-in-five is still being
-  measured, so do not assume the residue is zero.
+  the wrong PTK and dropped until the handshake timed out. Fixed and confirmed:
+  over 12 joins the retransmission occurred 4 times and was survived every
+  time, with 10 M3s verified, no MIC mismatch and no four-way timeout.
+
+  **It does not account for all of it.** Roughly one first join in six still
+  fails, and neither remaining mode reaches M3, so neither is this bug:
+
+  - **NO_ASSOC** -- never associates. The scan finds the target and the
+    authentication request goes out; the response does not come back
+    (`authTX=1 authRX=0`). Not a BSSID-filter problem: filtering is
+    BSSID-blind during authentication, and responses are accepted on a
+    physical-address match.
+  - **Starve** -- associates, then receives nothing from the access point
+    (`fromOurAp=0`) while other networks' broadcasts arrive normally, so DHCP
+    retries forever. The drift check now added at the point BSSID filtering is
+    enabled would catch a stale BSSID here; it has not fired yet.
+
+  Both are receive-side: we transmit and the reply does not arrive. That is
+  the next thing to chase.
 
 A third presentation turned up while measuring, distinct from the stall and
 worth its own investigation: an association that comes up with **broadcast

@@ -159,6 +159,13 @@ M3 is also the only frame whose MIC this driver verifies -- M1 carries none,
 and M2's is generated locally. Generation proven correct while verification
 failed means the key changed in between.
 
+Measured after the fix, over 12 joins: the M1 retransmission that used to be
+fatal occurred **4 times and was survived every time**. Ten handshakes reached
+M3 and all ten verified; no MIC mismatch and no four-way timeout. The
+retransmission rate of roughly one join in three also matches the failure rate
+seen before the fix, which is the corroboration that matters -- the mechanism
+predicts how often it should have been breaking, and it does.
+
 ### Also
 
 - A failed join no longer leaves the radio unable to scan.
@@ -184,9 +191,10 @@ failed means the key changed in between.
 - No WEP, WPA3 or enterprise (802.1X) authentication.
 - **About one first-join in five used to fail**, and the cause is now known
   and fixed: a retransmitted EAPOL M1 restarted the key derivation. See
-  below. Some first joins may still fail for reasons not yet identified --
-  an association that never completes, or one that completes and receives
-  nothing from the access point.
+  below. **Roughly one first join in six still fails for a different and
+  unidentified reason**: either the association never completes, or it
+  completes and then receives nothing from the access point. Neither reaches
+  M3, so neither is the handshake bug. Retrying works.
 - **An intermittent stall of the data queue just after association**, on
   either band. Rarer than the above: **not once in 26 measured joins**, though
   it was seen several times before it was measured properly. There is now
