@@ -116,6 +116,24 @@ ring descriptor where it hands ownership to the DMA engine. Defining both
 names and setting both is harmless only because they are the same bit — but it
 makes "clear OWN" look like a change when it is a no-op.
 
+### `REG_HWSEQ_CTRL` (0x0423), and why it is sidestepped
+
+Sidestepped rather than open now. Every non-QoS descriptor used to set
+`HWSEQ_EN`, asking the MAC to supply the sequence number — a service this
+register never enabled, so **every frame went out as sequence 0**. Rather than
+fight the register (both placements tried hung the transmit path),
+`TxPath::Transmit` writes a real sequence number into the frame header and
+`HWSEQ_EN` is no longer set.
+
+Worth knowing: fixing this did **not** improve throughput, which was the
+hypothesis that prompted it. Sequence 0 on every frame is a real protocol
+violation and the fix stands on its own, but an access point's duplicate
+filtering was evidently not what was costing bandwidth. The constants remain
+for anyone who wants the hardware path instead.
+
+Moved here from `NEXT_SESSION.md`: it is a settled design decision about the
+transmit path, not a task.
+
 ### No RTS/CTS, on any frame
 
 `RTS_ENABLE` (dword 3 bit 12), `RTS_RATE` (dword 4 bits 24-28) and

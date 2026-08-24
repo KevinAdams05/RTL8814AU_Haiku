@@ -1,6 +1,4 @@
-# Plan for the next session
-
-## Where this stands, 2026-08-24
+# Next session
 
 This document has grown long and is largely chronological. Read this section
 first; the rest is detail and history, and several sections describe faults
@@ -54,7 +52,7 @@ Current state at a glance:
 | 5 GHz | works (54/15 Mbit/s) | associates; not yet carrying traffic |
 
 **There is one open failure and it affects both bands: an intermittent stall
-of the data queue just after association (section 7).** Most runs are clean,
+of the data queue just after association (item 6).** Most runs are clean,
 which is why it was briefly mistaken for a 5 GHz-only problem. Everything
 below was verified end to end, on runs that did not hit it:
 
@@ -70,31 +68,135 @@ below was verified end to end, on runs that did not hit it:
 Reproducible from a clean boot with `scratchpad/deploy-test.sh <passphrase>`
 in about four minutes.
 
-## The two fixes that finished it
+---
 
-Everything else was necessary groundwork; these were the last two.
+## Open work, highest value first
 
-**REG_CR had two bits that do not exist.** The MAC's central command register
-was being written with `(1 << 13)` and `(1 << 14)`, named `kCR_EnsecCAMTx` and
-`kCR_EnsecCAMRx`. `REG_CR`'s defined bits stop at bit 10 -- bits 16-17 are the
-network type and there is nothing at 11-15. So every boot wrote two reserved
-bits into it, and the security engine, which is the single bit `ENSEC` at bit
-9, was never enabled at all. The vendor driver reaches `0x06FF` here; we
-reached `0x64FF`.
+### 1. Finish the bounded H2C write
 
-**Uplink frames were mislabelled as 802.11 broadcast.** `Write()` derived
-`isBroadcast` from the *Ethernet* destination and passed it straight to the
-transmit path, where it set the descriptor's `BMC` bit and forced MACID 1. But
-`BMC` describes the *802.11 receiver address*, and a station in infrastructure
-mode sends every uplink frame to the access point as unicast -- `Address1` is
-the BSSID, unconditionally. DHCP DISCOVER has an Ethernet destination of
-`ff:ff:ff:ff:ff:ff`, so every attempt went out marked group-addressed: no
-acknowledgement expected, group-key handling, wrong MACID. This is why the
-handshake could complete and DHCP still fail.
+**This is the one open defect**: about one join in six on either band, always
+the same way -- the association completes, `_DoPostAssocSetup()` never returns,
+the handshake dies. An H2C control transfer never completes and the path has no
+timeout.
 
-## What to do next, in rough priority order
+Built on the in-tree `usb_raw` pattern plus the donor's deadline. Three things
+were measured on hardware, and the third changed the design:
 
-### 1. Receive: loss is fixed, throughput is the remaining problem
+**1. The deadline works.** The timeout fired and the driver survived it:
+
+```
+post-assoc MEDIA_STATUS_RPT: Operation timed out
+post-assoc setup: General system error
+```
+
+That is the event which used to be a permanent hang. The worker logged it,
+stayed alive, and the next boot associated normally. It also confirms the
+underlying fault is real: that control transfer genuinely never completes.
+
+**2. Bounding alone is not enough.** The short soak scored 1 of 4, because a
+timed-out command is a command the firmware never receives -- the association
+then fails exactly as it did when the call hung, just survivably. Hence the
+retry, three attempts, fewer than the reference's ten because each costs the
+full deadline and this lock now serialises all register access.
+
+**3. `cancel_queued_requests()` does not reclaim a stuck transfer on this
+chip.** This is the important one. Measured: on both timeouts, the cancelled
+transfer's callback never arrived within a two-second grace. Every timeout
+therefore fell into the hard-fail branch and marked the device unusable, and
+**the retry never ran once** -- `retrying control write` appears 0 times
+against 2 timeouts and 2 device-kills.
+
+So cancellation is not available as a recovery mechanism here, which rules out
+the `usb_raw` shape even though it is the in-tree precedent. The transfer has
+to be **abandoned** instead:
+
+- No cancellation at all, which also removes the device-wide hazard, since
+  `cancel_queued_requests()` would have aborted other threads' transfers.
+- No marking the device unusable. That was far too harsh a response to a
+  single failed command.
+- A **ring of four buffers**, rotating per attempt. An abandoned request stays
+  outstanding and keeps pointing at whichever buffer it was given, so nothing
+  may reuse it; without the ring a later transfer could overwrite it and an
+  abandoned write could eventually deliver the wrong bytes to a register.
+- If an abandoned callback ever does arrive it releases the semaphore, and the
+  drain at the top of the next attempt discards that stale count.
+
+**Status: built, style-clean, staged on the test machine, and NOT yet measured.**
+The abandon-and-retry version has never run. What is known is that the
+version before it converts the hang into a survivable error but does not
+deliver the command. The open question is whether a retry succeeds while a
+previous transfer is still stuck on the control endpoint -- control requests to
+one endpoint queue in order, so a wedged transfer may well block the retry
+behind it. If it does, the next thing to establish is whether the endpoint ever
+recovers on its own, because if it does not then nothing short of a device
+reset will help and the command has to be issued some other way.
+
+### 2. Why the first firmware-download attempt fails
+
+The retry is implemented and works around it, so this is no longer urgent, but
+the underlying fault is undiagnosed.
+
+| | `REG_MCUFWDL` | ready bits |
+|---|---|---|
+| failing | `0x00602000` | none -- bits 3-6, 14, 15 all clear |
+| healthy | `0x0060e078` | bits 3,4,5,6 (`MACINI`/`BBINI`/`RFINI_RDY`) plus 14, 15 |
+
+On failure the MCU never signalled **any** initialisation stage, so the
+firmware was not executing rather than starting slowly. That is a different
+fault from too short a timeout, and worth decoding against the reference's
+polling loop **before** anyone lengthens the poll -- which is the obvious wrong
+fix.
+
+A Haiku restart does not power-cycle USB, so a chip wedged this way stays
+wedged across reboots. A run of sudden failures should prompt a power cycle
+before a bisect.
+
+### 3. Two H2C commands the vendor sends and we never do
+
+Both fell out of decoding the mailbox writes, and both are pure additions:
+
+| H2C | name | vendor sends |
+|---|---|---|
+| `0x42` | `RSSI_SETTING` | 13x |
+| `0x46` | `RA_MASK_3SS` (marked "for 8814A") | 4x |
+
+`RSSI_SETTING` feeds the firmware's rate adaptation, and rate adaptation is
+stalled on exactly the kind of information these carry. Worth taking together
+with item 4.
+
+### 4. Rate adaptation, hardware CCMP, aggregation
+
+The remaining limits are known and all deliberate:
+
+- **No rate adaptation.** Every data frame is sent at a hardcoded OFDM
+  24 Mbps with `USE_RATE` set, which tells the chip to ignore its own rate
+  logic. The `ARFR0`/`ARFR1` tables are now programmed, and `RATE_ID` in the
+  descriptor selects among them, so the machinery exists -- what is missing is
+  letting the firmware drive it and feeding it link quality.
+
+  Two things to know before starting. `RATE_ID` and the RA_INFO H2C's
+  `rate_id` share one 5-bit rate-group namespace, and **both were 8**, which
+  is `RATEID_IDX_B`, the CCK-only group -- not the "OFDM" both comments
+  claimed. Both are now 12 (`RATEID_IDX_MIX2`), matching the vendor. And the
+  RA_INFO rate mask is still deliberately narrower than the vendor's; with
+  `USE_RATE` on every frame it is close to inert, but it is the first thing to
+  widen when the firmware is allowed to choose.
+- **`ARFR4`/`ARFR5` are still unwritten** (0x049C and 0x04A4; note these are
+  64-bit and non-contiguous on this chip -- 0x0444, 0x044C, 0x048C, 0x0494,
+  0x049C, 0x04A4 per `rtl8814a_spec.h`, *not* the 4-byte stride in
+  `hal_com_reg.h`).
+- **CCMP runs in software.** The hardware engine is available and the keys are
+  already in the CAM; a note in `Write()` records that hardware encrypt was
+  tried and produced garbled frames, but that was before a dozen TX-path
+  defects were fixed and is worth retrying.
+- **A-MPDU aggregation is disabled.** `MAX_AGG_NUM` and `AMPDU_DENSITY` are
+  never set and Block-ACK state is not wired up.
+
+### 5. Receive throughput
+
+Note the transmit figures below predate the discovery that transmit cannot be
+measured over the air on this bench -- see
+[testing-notes.md](testing-notes.md). Treat them as unverified.
 
 | | Loss | Transmit | Receive |
 |---|---|---|---|
@@ -175,135 +277,7 @@ Two other structural candidates, unmeasured:
    the device-wide `fLock`, which transmit also takes. Contention on one mutex
    across the whole driver is plausible at these rates.
 
-### 2. Throughput, after that
-
-The remaining limits are known and all deliberate:
-
-- **No rate adaptation.** Every data frame is sent at a hardcoded OFDM
-  24 Mbps with `USE_RATE` set, which tells the chip to ignore its own rate
-  logic. The `ARFR0`/`ARFR1` tables are now programmed, and `RATE_ID` in the
-  descriptor selects among them, so the machinery exists -- what is missing is
-  letting the firmware drive it and feeding it link quality.
-
-  Two things to know before starting. `RATE_ID` and the RA_INFO H2C's
-  `rate_id` share one 5-bit rate-group namespace, and **both were 8**, which
-  is `RATEID_IDX_B`, the CCK-only group -- not the "OFDM" both comments
-  claimed. Both are now 12 (`RATEID_IDX_MIX2`), matching the vendor. And the
-  RA_INFO rate mask is still deliberately narrower than the vendor's; with
-  `USE_RATE` on every frame it is close to inert, but it is the first thing to
-  widen when the firmware is allowed to choose.
-- **`ARFR4`/`ARFR5` are still unwritten** (0x049C and 0x04A4; note these are
-  64-bit and non-contiguous on this chip -- 0x0444, 0x044C, 0x048C, 0x0494,
-  0x049C, 0x04A4 per `rtl8814a_spec.h`, *not* the 4-byte stride in
-  `hal_com_reg.h`).
-- **CCMP runs in software.** The hardware engine is available and the keys are
-  already in the CAM; a note in `Write()` records that hardware encrypt was
-  tried and produced garbled frames, but that was before a dozen TX-path
-  defects were fixed and is worth retrying.
-- **A-MPDU aggregation is disabled.** `MAX_AGG_NUM` and `AMPDU_DENSITY` are
-  never set and Block-ACK state is not wired up.
-
-### 3. Diagnostics -- done, and deliberately kept
-
-The 0.2.0-era instrumentation was stripped and the version is now 0.3.0.
-
-What remains is bounded and kept on purpose, because it is what a bug report
-from someone else's adapter needs to be useful:
-
-- `TX submit` and `TX done`, **budgeted per bulk endpoint** (8 each) rather
-  than globally. See the trap in the last section: a single global budget is
-  spent entirely on the firmware download.
-- One `TXDESC` dump per endpoint -- the ten descriptor dwords and the 802.11
-  header. This is what identified the RTS bug, and it is the fastest way to
-  compare a failing adapter against a known-good capture.
-- The per-band readback (`[band ...] RFE ... RF0x18 ... txpwr ...`).
-
-Anything added beyond this should be removed again before a release.
-
-### 4. REG_HWSEQ_CTRL (0x0423) -- sidestepped
-
-Sidestepped rather than open now. Every non-QoS descriptor used to set
-`HWSEQ_EN`, asking the MAC to supply the sequence number — a service this
-register never enabled, so **every frame went out as sequence 0**. Rather than
-fight the register (both placements tried hung the transmit path),
-`TxPath::Transmit` writes a real sequence number into the frame header and
-`HWSEQ_EN` is no longer set.
-
-Worth knowing: fixing this did **not** improve throughput, which was the
-hypothesis that prompted it. Sequence 0 on every frame is a real protocol
-violation and the fix stands on its own, but an access point's duplicate
-filtering was evidently not what was costing bandwidth. The constants remain
-for anyone who wants the hardware path instead.
-
-### 5. 5 GHz — WORKING on the ASUS as of 2026-08-21 (see section 7)
-
-| Direction | 2.4 GHz | **5 GHz** |
-|---|---|---|
-| Transmit | 11-32 Mbit/s | **53.9 Mbit/s** |
-| Receive | 2.4-3.1 Mbit/s | **15.1 Mbit/s** |
-| Loss | 0-5% | **0%** at every payload size |
-
-**5 GHz is much the better band**, and its receive figure being five times
-2.4 GHz's reframes the receive investigation above: a good part of that
-ceiling was the 2.4 GHz link rate rather than the driver.
-
-Three faults, all in the band switch:
-
-1. **RFE pinmux path D was written only when switching *to* 5 GHz.** After any
-   5 GHz excursion -- including the 5 GHz leg of a routine scan sweep -- path D
-   kept the 5 GHz routing and 2.4 GHz went deaf, which is why every scan after
-   the first returned zero networks until a reboot.
-2. **The 5 GHz pinmux values were wrong.** `0x54775477` on all four paths,
-   where the vendor writes `0x33173317` on A/B/C and `0x77177717` on D -- so
-   the assumption that 5 GHz wants one value everywhere was wrong too. Coex
-   `0x1ABC` bits [27:20] are 0x33 for 5 GHz, not 0x54. The register addresses
-   were already correct, which is why this looked plausible for so long.
-3. **Bit 5 of TX_PATH (0x080C) is band state, not wiring.** The vendor sets it
-   for 2.4 GHz and clears it for 5 GHz on one and the same adapter. Leaving it
-   set is what made 5 GHz receive perfectly and transmit nothing the access
-   point answered. Only that bit is touched; chain selection stays at its
-   EFUSE-derived value.
-
-**The lesson worth keeping:** reading `_SwitchBand` did not find any of this,
-and I judged the function reasonable -- it was. The post-band-switch readback
-did, by showing everything *correct* on channel 149 and so proving the fault
-lay in a register the switch never touched. Add the readback earlier next time.
-
-### 6. The Deskbar route — WORKING as of 2026-08-21
-
-Connecting from the Deskbar network menu or the Network preflet works.
-`net_server` always delegates a wireless join to `wpa_supplicant`, so
-`ifconfig join <ssid> <passphrase>` takes the identical path -- which is how to
-test it without touching the GUI.
-
-Three things were missing:
-
-1. **`IEEE80211_IOC_SSID` had no GET handler**, and that alone was fatal. The
-   supplicant reads the SSID back immediately after associating; our failure
-   made it conclude the association was not real and deauthenticate. Note this
-   dispatcher writes the request header back **per-case**, so a GET must
-   `user_memcpy(userArgs, &request, ...)` or the caller never sees `i_len`.
-2. **The EAPOL diversion was unconditional**, so the supplicant waited forever
-   for frames the driver was consuming. Now gated on `fPmkValid`: the
-   in-driver path takes its PMK from `IOC_HAIKU_JOIN`, so no PMK means the
-   supplicant is driving and the driver stands down.
-3. **`IOC_WPAKEY` was a logging stub.** It now installs the keys, buffering
-   pairwise and group until both arrive, **and arms the software cipher** --
-   programming the CAM alone is not enough when encrypt and decrypt are in
-   software, and skipping it gives an association that looks perfect and
-   carries nothing.
-
-**A documentation lesson from this one.** The DEAUTH that killed the Deskbar
-route was recorded in `wpa-supplicant-and-deskbar.md` for days as net_server
-tearing down its own join, complete with a note that it happened even with the
-supplicant killed. It was ours all along, and the ioctl log said so as soon as
-the unsupported call was visible. A confidently written note in our own docs is
-still a hypothesis.
-
-Still genuinely Haiku-side: **open (unencrypted) networks** must go through
-net_server, which tears the association down immediately. Not the driver.
-
-### 7. Intermittent: associates, then the data queue stalls (OPEN)
+### 6. The data-queue stall -- open, but never reproduced under measurement
 
 **This is the one open failure, and it is the most important thing in this
 document.** After a successful association the best-effort data queue
@@ -347,140 +321,7 @@ What is known:
   `/var/log/syslog` instead, and expect an `ssh` that runs `ifconfig` to hang
   until it is killed.
 
-### Measured, 2026-08-22
-
-Two runs, and the honest conclusion is that **the stall is much rarer than
-first claimed and neither change has been shown to affect it.**
-
-| Build | Joins | ok | stalled | recovered | other |
-|---|---|---|---|---|---|
-| no recovery (partial, v1 harness) | 6 | 4 | **1** | n/a | 1 |
-| recovery only | 16 | 8 | **0** | 0 | 8 |
-| recovery + `TX_HANG_CTRL`, one join per boot | 10 | 8 | **0** | 0 | 2 |
-
-**Zero stalls in 26 joins.** It is tempting to read that as a fix. It is not,
-for a reason worth stating plainly: **recovery cannot prevent a stall** -- it
-only reclaims the slots after one happens -- and `recovered` is 0, so no stall
-occurred for it to act on. Neither change has a mechanism that would produce
-0-in-26.
-
-What the arithmetic says instead: if the true rate were the 1-in-6 the first
-run suggested, seeing 0 in 26 has probability 0.009. At 1-in-20 it has
-probability 0.26. So the first estimate was almost certainly too high --
-it came from a handful of `deploy-test.sh` runs, not from a measurement --
-and the real rate is low enough that **26 joins cannot distinguish a fix from
-chance.** Anyone resuming this should budget for a much larger sample, or find
-a way to provoke the stall deliberately, before believing any fix.
-
-`TX_HANG_CTRL` turned out to be nothing at all. A readback shows the register
-**already holds `0x04` before we write it**, so the write is a no-op here: the
-write was missing, the value was not. It is kept only because the vendor
-programs it explicitly and another board may default differently. This is the
-cheapest lesson available for the rest of `mac-init-gaps.md` -- read the
-register before assuming an unwritten one is a wrong one. Recovery
-stands as cheap insurance against a failure that is currently permanent when
-it happens. Neither is evidence about the other.
-
-Two further notes on method:
-
-- **The 6 no-assoc results in the middle run are a harness artefact.** They
-  cluster after the first attempt in a boot, because re-joining without
-  tearing down the existing association fails. Use **one join per boot** for
-  anything you intend to compare -- every historical sample was a
-  first-join-after-boot. The third run does this.
-- **About one first-join in five failed**, across both builds. Chasing that
-  found a real bug with a clear mechanism -- a retransmitted EAPOL M1
-  restarted the key derivation, so the access point's M3 was verified against
-  the wrong PTK and dropped until the handshake timed out. Fixed and confirmed:
-  over 12 joins the retransmission occurred 4 times and was survived every
-  time, with 10 M3s verified, no MIC mismatch and no four-way timeout.
-
-  **It does not account for all of it.** Roughly one first join in six still
-  fails, and neither remaining mode reaches M3, so neither is this bug:
-
-  - **NO_ASSOC** -- never associates. The scan finds the target and the
-    authentication request goes out; the response does not come back
-    (`authTX=1 authRX=0`). Not a BSSID-filter problem: filtering is
-    BSSID-blind during authentication, and responses are accepted on a
-    physical-address match.
-  - **Starve** -- associates, then receives nothing from the access point
-    (`fromOurAp=0`) while other networks' broadcasts arrive normally, so DHCP
-    retries forever. The drift check now added at the point BSSID filtering is
-    enabled would catch a stale BSSID here; it has not fired yet.
-
-  Measured further, over 29 boots with 5 failures, and they are **not one
-  mode** -- which matters, because treating them as one is what produced the
-  wrong rate estimates earlier:
-
-  | signature | reading | count |
-  |---|---|---|
-  | `authTX=0` -- auth never even transmitted | the join never started; the scan or the BSS list, quite possibly the test harness rather than the driver | 2 |
-  | auth succeeds (`authRX=1`), `assoc(1)=0` | authenticated, association never completed | 1 |
-  | associated, then `M1=0` and `fromOurAp=0` | **associated and then deaf to our own access point** | 2 |
-
-  The last of those is the real driver defect, roughly 2 in 29 boots. The
-  access point's M1 never arrives, so the handshake never starts. `fromOurAp=0`
-  alongside `bcast=256` says the broadcast traffic being received is from
-  *other* networks -- we stop hearing our own access point entirely, while
-  unicast management frames (the auth and association responses) had arrived
-  perfectly well moments earlier.
-
-  **Found, by comparing the post-assoc log lines across all 29 boots.** Every
-  boot that reached CCMP logged all three -- active power mode, RA_INFO,
-  MEDIA_STATUS_RPT. Both failures logged **none of them**: not an error, no
-  output at all. The post-assoc worker never ran its body.
-
-  That is sufficient to explain everything else, and the worker's own comment
-  spells it out: without that setup the radio never leaves power save, so the
-  access point *buffers* our unicast rather than sending it. M1 never arrives,
-  the handshake never starts, and the association sits there receiving only
-  other networks' broadcasts. Unicast management frames had arrived fine
-  moments earlier because that is before any of this matters.
-
-  The mechanism was a silent, permanent death: the worker loop exited on *any*
-  `acquire_sem()` result other than `B_OK`, nothing ever restarted it, and
-  there was no log line for the exit. One transient error and every subsequent
-  association in that boot lost its setup.
-
-  Fixed: only a real shutdown ends the thread; a transient error is retried
-  and logged; the thread announces both start and stop; and the association
-  path warns if there is no worker to wake. A worker that dies quietly is far
-  worse than one that dies loudly, because the symptom surfaces three layers
-  away from the cause.
-
-  Ruled out along the way -- `kRCR_APM` survives association (all three RCR
-  writers either set it or preserve it), and in these failures
-  `_InstallSessionKeys` never ran at all. **Do not** re-check the BSSID
-  register or the descriptor checksum either: both are instrumented and
-  neither has ever reported a fault.
-
-  One latent problem noticed and not yet fixed: RCR is read-modify-written
-  from two places without synchronisation (`ETHER_SETPROMISC` and
-  `_InstallSessionKeys`), so a concurrent pair can lose an update.
-
-A third presentation turned up while measuring, distinct from the stall and
-worth its own investigation: an association that comes up with **broadcast
-receive working and unicast receive at zero**, so DHCP sends DISCOVER
-forever and no reply ever arrives.
-
-```
-data RX heartbeat: total=256 protected=256 bcast=256 unicast=0 fromOurAp=0
-SW CCMP encrypt OK #4 len=76 ethertype=0806 pn=4
-```
-
-Transmit is fine there and nothing stalls; healthy runs show `unicast=4246`.
-Whether this shares a root cause with the transmit stall is unknown.
-
-**Before anything else, get a failure rate.** Run `deploy-test.sh` in a loop
-and count; every conclusion in this section rests on single runs, which is
-exactly how it got mischaracterised the first time. Then, cheapest first:
-whether the chip's TX report or queue-status registers show the BE queue
-backed up (accepted but not drained implies no free TX pages or a halted
-scheduler); whether cancelling and resubmitting the stuck transfers recovers
-it, which would separate a chip stall from a USB-stack one; and a vendor
-capture across the same window, diffed the way the RTS bug was found.
-
-### 8. Loose ends
+### 7. Loose ends
 
 - **`SetActivePowerMode()` hangs intermittently.** It is the post-assoc
   worker's first action and issues an H2C command; when it hangs, association
@@ -493,503 +334,29 @@ capture across the same window, diffed the way the RTS bug was found.
 - **The interface-state bug** leaves an unkillable `ifconfig` after some join
   attempts, which then blocks the next scan.
 
-## The negative result worth not repeating
+---
 
-A verbatim replay of the vendor driver's MAC initialisation was tried: the
-183 writes between the end of its firmware download and the start of its
-BB/PHY table, in exact order, then trimmed to 177 to exclude its transition
-into the PHY table. **Both versions left data frames untransmitted and
-deterministically killed the post-association H2C path** -- the interface
-associated, `B_NETWORK_WLAN_JOINED` fired, and nothing after it ran. The MAC
-configuration was not the missing piece. Do not spend another afternoon there.
+## Standing constraints
 
-## SetActivePowerMode() hangs, and it is the dominant 5 GHz failure
+The 0.2.0-era instrumentation was stripped and the version is now 0.3.0.
 
-**This is the biggest open defect and the thing to work on next.** Measured on
-5 GHz with the Edimax: **16 joins, 5 ok, 10 timeout, 1 deauth** -- a 69%
-failure rate, against roughly 12% on 2.4 GHz.
+What remains is bounded and kept on purpose, because it is what a bug report
+from someone else's adapter needs to be useful:
 
-The mechanism is established rather than guessed. Counting across the run:
+- `TX submit` and `TX done`, **budgeted per bulk endpoint** (8 each) rather
+  than globally. See the trap in the last section: a single global budget is
+  spent entirely on the firmware download.
+- One `TXDESC` dump per endpoint -- the ten descriptor dwords and the 802.11
+  header. This is what identified the RTS bug, and it is the fastest way to
+  compare a failing adapter against a known-good capture.
+- The per-band readback (`[band ...] RFE ... RF0x18 ... txpwr ...`).
 
-| | count |
-|---|---|
-| `post-assoc worker running` | 17 |
-| `post-assoc worker stopped` | **0** |
-| `acquire_sem returned` (transient error) | 0 |
-| `associated with no post-assoc worker` | 0 |
-| `post-assoc active power mode` **returned** | **5** |
-| `post-assoc setup` | 4 |
+Anything added beyond this should be removed again before a release.
 
-Seventeen workers started and **none ever exited**. The semaphore was valid and
-released every time -- `B_NETWORK_WLAN_JOINED` fires in every boot and the
-release sits immediately after it. Yet only five power-mode calls ever came
-back.
+### Where the rest of the detail went
 
-The reason that pins it is the ordering in `_PostAssocLoop`:
-
-```c
-status_t powerStatus = fWiFiManager->SetActivePowerMode();
-dprintf(... "post-assoc active power mode: %s\n", ...);   // AFTER the call
-```
-
-So a missing line does not mean the worker never woke. It means the worker woke
-and **never returned from `SetActivePowerMode()`**. The threads are alive and
-blocked there permanently.
-
-One layer down, the blocking point is a USB control transfer.
-`SetActivePowerMode` is just `_SendH2CCommand`, which is register writes with no
-polling of its own, and `_VendorWrite` retries are bounded -- three attempts,
-2 ms apart -- and *return an error* rather than blocking. An error would still
-have printed the line. So the block is inside `send_request` itself: the USB
-stack waiting on a control transfer the device never completes.
-
-What follows from the hang explains the rest of the symptom. Without
-`_DoPostAssocSetup()` the firmware is never sent RA_INFO or MEDIA_STATUS_RPT, so
-it is never told the association exists. M1 and M2 are often still seen in the
-log, but M3 never arrives -- consistent with our M2 not reaching the access
-point properly because the firmware does not know about the peer.
-
-### Resolved, and measured: 5 GHz went from 31% to 81%
-
-| build | joins | ok | failures |
-|---|---|---|---|
-| with the power-mode call | 16 | 5 | 11 |
-| without it | 16 | **13** | 3 |
-
-Fisher's exact, one-sided: **p = 0.0057**. Unlike most numbers in this
-document, that one is not noise.
-
-The mechanism was checked as well as the score, which matters because a score
-alone would not distinguish a fix from a good day:
-
-| | before | after |
-|---|---|---|
-| `post-assoc active power mode` returns | 5 (of 17 workers) | 0 -- call removed |
-| `post-assoc setup` ran | **4** | **11** |
-| `CCMP enabled` | -- | **11** |
-| workers stopped, panics | 0 | 0 |
-
-`post-assoc setup` and `CCMP enabled` come out at exactly 11 each. That 1:1
-correspondence is the causal chain in the log: the worker is no longer blocked,
-so the setup runs, so the handshake completes.
-
-**5 GHz and 2.4 GHz are now comparable** -- roughly 19% failures here against
-12% on 2.4 GHz -- so the remaining failure is the common residual rather than
-anything band-specific, and the five-to-one band difference noted earlier is
-explained and gone.
-
-### How it was resolved: the command should never have been sent
-
-Before rebuilding the bounded transfer, the donor driver was checked, and it
-answered the question outright: **the vendor never sends this command.**
-Decoding every H2C in two usbmon captures, across all four mailboxes:
-
-| H2C | name | vendor sends | we sent |
-|---|---|---|---|
-| `0x01` | `MEDIA_STATUS_RPT` | 2x | yes |
-| `0x40` | `MACID_CFG` (RA_INFO) | 4x | yes |
-| `0x42` | `RSSI_SETTING` | 13x | **no** |
-| `0x46` | `RA_MASK_3SS` (8814A-specific) | 4x | **no** |
-| `0x05` | `SET_PWR_MODE` | **never** | **every association** |
-
-And there is a reason it never needs to: the reference defaults
-`rtw_power_mgnt` to `PS_MODE_ACTIVE`, so the chip is already in active mode and
-there is no mode to change. The concern the call was guarding against does not
-materialise either -- in the boots where it hung, M1 still arrived, so unicast
-was not being buffered.
-
-So the call is simply removed. That deletes the driver's largest single failure
-without adding any kernel plumbing, which is the better outcome by a wide
-margin: the bounded-transfer attempt below ended in a KDL.
-
-**The lesson worth keeping: check whether the donor does the thing at all
-before engineering a safe way to do it.** A day went into making a hanging
-command safe to issue, when the command was never needed.
-
-**Two H2C commands are missing** and are now the obvious follow-up, since both
-are sent repeatedly by the vendor and neither has ever been sent by us:
-`0x42 RSSI_SETTING` (13 times -- feeds the firmware's rate adaptation) and
-`0x46 RA_MASK_3SS`, which the reference header marks explicitly "for 8814A".
-Worth investigating alongside the rate-adaptation work, which is stalled on
-exactly the kind of information those commands carry.
-
-### Bounded H2C write, second attempt: built, staged, PARTLY measured
-
-Built on the in-tree `usb_raw` pattern plus the donor's deadline. Three things
-were measured on hardware, and the third changed the design:
-
-**1. The deadline works.** The timeout fired and the driver survived it:
-
-```
-post-assoc MEDIA_STATUS_RPT: Operation timed out
-post-assoc setup: General system error
-```
-
-That is the event which used to be a permanent hang. The worker logged it,
-stayed alive, and the next boot associated normally. It also confirms the
-underlying fault is real: that control transfer genuinely never completes.
-
-**2. Bounding alone is not enough.** The short soak scored 1 of 4, because a
-timed-out command is a command the firmware never receives -- the association
-then fails exactly as it did when the call hung, just survivably. Hence the
-retry, three attempts, fewer than the reference's ten because each costs the
-full deadline and this lock now serialises all register access.
-
-**3. `cancel_queued_requests()` does not reclaim a stuck transfer on this
-chip.** This is the important one. Measured: on both timeouts, the cancelled
-transfer's callback never arrived within a two-second grace. Every timeout
-therefore fell into the hard-fail branch and marked the device unusable, and
-**the retry never ran once** -- `retrying control write` appears 0 times
-against 2 timeouts and 2 device-kills.
-
-So cancellation is not available as a recovery mechanism here, which rules out
-the `usb_raw` shape even though it is the in-tree precedent. The transfer has
-to be **abandoned** instead:
-
-- No cancellation at all, which also removes the device-wide hazard, since
-  `cancel_queued_requests()` would have aborted other threads' transfers.
-- No marking the device unusable. That was far too harsh a response to a
-  single failed command.
-- A **ring of four buffers**, rotating per attempt. An abandoned request stays
-  outstanding and keeps pointing at whichever buffer it was given, so nothing
-  may reuse it; without the ring a later transfer could overwrite it and an
-  abandoned write could eventually deliver the wrong bytes to a register.
-- If an abandoned callback ever does arrive it releases the semaphore, and the
-  drain at the top of the next attempt discards that stale count.
-
-**Status: built, style-clean, staged on the test machine, and NOT yet measured.**
-The abandon-and-retry version has never run. What is known is that the
-version before it converts the hang into a survivable error but does not
-deliver the command. The open question is whether a retry succeeds while a
-previous transfer is still stuck on the control endpoint -- control requests to
-one endpoint queue in order, so a wedged transfer may well block the retry
-behind it. If it does, the next thing to establish is whether the endpoint ever
-recovers on its own, because if it does not then nothing short of a device
-reset will help and the command has to be issued some other way.
-
-### The first bounded-write attempt, reverted after a KDL
-
-Do not simply re-apply it. The approach was: queue the control transfer with
-`queue_request()`, wait on a semaphore with a deadline, and on timeout call
-`cancel_queued_requests()`. It was deployed, the machine hit KDL, and it was
-reverted.
-
-Two design faults, either of which is disqualifying, and the second is the one
-that probably did it:
-
-- **`cancel_queued_requests()` is device-wide, not per-request.** This driver
-  issues control transfers constantly from several threads, so cancelling on
-  timeout would abort *other* threads' in-flight requests, whose buffers and
-  semaphores those threads are still waiting on. (Note this is not what
-  crashed: no timeout was ever logged, so the cancel never ran. It is still
-  wrong.)
-- ~~**The request cookie was on the caller's stack**, so returning after
-  `delete_sem()` destroyed a frame the USB stack might still touch.~~
-  **Retracted -- the Haiku source says otherwise.** Both host controllers do
-  the same thing in their finisher:
-
-  ```c
-  transfer->Finished(callbackStatus, ...);   // our callback runs here
-  delete transfer;                           // only the stack's own object
-  ```
-
-  Nothing touches the caller's buffer or cookie after the callback returns, so
-  a stack-allocated cookie is in fact safe once the callback has run. This was
-  asserted confidently without reading the source, and it was wrong.
-
-**So the cause of the KDL is unknown.** The one real flaw found by inspection
-never executed, the lifetime concern turned out to be unfounded, and the panic
-text never reached the syslog. It may not even have been that change: the
-adapter had been wedging, firmware loads had been failing, and the machine had
-been through some sixty reboots. Kevin will photograph the text if it recurs,
-which is the way to settle it.
-
-**The residual failure is this same bug one layer down.** After the power-mode
-call was removed, 3 of 16 joins still failed, and all three share one
-signature: `post-assoc setup` never logged, `M1=1`, `M2=1`, `M3=0`. The dprintf
-sits after `_DoPostAssocSetup()`, so that call did not return either -- it
-sends RA_INFO and MEDIA_STATUS_RPT through the same unbounded path. Removing
-one hanging H2C simply moved the hang to the next H2C in the sequence. **The
-root cause is the unbounded control transfer, not any particular command**, and
-it has to be fixed properly to close the last ~15%.
-
-#### In-tree precedent, which settles how to build it
-
-Two Haiku drivers issue asynchronous control transfers, and they use opposite
-patterns:
-
-- **`usb_raw`** serialises with a per-device mutex, passes a **long-lived
-  per-device struct as the cookie** (never a stack local), waits on a
-  semaphore that also lives in that struct, and on interruption does
-  `cancel_queued_requests()` followed by `acquire_sem()` to wait for the
-  callback. So the cancel-then-wait structure was right -- but note **what
-  makes the device-wide cancel safe there is the mutex**: only one control
-  transfer is ever outstanding. This driver has no such serialisation, so
-  cancel really is unsafe for us as written.
-- **`h2generic`** (Bluetooth) is pure fire-and-forget: queue it, never wait,
-  and the callback frees a heap-allocated cookie.
-
-And the negative result, which matters more than either: **no Haiku driver
-bounds a control transfer by time.** `usb_raw` waits with no timeout at all,
-only breaking out if the thread is killed. So a timed control transfer is
-novel in this tree, and should be built as conservatively as possible rather
-than cleverly.
-
-Synthesising that with the donor driver's 500 ms / 10 retries:
-
-1. **Serialise control transfers behind a mutex**, as `usb_raw` does. This is
-   what makes cancellation safe, and it is the piece the reverted attempt was
-   missing. Weigh the cost: register I/O happens on the receive and transmit
-   paths, so serialising it is not free.
-2. **Long-lived cookie and semaphore**, created once and owned by the
-   `RegisterIO` object -- not per call, and never on the stack.
-3. **Then** add the deadline and the retries.
-
-**When attempting it again, the design constraints are now known.** Use a **heap-allocated cookie** and **no cancellation**: queue the request,
-wait on a semaphore with a deadline, and on timeout *abandon* rather than
-cancel -- return an error and let the callback free the cookie whenever it
-eventually fires, with an atomic flag so exactly one of waiter and callback
-does the freeing. The heap cookie is what makes abandonment safe; the stack one
-is safe only when the callback has already run, which on the timeout path is
-precisely what is not known.
-
-That avoids the single genuine flaw found by inspection, `cancel_queued_requests()`
-being device-wide in a driver that issues control transfers from several
-threads. The cost is a bounded heap allocation held until a hung transfer
-completes, which beats a permanently blocked worker.
-
-Then **retry**, because that is what makes the command actually land rather
-than merely fail politely: the reference allows up to 10 attempts at 500 ms
-each. A fire-and-forget variant prevents the hang but never delivers the
-command, which would leave the handshake failing anyway.
-
-Honest caveat: the panic was not definitively attributed. The panic text never
-reached the syslog and IPMI was unavailable for a serial capture, so the
-attribution rests on the change having just been deployed after roughly sixty
-clean boots. Treat the two faults above as real regardless -- they are wrong on
-inspection.
-
-Where to start:
-
-- **Bound the call**, by the fire-and-forget route above. A post-association
-  step must not be able to block forever. If Haiku's `send_request` cannot be given a timeout, the H2C needs
-  issuing from somewhere that can be abandoned, or the worker needs a watchdog.
-- **Find out why the transfer stalls after a 5 GHz association specifically.**
-  The 5-to-1 difference in failure rate between the bands is the strongest clue
-  available and is not explained yet.
-- Note this **retires the claim that 5 GHz works**. It worked on the ASUS. On
-  the Edimax 5 GHz associates and then fails this way two times in three.
-
-## Firmware load fails, and there is no retry (next thing to fix)
-
-After several dozen warm reboots in one session the adapter reached a state
-where firmware would not load at all:
-
-```
-firmware init ready timed out after 100 polls (REG_MCUFWDL=0x00602000)
-firmware load failed: Operation timed out
-```
-
-Across that session's syslog: **33 failures against 134 successes**. So this is
-not new, it has been happening intermittently all along, and it eventually
-became persistent.
-
-**There is no retry.** `_InitHardware` step 4 calls `fFirmware->Load()`, and on
-failure logs and returns. The device is then unusable for the whole boot, with
-no second attempt and no chip reset in between. Given a roughly one-in-five
-failure rate on that step, a retry is likely to convert most of those boots
-into working ones -- and the reference driver does reset the chip before
-retrying.
-
-**Retry implemented**: three attempts, re-running the power-on sequence between
-them, each attempt logged. The power-on is repeated rather than simply calling
-`Load()` again because the failure leaves the MCU halted and the download
-engine part-configured, and repeating the download into that state is what
-fails the second time. The reference driver also resets before retrying.
-
-Caveat on how well that is tested: a power cycle cleared the condition, so the
-retry path cannot be provoked on demand. What has been verified is that the
-normal path still loads on the first attempt. The retry's value will only show
-in the failure rate over time.
-
-**Still to find out: why the first attempt fails.** The register values either
-side are the clue:
-
-| | `REG_MCUFWDL` | ready bits |
-|---|---|---|
-| failing | `0x00602000` | none -- bits 3-6, 14, 15 all clear |
-| healthy | `0x0060e078` | bits 3,4,5,6 (`MACINI`/`BBINI`/`RFINI_RDY`) plus 14, 15 |
-
-On failure the MCU never signalled *any* initialisation stage, which points at
-the firmware not executing at all rather than starting slowly. That is a
-different problem from a timeout being too short, and worth decoding against
-the reference's polling loop before touching the timeout.
-
-Note the interaction with warm reboots: a Haiku restart does not power-cycle
-USB, so a chip left in a bad state stays in it across reboots. That is
-presumably why the failures clustered towards the end of a long session of
-rapid reboots, and it means **a wedged adapter needs a real power cycle**, not
-a reboot. Worth knowing before concluding the driver has regressed.
-
-## Stability under load: receive is verified, transmit is not testable this way
-
-The current build was put under sustained load rather than only repeated joins.
-Receiving is clean:
-
-| | |
-|---|---|
-| transferred | 100 MB, incompressible, over 5 GHz |
-| rate | 46 s, about 17 Mbit/s |
-| integrity | MD5 matched exactly |
-| receive callbacks | 32768 -> 118784, i.e. 86,016 of them |
-| driver counters | `crc=0 drop=0 (walk=0 icv=0)` |
-| interface | 79,691 packets, **0 errors, 0 dropped**, 110.8 MB |
-| transmit timeouts, `queue_bulk` failures, callback errors, panics | none |
-
-**Transmit under load could not be measured, and the reason is a trap worth
-knowing.** Both of shredder's interfaces sit on the same subnet, and Haiku's
-routing sends everything out the wired one:
-
-- Pulling the 100 MB file back "achieved 88.9 Mbit/s" -- impossible on a link
-  that had just measured 17 Mbit/s inbound. The interface's `Transmit` counter
-  was **unchanged at 22 packets** afterwards, so none of it went over the air.
-- `ping -S 192.168.74.117` does not help. 2000 pings reported 0% loss, and the
-  wireless `Transmit` counter moved from 22 to **23**. Source binding sets the
-  source address; it does not override the route.
-
-So any transmit figure gathered this way is really a measurement of the
-gigabit wired link. **Check the interface's own `Transmit` counter before
-believing a transmit number** -- it is the only thing here that cannot be
-fooled by routing.
-
-Testing it properly needs the wired interface down, which severs the only
-control channel, so it needs either the cable physically out or a working
-serial console. IPMI is currently unavailable for the latter.
-
-## The test network is a measurement hazard
-
-A 16-boot run produced 4 successes and 11 never-associated, against 13 of 14 on
-the run before it. That looks exactly like a regression, and it was not one.
-The failures were consecutive from boot 7 onwards -- variation does not arrive
-in a block -- and a scan showed why: **`AdamsFamily02` was not in the BSS list
-at all.** The 5 GHz SSID from the same access point was present the whole time
-at -45 dBm. The 2.4 GHz network simply stopped being visible partway through
-the run, then came back later at a weakish -61 dBm.
-
-Two checks settled it in a couple of minutes, and both are worth repeating
-before believing any regression:
-
-- **Is the target actually in the scan list?** Not "did the join fail" but
-  "was there anything to join". Print the BSS list.
-- **Does the other band still work?** A successful join on 5 GHz while 2.4 GHz
-  cannot even see the access point separates the driver from the environment
-  immediately.
-
-The corroborating detail was that the code path I had just added logged
-`acquire_sem returned` zero times, so the change under test had never executed
-its new branch and could not have caused anything.
-
-Every failure-rate number in this document is only as good as the access point
-was on the day. When a run disagrees sharply with the one before it, suspect
-the network first. This is the same lesson the RadeonHD work learned twice from
-a sleepy monitor and a bad cable.
-
-## Reading a capture: the mistake that cost two bugs
-
-Two register/descriptor decisions in this driver were justified in comments as
-"what the usbmon capture shows", and **neither survived decoding the bytes**:
-
-- Data frames set `RTS_ENABLE` because "the vendor protects data frames with
-  RTS/CTS". It sets it on **0 of 8** data frames, 64 to 1528 bytes. This was
-  the Edimax bug: with the bit set the MAC will not transmit until it wins an
-  RTS/CTS exchange, so a missing CTS discards the frame inside the chip -- the
-  USB write completes, the counter increments, nothing reaches the air.
-- `0x0A04` was overwritten with `0x46ff800c`, cited to a specific frame of the
-  cold-start trace. The vendor writes that register **four times** and settles
-  on `0x45ff800c`, so the override was undoing the last two writes of the
-  trace it claimed to follow.
-
-Both read like measured evidence and were really recollections, and the
-comments then protected the bugs from review. The same shape of error put two
-EFUSE fields at another chip's offsets (`0x00E`/`0x010` instead of
-`0x0C9`/`0x0CA`), so every "per this adapter's EFUSE" decision was reasoning
-about unrelated bytes.
-
-**Write the throwaway script that prints the claim before making it**, and put
-the count or the write sequence in the comment rather than the conclusion, so
-a later reader can tell measurement from inference.
-
-## Tooling built this session — worth keeping
-
-The vendor driver on identical silicon is the oracle. A second RTL8814AU (an
-Edimax AC1750, `7392:a833`) runs morrownr's `8814au` on the Linux desktop and
-completes the same handshake against the same access point, so it can settle
-any question about what the hardware wants. The chip has no memory-mapped
-I/O -- every register access is a USB control transfer -- so a `usbmon`
-capture is a complete ordered transcript of what a working driver does.
-Provenance is a black-box observation of hardware, not GPL source.
-
-In `scratchpad/`:
-
-- `deploy-test.sh` — build, deploy, clean reboot, join, report. ~4 minutes.
-- `vendor-init.sh` — usbmon capture across a module reload and association.
-- `usbmon-regs.py` — decode register access out of a capture.
-- `analyse-usbmon.py` — extract TX descriptors and endpoint use.
-- `wifi-capture.sh` — over-the-air capture (180 s window).
-- `eapol-desc.py` — decode the vendor's **EAPOL TX descriptors** field by
-  field (QSEL, MACID, RATE, USE_RATE, SEC_TYPE, PKT_OFFSET, plus the 802.11
-  header). This is what found the RTS bug; it is the highest-value tool here
-  when a frame is built but never reaches the air.
-- `rts-usage.py` — count how many vendor data frames set a given descriptor
-  bit, bucketed by frame size. The shape to copy when checking any
-  "the vendor always/never does X" claim.
-- `preeapol.py` — the register writes in the window *before* the first EAPOL
-  transmit, i.e. the post-association setup. Confirmed our EDCA values match
-  the vendor's exactly.
-- `h2c-decode.py` — decode H2C commands out of the HMEBOX register writes
-  (`0x01D0`+4n, ext at `0x01F0`+4n). Gave the vendor's RA_INFO `rate_id`.
-  Caveat: its mailbox state-tracking is only reliable for the first command
-  it reports; later entries are artifacts, so do not trust them.
-
-**Two traps when capturing the vendor driver:** almost nothing is programmed
-at probe (only the EFUSE readout) -- RQPN, EDCA, the queue map and the PHY are
-all set on *first open*, so a capture that misses `ip link set up` is useless.
-And `rfkill unblock` must come **after** `modprobe`, because reloading
-re-creates the device's rfkill switch blocked.
-
-## Testing traps that cost real time
-
-- **Wait for the box to actually go down before testing a new build.**
-  `grep -q "up   0:0"` also matches `up 0:01` through `up 0:09`, so with
-  reboots minutes apart it matches the *old* system, the join fires against a
-  box about to reboot, and the result reads as a spontaneous crash. This cost
-  three cycles and a hunt for a crash that did not exist.
-- **`grep -a` on shredder's syslog** — it contains binary data, so plain grep
-  silently mixes boots. Mark with `MARK=$(wc -l < /var/log/syslog)` then
-  `awk -v s=$MARK "NR>s"`. Note the driver's init logging happens *before* any
-  mark set after boot.
-- **Replacing a `.hpkg` does not swap the running driver** — packagefs serves
-  the old one until reboot.
-- **A scan read immediately after `ifconfig scan` returns nothing** — the
-  sweep purges the BSS list and needs ~5.6 s.
-- **Never issue an H2C command from `_HardwareInit`**, and more generally
-  beware adding USB control transfers there: 55 extra register reads for a
-  diagnostic were enough to break the post-assoc H2C path.
-- **Air captures need the Edimax unplugged from the laptop** — a 4x4 radio
-  inches from its internal antenna desensitised it enough that captures came
-  back full of corrupt frames with the station under test absent entirely.
-- **Budget diagnostic logging per endpoint, not globally.** A single counter
-  gated on `sLogged < 12` was spent entirely by the firmware download, which
-  all goes to pipe 0, so every later completion on the data pipes was
-  invisible. "No log line for pipe 2" then reads as "pipe 2 failed" when it
-  means "we never looked" -- and that misreading sent a whole round of
-  debugging at the USB layer for a bug that was in the descriptor.
-- **`len=` in the TX traces is the *total* including the 40-byte
-  descriptor.** A 121-byte line is an 81-byte frame, not a 121-byte one.
-  Misreading this made the assoc request look like the EAPOL M2 and briefly
-  made the queue mapping look wrong when it was correct.
-- **A 5 GHz data stall wedges `ifconfig` unkillably** (section 7). Read the
-  syslog; an `ssh` that runs `ifconfig` will hang until killed.
-- **The syslog spans reboots, so `tail` alone mixes boots.** Checking
-  "did the handshake succeed" with `grep ... | tail -2` happily returned the
-  *previous* boot's result twice. Bound the window (`tail -25`) or mark it.
+Method, tooling and the traps that produced wrong answers are in
+[testing-notes.md](testing-notes.md) -- read it before trusting any measurement
+taken here. Completed work and its evidence is in the
+[CHANGELOG](../CHANGELOG.md); the register-level reasoning is in the per-area
+docs listed in [docs/README.md](README.md).

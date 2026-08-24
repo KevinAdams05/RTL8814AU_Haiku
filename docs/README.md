@@ -14,12 +14,13 @@ For *using* the driver, see the [top-level README](../README.md).
 | [architecture.md](architecture.md) | Driver structure, components, threading model, IOC layout |
 | [hardware-init.md](hardware-init.md) | Power-on sequence, EFUSE, MAC init, firmware load, PHY init |
 | [mac-init-gaps.md](mac-init-gaps.md) | MAC registers the vendor driver initialises and this one does not — a differences list, with the normalisation needed to make it meaningful |
+| [testing-notes.md](testing-notes.md) | How to measure things here without being misled — tooling, traps, and the specific ways earlier measurements produced confidently wrong answers |
 | [firmware.md](firmware.md) | Firmware blob layout, IDDMA load procedure, the 8-byte XOR trailers |
 | [rx-path.md](rx-path.md) | Bulk-IN flow, descriptor parsing, SW CCMP decrypt, 802.11 → ethernet conversion, EAPOL diversion |
 | [tx-path.md](tx-path.md) | Write() entry, ethernet → 802.11 conversion, SW CCMP encrypt, descriptor build, queue selection |
 | [wifi-management.md](wifi-management.md) | Scan flow, join state machine, MLME, the Haiku ioctl glue |
 | [phy-channel-and-band.md](phy-channel-and-band.md) | RF register access (the two routes), what a channel change entails, the 2.4/5 GHz band switch |
-| [NEXT_SESSION.md](NEXT_SESSION.md) | Current state (the link works), what to do next — throughput first — the negative results worth not repeating, and the testing traps |
+| [NEXT_SESSION.md](NEXT_SESSION.md) | Current state and the open work, highest value first. Tasks only — method and traps live in testing-notes.md, finished work in the CHANGELOG |
 | [wpa-supplicant-and-deskbar.md](wpa-supplicant-and-deskbar.md) | What it takes to connect from the Deskbar: the net_server/wpa_supplicant chain, the net80211 ioctl contract, how EAPOL really reaches userland, and why the in-driver handshake conflicts with the supplicant |
 | [wpa2-in-driver.md](wpa2-in-driver.md) | The in-driver WPA2-PSK implementation — why we don't use wpa_supplicant, why we don't use the chip's HW crypto, the 4-way handshake state machine, SW CCMP, and what was actually wrong for so long |
 | [ioctl-reference.md](ioctl-reference.md) | Quick reference for SIOCS80211 / SIOCG80211 IOC handlers and what userland calls them |
