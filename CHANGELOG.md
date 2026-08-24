@@ -198,14 +198,20 @@ predicts how often it should have been breaking, and it does.
   `net_server`, which tears the association down immediately. This one is not
   the driver's doing.
 - No WEP, WPA3 or enterprise (802.1X) authentication.
-- **About one first-join in five used to fail**, and the cause is now known
-  and fixed: a retransmitted EAPOL M1 restarted the key derivation. See
-  below. **Roughly one first join in eight still fails for a different and
-  unidentified reason.** The one that is clearly a driver fault, about 2 boots
-  in 29: the interface associates and then stops hearing the access point
-  altogether, so the handshake never starts and no address is obtained.
-  Unicast management frames arrive normally right up until association
-  completes, which is what makes it puzzling. Retrying works.
+- **5 GHz on the Edimax fails about two joins in three**, and the cause is now
+  known: the post-association power-mode command never returns. The worker
+  thread issuing it blocks in a USB control transfer and stays blocked, so the
+  firmware is never told the association exists and the handshake cannot
+  complete. Measured over 16 joins: 5 succeeded. 5 GHz on the ASUS USB-AC68
+  was fine, so this is not simply "5 GHz does not work", and the difference
+  between the bands is not yet explained.
+- **About one first-join in five used to fail on 2.4 GHz**, and that cause is
+  known and fixed: a retransmitted EAPOL M1 restarted the key derivation. See
+  below. **Roughly one first join in eight still fails there for a different
+  and unidentified reason** -- the interface associates and then stops hearing
+  the access point altogether, so the handshake never starts and no address is
+  obtained. Unicast management frames arrive normally right up until
+  association completes, which is what makes it puzzling. Retrying works.
 - **An intermittent stall of the data queue just after association**, on
   either band. Rarer than the above: **not once in 26 measured joins**, though
   it was seen several times before it was measured properly. There is now
