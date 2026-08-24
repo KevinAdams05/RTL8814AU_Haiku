@@ -618,6 +618,38 @@ one hanging H2C simply moved the hang to the next H2C in the sequence. **The
 root cause is the unbounded control transfer, not any particular command**, and
 it has to be fixed properly to close the last ~15%.
 
+#### In-tree precedent, which settles how to build it
+
+Two Haiku drivers issue asynchronous control transfers, and they use opposite
+patterns:
+
+- **`usb_raw`** serialises with a per-device mutex, passes a **long-lived
+  per-device struct as the cookie** (never a stack local), waits on a
+  semaphore that also lives in that struct, and on interruption does
+  `cancel_queued_requests()` followed by `acquire_sem()` to wait for the
+  callback. So the cancel-then-wait structure was right -- but note **what
+  makes the device-wide cancel safe there is the mutex**: only one control
+  transfer is ever outstanding. This driver has no such serialisation, so
+  cancel really is unsafe for us as written.
+- **`h2generic`** (Bluetooth) is pure fire-and-forget: queue it, never wait,
+  and the callback frees a heap-allocated cookie.
+
+And the negative result, which matters more than either: **no Haiku driver
+bounds a control transfer by time.** `usb_raw` waits with no timeout at all,
+only breaking out if the thread is killed. So a timed control transfer is
+novel in this tree, and should be built as conservatively as possible rather
+than cleverly.
+
+Synthesising that with the donor driver's 500 ms / 10 retries:
+
+1. **Serialise control transfers behind a mutex**, as `usb_raw` does. This is
+   what makes cancellation safe, and it is the piece the reverted attempt was
+   missing. Weigh the cost: register I/O happens on the receive and transmit
+   paths, so serialising it is not free.
+2. **Long-lived cookie and semaphore**, created once and owned by the
+   `RegisterIO` object -- not per call, and never on the stack.
+3. **Then** add the deadline and the retries.
+
 **When attempting it again, the design constraints are now known.** Use a **heap-allocated cookie** and **no cancellation**: queue the request,
 wait on a semaphore with a deadline, and on timeout *abandon* rather than
 cancel -- return an error and let the callback free the cookie whenever it
