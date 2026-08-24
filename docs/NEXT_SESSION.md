@@ -588,23 +588,53 @@ that probably did it:
   semaphores those threads are still waiting on. (Note this is not what
   crashed: no timeout was ever logged, so the cancel never ran. It is still
   wrong.)
-- **The request cookie was on the caller's stack.** The callback releasing the
-  semaphore only tells you the callback ran; it does not establish that the USB
-  stack has finished with the URB and its cookie. Returning immediately after
-  `delete_sem()` destroys that stack frame while the stack may still touch it.
-  The driver logs show a healthy, associated interface with 28672 receive
-  callbacks immediately before the panic -- steady-state operation, not a
-  timeout -- which fits a use-after-free far better than it fits the
-  cancellation path.
+- ~~**The request cookie was on the caller's stack**, so returning after
+  `delete_sem()` destroyed a frame the USB stack might still touch.~~
+  **Retracted -- the Haiku source says otherwise.** Both host controllers do
+  the same thing in their finisher:
 
-**If this is attempted again, use fire-and-forget with a heap cookie.** Queue
-the request, do not wait, and have the callback free a heap-allocated cookie.
-That removes the whole class of problem: nothing blocks, so a hung transfer
-cannot take a worker down; there is no stack lifetime to get wrong; and no
-cancellation is needed, so other threads are untouched. Ordering is preserved
-because control requests to the same endpoint complete in order. The cost is
-losing the completion status, which for an H2C command is a fair trade against
-hanging a thread forever.
+  ```c
+  transfer->Finished(callbackStatus, ...);   // our callback runs here
+  delete transfer;                           // only the stack's own object
+  ```
+
+  Nothing touches the caller's buffer or cookie after the callback returns, so
+  a stack-allocated cookie is in fact safe once the callback has run. This was
+  asserted confidently without reading the source, and it was wrong.
+
+**So the cause of the KDL is unknown.** The one real flaw found by inspection
+never executed, the lifetime concern turned out to be unfounded, and the panic
+text never reached the syslog. It may not even have been that change: the
+adapter had been wedging, firmware loads had been failing, and the machine had
+been through some sixty reboots. Kevin will photograph the text if it recurs,
+which is the way to settle it.
+
+**The residual failure is this same bug one layer down.** After the power-mode
+call was removed, 3 of 16 joins still failed, and all three share one
+signature: `post-assoc setup` never logged, `M1=1`, `M2=1`, `M3=0`. The dprintf
+sits after `_DoPostAssocSetup()`, so that call did not return either -- it
+sends RA_INFO and MEDIA_STATUS_RPT through the same unbounded path. Removing
+one hanging H2C simply moved the hang to the next H2C in the sequence. **The
+root cause is the unbounded control transfer, not any particular command**, and
+it has to be fixed properly to close the last ~15%.
+
+**When attempting it again, the design constraints are now known.** Use a **heap-allocated cookie** and **no cancellation**: queue the request,
+wait on a semaphore with a deadline, and on timeout *abandon* rather than
+cancel -- return an error and let the callback free the cookie whenever it
+eventually fires, with an atomic flag so exactly one of waiter and callback
+does the freeing. The heap cookie is what makes abandonment safe; the stack one
+is safe only when the callback has already run, which on the timeout path is
+precisely what is not known.
+
+That avoids the single genuine flaw found by inspection, `cancel_queued_requests()`
+being device-wide in a driver that issues control transfers from several
+threads. The cost is a bounded heap allocation held until a hung transfer
+completes, which beats a permanently blocked worker.
+
+Then **retry**, because that is what makes the command actually land rather
+than merely fail politely: the reference allows up to 10 attempts at 500 ms
+each. A fire-and-forget variant prevents the hang but never delivers the
+command, which would leave the handshake failing anyway.
 
 Honest caveat: the panic was not definitively attributed. The panic text never
 reached the syslog and IPMI was unavailable for a serial capture, so the
