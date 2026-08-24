@@ -508,10 +508,50 @@ it is never told the association exists. M1 and M2 are often still seen in the
 log, but M3 never arrives -- consistent with our M2 not reaching the access
 point properly because the firmware does not know about the peer.
 
+### A bounded H2C write was tried and reverted after a KDL
+
+Do not simply re-apply it. The approach was: queue the control transfer with
+`queue_request()`, wait on a semaphore with a deadline, and on timeout call
+`cancel_queued_requests()`. It was deployed, the machine hit KDL, and it was
+reverted.
+
+Two design faults, either of which is disqualifying, and the second is the one
+that probably did it:
+
+- **`cancel_queued_requests()` is device-wide, not per-request.** This driver
+  issues control transfers constantly from several threads, so cancelling on
+  timeout would abort *other* threads' in-flight requests, whose buffers and
+  semaphores those threads are still waiting on. (Note this is not what
+  crashed: no timeout was ever logged, so the cancel never ran. It is still
+  wrong.)
+- **The request cookie was on the caller's stack.** The callback releasing the
+  semaphore only tells you the callback ran; it does not establish that the USB
+  stack has finished with the URB and its cookie. Returning immediately after
+  `delete_sem()` destroys that stack frame while the stack may still touch it.
+  The driver logs show a healthy, associated interface with 28672 receive
+  callbacks immediately before the panic -- steady-state operation, not a
+  timeout -- which fits a use-after-free far better than it fits the
+  cancellation path.
+
+**If this is attempted again, use fire-and-forget with a heap cookie.** Queue
+the request, do not wait, and have the callback free a heap-allocated cookie.
+That removes the whole class of problem: nothing blocks, so a hung transfer
+cannot take a worker down; there is no stack lifetime to get wrong; and no
+cancellation is needed, so other threads are untouched. Ordering is preserved
+because control requests to the same endpoint complete in order. The cost is
+losing the completion status, which for an H2C command is a fair trade against
+hanging a thread forever.
+
+Honest caveat: the panic was not definitively attributed. The panic text never
+reached the syslog and IPMI was unavailable for a serial capture, so the
+attribution rests on the change having just been deployed after roughly sixty
+clean boots. Treat the two faults above as real regardless -- they are wrong on
+inspection.
+
 Where to start:
 
-- **Bound the call.** A post-association step must not be able to block
-  forever. If Haiku's `send_request` cannot be given a timeout, the H2C needs
+- **Bound the call**, by the fire-and-forget route above. A post-association
+  step must not be able to block forever. If Haiku's `send_request` cannot be given a timeout, the H2C needs
   issuing from somewhere that can be abandoned, or the worker needs a watchdog.
 - **Find out why the transfer stalls after a 5 GHz association specifically.**
   The 5-to-1 difference in failure rate between the bands is the strongest clue
