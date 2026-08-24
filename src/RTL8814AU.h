@@ -86,12 +86,6 @@ static const uint32 kMaxSecurityCamEntries	= 64;
 static const uint32 kH2CMailboxCount		= 4;
 static const uint32 kH2CCommandSize		= 7;		// 4 standard + 3 ext
 
-// Deadline for each H2C mailbox register write. A control transfer to this
-// chip normally completes in well under a millisecond, so half a second is
-// generous; the point is only that it cannot be unbounded, because a hung H2C
-// write used to take the post-association worker with it permanently.
-static const bigtime_t kH2CWriteTimeout		= 500000;	// 0.5 seconds
-
 // EFUSE
 static const uint32 kEfuseTotalSize			= 1024;
 static const uint32 kEfuseMapSize			= 512;

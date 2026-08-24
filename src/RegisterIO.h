@@ -46,15 +46,6 @@ public:
 	status_t					Write16(uint16 address, uint16 value);
 	status_t					Write32(uint16 address, uint32 value);
 
-	// Write with a deadline. Ordinary writes go through the USB stack's
-	// synchronous send_request, which has no timeout and will wait forever
-	// on a device that never completes the transfer -- that is how a
-	// post-association H2C command took its worker thread down with it and
-	// left 5 GHz failing two joins in three. Use this on any path where
-	// blocking indefinitely is worse than failing.
-	status_t					WriteBounded32(uint16 address, uint32 value,
-									bigtime_t timeout);
-
 	// Bulk data write: writes N consecutive bytes to the given address
 	// in a single USB control transfer. No byte-order conversion is
 	// performed — data is written as raw bytes. Used for firmware
@@ -103,14 +94,6 @@ private:
 	// Raw USB control transfer helpers
 	status_t					_VendorRead(uint16 address, void* buffer,
 									uint16 length);
-	static void					_BoundedWriteCallback(void* cookie,
-									status_t status, void* data,
-									size_t actualLength);
-
-	status_t					_VendorWriteBounded(uint16 address,
-									const void* buffer, uint16 length,
-									bigtime_t timeout);
-
 	status_t					_VendorWrite(uint16 address,
 									const void* buffer, uint16 length);
 
