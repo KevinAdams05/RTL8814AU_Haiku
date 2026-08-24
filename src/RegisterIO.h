@@ -46,6 +46,16 @@ public:
 	status_t					Write16(uint16 address, uint16 value);
 	status_t					Write32(uint16 address, uint32 value);
 
+	// Write with a deadline, for paths where blocking forever is worse than
+	// failing. The synchronous writes above go through the USB stack's
+	// send_request, which has no timeout: on a device that accepts a control
+	// transfer and never completes it, the calling thread blocks permanently.
+	// That was the driver's largest failure -- a post-association H2C command
+	// took its worker thread down with it and left 5 GHz failing two joins in
+	// three.
+	status_t					WriteBounded32(uint16 address, uint32 value,
+									bigtime_t timeout);
+
 	// Bulk data write: writes N consecutive bytes to the given address
 	// in a single USB control transfer. No byte-order conversion is
 	// performed — data is written as raw bytes. Used for firmware
@@ -94,12 +104,54 @@ private:
 	// Raw USB control transfer helpers
 	status_t					_VendorRead(uint16 address, void* buffer,
 									uint16 length);
+	static void					_ControlCallback(void* cookie,
+									status_t status, void* data,
+									size_t actualLength);
+
+	status_t					_VendorWriteBounded(uint16 address,
+									const void* buffer, uint16 length,
+									bigtime_t timeout);
+
 	status_t					_VendorWrite(uint16 address,
 									const void* buffer, uint16 length);
 
 	usb_device					fDevice;
 	usb_module_info*			fUSBModule;
-	mutex						fLock;
+	// Serialises every vendor control transfer, not just the read-modify-write
+	// helpers it originally guarded.
+	//
+	// Two reasons it has to cover all of them. Atomicity: MaskedWrite* was
+	// protected against other MaskedWrite* calls but not against a plain
+	// Write*, so a concurrent write could still land in the middle of a
+	// read-modify-write. And exclusivity: only one control transfer being
+	// outstanding at a time is the precondition that makes
+	// cancel_queued_requests() safe, since that call is device-wide and would
+	// otherwise abort transfers belonging to other threads. Haiku's own
+	// usb_raw relies on exactly this.
+	//
+	// Recursive because MaskedWrite* takes it and then calls the public
+	// Read*/Write*, which now take it too; a plain mutex would deadlock.
+	recursive_lock				fLock;
+
+	// State for a bounded transfer. These are members rather than locals on
+	// purpose: an outstanding request points at the buffer and signals the
+	// semaphore, and both must outlive any single call. fLock guarantees only
+	// one bounded transfer is in flight, and the call does not return until
+	// that transfer has completed or been cancelled and reaped, so nothing is
+	// ever reused underneath the USB stack.
+	sem_id						fControlDone;
+	status_t					fControlStatus;
+	// A ring rather than one buffer. When a transfer times out it is
+	// *abandoned*, not cancelled -- cancel_queued_requests() was measured not
+	// to reclaim a stuck transfer on this chip, its callback simply never
+	// arrives -- so the request stays outstanding and keeps pointing at
+	// whichever buffer it was given. Rotating means the next few transfers
+	// cannot overwrite it, which would otherwise let an abandoned write
+	// deliver the wrong bytes to a register if it ever did complete.
+	static const uint32			kControlBuffers = 4;
+	uint8						fControlBuffer[kControlBuffers]
+									[sizeof(uint32)];
+	uint32						fControlBufferIndex;
 	bool						fDevicePresent;
 };
 

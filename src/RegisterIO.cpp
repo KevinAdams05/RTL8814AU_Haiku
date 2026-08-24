@@ -40,21 +40,41 @@ static const uint8 kVendorRequestCode = 0x05;
 // during heavy traffic or immediately after resume from suspend.
 static const uint32 kMaxRetryCount = 3;
 
+// Attempts per bounded control write. The Realtek reference allows ten; three
+// is used here because each attempt can cost the full deadline and this lock
+// serialises all register access, so ten would mean holding it for seconds.
+static const uint32 kControlWriteAttempts = 3;
+
 
 RTL8814AURegisterIO::RTL8814AURegisterIO(usb_device device,
 	usb_module_info* usbModule)
 	:
 	fDevice(device),
 	fUSBModule(usbModule),
+	fControlDone(-1),
+	fControlStatus(B_ERROR),
+	fControlBufferIndex(0),
 	fDevicePresent(true)
 {
-	mutex_init(&fLock, "rtl8814au:register_io");
+	recursive_lock_init(&fLock, "rtl8814au:register_io");
+	memset(fControlBuffer, 0, sizeof(fControlBuffer));
+
+	// Created once and reused. A semaphore per transfer would have to be
+	// deleted while a cancelled request might still signal it.
+	fControlDone = create_sem(0, "rtl8814au:control_done");
+	if (fControlDone < 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": could not create the control "
+			"semaphore (%s); bounded writes will fall back to blocking "
+			"ones\n", strerror(fControlDone));
+	}
 }
 
 
 RTL8814AURegisterIO::~RTL8814AURegisterIO()
 {
-	mutex_destroy(&fLock);
+	if (fControlDone >= 0)
+		delete_sem(fControlDone);
+	recursive_lock_destroy(&fLock);
 }
 
 
@@ -178,7 +198,7 @@ RTL8814AURegisterIO::WriteN(uint16 address, const void* buffer, uint16 length)
 status_t
 RTL8814AURegisterIO::MaskedWrite8(uint16 address, uint8 mask, uint8 value)
 {
-	MutexLocker locker(fLock);
+	RecursiveLocker locker(fLock);
 	uint8 current = Read8(address);
 	uint8 updated = (current & ~mask) | (value & mask);
 	return Write8(address, updated);
@@ -189,7 +209,7 @@ RTL8814AURegisterIO::MaskedWrite8(uint16 address, uint8 mask, uint8 value)
 status_t
 RTL8814AURegisterIO::MaskedWrite16(uint16 address, uint16 mask, uint16 value)
 {
-	MutexLocker locker(fLock);
+	RecursiveLocker locker(fLock);
 	uint16 current = Read16(address);
 	uint16 updated = (current & ~mask) | (value & mask);
 	return Write16(address, updated);
@@ -200,7 +220,7 @@ RTL8814AURegisterIO::MaskedWrite16(uint16 address, uint16 mask, uint16 value)
 status_t
 RTL8814AURegisterIO::MaskedWrite32(uint16 address, uint32 mask, uint32 value)
 {
-	MutexLocker locker(fLock);
+	RecursiveLocker locker(fLock);
 	uint32 current = Read32(address);
 	uint32 updated = (current & ~mask) | (value & mask);
 	return Write32(address, updated);
@@ -235,7 +255,7 @@ RTL8814AURegisterIO::PollFor8(uint16 address, uint8 mask, uint8 expected,
 		snooze(delayPerAttempt);
 	}
 
-	dprintf(RTL8814AU_DRIVER_NAME ": PollFor8(0x%04x) timed out — "
+	dprintf(RTL8814AU_DRIVER_NAME ": PollFor8(0x%04x) timed out - "
 		"expected 0x%02x, mask 0x%02x\n", address, expected, mask);
 	return B_TIMED_OUT;
 }
@@ -257,7 +277,7 @@ RTL8814AURegisterIO::PollFor32(uint16 address, uint32 mask, uint32 expected,
 		snooze(delayPerAttempt);
 	}
 
-	dprintf(RTL8814AU_DRIVER_NAME ": PollFor32(0x%04x) timed out — "
+	dprintf(RTL8814AU_DRIVER_NAME ": PollFor32(0x%04x) timed out - "
 		"expected 0x%08" B_PRIx32 ", mask 0x%08" B_PRIx32 "\n",
 		address, expected, mask);
 	return B_TIMED_OUT;
@@ -312,6 +332,8 @@ RTL8814AURegisterIO::_VendorRead(uint16 address, void* buffer, uint16 length)
 	if (!fDevicePresent)
 		return B_DEV_NOT_READY;
 
+	RecursiveLocker locker(fLock);
+
 	for (uint32 attempt = 0; attempt < kMaxRetryCount; attempt++) {
 		size_t actualLength = length;
 		status_t status = fUSBModule->send_request(
@@ -338,6 +360,154 @@ RTL8814AURegisterIO::_VendorRead(uint16 address, void* buffer, uint16 length)
 }
 
 
+void
+RTL8814AURegisterIO::_ControlCallback(void* cookie, status_t status,
+	void* data, size_t actualLength)
+{
+	RTL8814AURegisterIO* self = static_cast<RTL8814AURegisterIO*>(cookie);
+	if (self == NULL)
+		return;
+
+	self->fControlStatus = status;
+	release_sem_etc(self->fControlDone, 1, B_DO_NOT_RESCHEDULE);
+}
+
+
+/*! Vendor write that gives up instead of blocking forever.
+
+    Modelled on Haiku's usb_raw, the only in-tree driver that waits on an
+    asynchronous control transfer: serialise with a lock, pass a long-lived
+    object as the cookie rather than a stack local, and on giving up cancel and
+    then wait for the callback. The one addition is the deadline. usb_raw waits
+    indefinitely, and no Haiku driver bounds a control transfer by time, so
+    that part has no in-tree precedent and is kept deliberately plain. The
+    Realtek reference bounds every control transfer at 500 ms and retries,
+    which is where the numbers come from.
+
+    Why the lock matters beyond mutual exclusion: cancel_queued_requests() is
+    device-wide. Holding fLock guarantees ours is the only control transfer
+    outstanding, so cancelling cannot abort one another thread is still waiting
+    on. An earlier attempt omitted the lock and was reverted after a KDL.
+
+    The buffer and semaphore are members, and this does not return until the
+    transfer has completed or been cancelled and reaped, so neither is reused
+    while the USB stack still holds a reference.
+*/
+status_t
+RTL8814AURegisterIO::_VendorWriteBounded(uint16 address, const void* buffer,
+	uint16 length, bigtime_t timeout)
+{
+	if (!fDevicePresent)
+		return B_DEV_NOT_READY;
+	if (length > sizeof(fControlBuffer[0]))
+		return B_BAD_VALUE;
+
+	// Without a semaphore there is no way to wait with a deadline, and a
+	// blocking write is still better than not writing at all.
+	if (fControlDone < 0)
+		return _VendorWrite(address, buffer, length);
+
+	RecursiveLocker locker(fLock);
+
+	// Retried, because bounding the wait only converts a hang into a failure
+	// -- it does not deliver the command. Measured: the first attempt at
+	// MEDIA_STATUS_RPT times out often enough to fail the association, which
+	// is the same outcome as the hang it replaced, just survivable. The
+	// Realtek reference retries every control transfer up to ten times for
+	// exactly this reason.
+	//
+	// Fewer attempts than the reference uses, deliberately. Each one can cost
+	// the full deadline, and this lock now serialises all register access, so
+	// ten would mean holding it for five seconds.
+	for (uint32 attempt = 1; attempt <= kControlWriteAttempts; attempt++) {
+
+		// Drain any count left by a transfer that completed after we stopped
+		// waiting for it, so this wait cannot be satisfied by stale news.
+		while (acquire_sem_etc(fControlDone, 1, B_RELATIVE_TIMEOUT, 0) == B_OK)
+			;
+
+		uint8* attemptBuffer = fControlBuffer[fControlBufferIndex];
+		fControlBufferIndex = (fControlBufferIndex + 1) % kControlBuffers;
+		memcpy(attemptBuffer, buffer, length);
+		fControlStatus = B_ERROR;
+
+		status_t status = fUSBModule->queue_request(fDevice,
+			USB_REQTYPE_VENDOR | USB_REQTYPE_DEVICE_OUT,
+			kVendorRequestCode,
+			address,
+			0,
+			length,
+			attemptBuffer,
+			_ControlCallback,
+			this);
+		if (status != B_OK)
+			return status;
+
+		status = acquire_sem_etc(fControlDone, 1, B_RELATIVE_TIMEOUT, timeout);
+		if (status == B_TIMED_OUT) {
+			dprintf(RTL8814AU_DRIVER_NAME ": control write to 0x%04x did not "
+				"complete within %" B_PRIdBIGTIME " us; cancelling\n",
+				address, timeout);
+
+			// The transfer is abandoned rather than cancelled.
+			//
+			// cancel_queued_requests() was tried here first and measured not to
+			// work: on both timeouts observed, the cancelled transfer's
+			// callback never arrived within a two-second grace, so the code
+			// fell through to marking the device unusable and the retry below
+			// never ran at all. Cancellation cannot reclaim a stuck control
+			// transfer on this chip.
+			//
+			// Abandoning is safe as long as nothing reuses what the
+			// outstanding request points at, which is what the ring is for.
+			// If its callback ever does arrive it releases the semaphore, and
+			// the drain at the top of the next attempt discards that count.
+			//
+			// Note the cancel call was also device-wide, so it would have
+			// aborted transfers belonging to other threads; not doing it at all
+			// removes that hazard too.
+			if (attempt < kControlWriteAttempts) {
+				dprintf(RTL8814AU_DRIVER_NAME ": retrying control write to "
+					"0x%04x (attempt %u of %u)\n", address,
+					(unsigned)(attempt + 1), (unsigned)kControlWriteAttempts);
+				continue;
+			}
+			return B_TIMED_OUT;
+		}
+
+		if (status != B_OK)
+			return status;
+		if (fControlStatus == B_OK) {
+			if (attempt > 1) {
+				dprintf(RTL8814AU_DRIVER_NAME ": control write to 0x%04x "
+					"succeeded on attempt %u\n", address, (unsigned)attempt);
+			}
+			return B_OK;
+		}
+
+		// Completed with an error rather than timing out. Retry too: a NAK on
+		// this chip is transient often enough that the synchronous path has
+		// always retried.
+		if (attempt == kControlWriteAttempts)
+			return fControlStatus;
+
+	}
+
+	return B_TIMED_OUT;
+}
+
+
+/*! 32-bit register write with a deadline. See _VendorWriteBounded. */
+status_t
+RTL8814AURegisterIO::WriteBounded32(uint16 address, uint32 value,
+	bigtime_t timeout)
+{
+	uint32 littleEndian = B_HOST_TO_LENDIAN_INT32(value);
+	return _VendorWriteBounded(address, &littleEndian, sizeof(littleEndian),
+		timeout);
+}
+
+
 /*! Perform a USB vendor-specific control transfer to write to a register
     or memory address. Retries up to kMaxRetryCount times on transient errors.
 
@@ -352,6 +522,8 @@ RTL8814AURegisterIO::_VendorWrite(uint16 address, const void* buffer,
 {
 	if (!fDevicePresent)
 		return B_DEV_NOT_READY;
+
+	RecursiveLocker locker(fLock);
 
 	status_t lastStatus = B_ERROR;
 

@@ -1,5 +1,46 @@
 # Plan for the next session
 
+## Where this stands, 2026-08-24
+
+This document has grown long and is largely chronological. Read this section
+first; the rest is detail and history, and several sections describe faults
+that were later diagnosed differently.
+
+**Working.** Both bands, both connection routes, on two adapters. First-join
+success on the Edimax is roughly 85% on 2.4 GHz and 81% on 5 GHz. Receive is
+solid under sustained load: 100 MB transferred with a matching checksum,
+86,000 receive callbacks, zero errors and zero drops.
+
+**Fixed this session, each measured rather than asserted:**
+
+| fix | effect |
+|---|---|
+| Retransmitted M1 no longer discards the SNonce and PTK | the ~1-in-5 first-join failure; 14 retransmissions survived, 0 MIC mismatches |
+| The power-mode H2C is no longer sent -- the vendor never sends it either | 5 GHz went from 31% to 81%, p = 0.0057 |
+| Firmware download is retried with a power-on between attempts | one boot in five used to lose the adapter entirely |
+| Post-assoc worker survives a transient semaphore error | it could previously die silently and permanently |
+
+**The one open defect.** About one join in six still fails on either band,
+always the same way: the association completes, `_DoPostAssocSetup()` never
+returns, and the handshake dies. The cause is understood -- an H2C control
+transfer that never completes, through a path with no timeout. A bounded
+version with retries is **built, staged on the test machine, and not yet
+measured**; see "Bounded H2C write, second attempt" below, including the
+finding that cancellation cannot reclaim a stuck transfer on this chip.
+
+**Do not trust these two things without re-checking them:**
+
+- Any transmit throughput number. Both test interfaces share a subnet and
+  Haiku routes out the wired one, so transmit figures gathered over the air
+  are almost certainly measuring gigabit ethernet. Check the interface's own
+  `Transmit` counter, which routing cannot fake.
+- Any failure rate taken from a handful of runs. Two "regressions" this
+  session were the access point dropping off the air and a wedged adapter that
+  needed a power cycle, and one hypothesis was built on a channel readback that
+  only fires on a band change.
+
+---
+
 **The blocker is solved.** As of 2026-08-21 the driver works on both bands,
 by either connection route, on **two different adapters**: it associates,
 completes the WPA2 four-way handshake, installs CCMP keys, obtains a DHCP
@@ -572,7 +613,61 @@ are sent repeatedly by the vendor and neither has ever been sent by us:
 Worth investigating alongside the rate-adaptation work, which is stalled on
 exactly the kind of information those commands carry.
 
-### A bounded H2C write was tried and reverted after a KDL
+### Bounded H2C write, second attempt: built, staged, PARTLY measured
+
+Built on the in-tree `usb_raw` pattern plus the donor's deadline. Three things
+were measured on hardware, and the third changed the design:
+
+**1. The deadline works.** The timeout fired and the driver survived it:
+
+```
+post-assoc MEDIA_STATUS_RPT: Operation timed out
+post-assoc setup: General system error
+```
+
+That is the event which used to be a permanent hang. The worker logged it,
+stayed alive, and the next boot associated normally. It also confirms the
+underlying fault is real: that control transfer genuinely never completes.
+
+**2. Bounding alone is not enough.** The short soak scored 1 of 4, because a
+timed-out command is a command the firmware never receives -- the association
+then fails exactly as it did when the call hung, just survivably. Hence the
+retry, three attempts, fewer than the reference's ten because each costs the
+full deadline and this lock now serialises all register access.
+
+**3. `cancel_queued_requests()` does not reclaim a stuck transfer on this
+chip.** This is the important one. Measured: on both timeouts, the cancelled
+transfer's callback never arrived within a two-second grace. Every timeout
+therefore fell into the hard-fail branch and marked the device unusable, and
+**the retry never ran once** -- `retrying control write` appears 0 times
+against 2 timeouts and 2 device-kills.
+
+So cancellation is not available as a recovery mechanism here, which rules out
+the `usb_raw` shape even though it is the in-tree precedent. The transfer has
+to be **abandoned** instead:
+
+- No cancellation at all, which also removes the device-wide hazard, since
+  `cancel_queued_requests()` would have aborted other threads' transfers.
+- No marking the device unusable. That was far too harsh a response to a
+  single failed command.
+- A **ring of four buffers**, rotating per attempt. An abandoned request stays
+  outstanding and keeps pointing at whichever buffer it was given, so nothing
+  may reuse it; without the ring a later transfer could overwrite it and an
+  abandoned write could eventually deliver the wrong bytes to a register.
+- If an abandoned callback ever does arrive it releases the semaphore, and the
+  drain at the top of the next attempt discards that stale count.
+
+**Status: built, style-clean, staged on the test machine, and NOT yet measured.**
+The abandon-and-retry version has never run. What is known is that the
+version before it converts the hang into a survivable error but does not
+deliver the command. The open question is whether a retry succeeds while a
+previous transfer is still stuck on the control endpoint -- control requests to
+one endpoint queue in order, so a wedged transfer may well block the retry
+behind it. If it does, the next thing to establish is whether the endpoint ever
+recovers on its own, because if it does not then nothing short of a device
+reset will help and the command has to be issued some other way.
+
+### The first bounded-write attempt, reverted after a KDL
 
 Do not simply re-apply it. The approach was: queue the control transfer with
 `queue_request()`, wait on a semaphore with a deadline, and on timeout call

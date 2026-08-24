@@ -580,8 +580,15 @@ RTL8814AUWiFiManager::_SendH2CCommand(uint8 commandID,
 	uint32 extValue = (uint32)cmd[4]
 		| ((uint32)cmd[5] << 8)
 		| ((uint32)cmd[6] << 16);
-	status_t status = fRegisterIO->Write32(kRegHMEBoxExt[boxIndex],
-		extValue);
+	// Both mailbox writes are bounded. These are issued from the
+	// post-association worker, and an unbounded write there blocks the worker
+	// permanently on a transfer the device never completes -- which is what
+	// left 5 GHz failing two joins in three, and which reappeared one command
+	// further along when the power-mode call was removed. Failing the command
+	// is much better than hanging: the caller sees an error, the worker stays
+	// alive, and the next association gets another attempt.
+	status_t status = fRegisterIO->WriteBounded32(kRegHMEBoxExt[boxIndex],
+		extValue, kH2CWriteTimeout);
 	if (status != B_OK)
 		return status;
 
@@ -591,7 +598,8 @@ RTL8814AUWiFiManager::_SendH2CCommand(uint8 commandID,
 		| ((uint32)cmd[1] << 8)
 		| ((uint32)cmd[2] << 16)
 		| ((uint32)cmd[3] << 24);
-	status = fRegisterIO->Write32(kRegHMEBox[boxIndex], stdValue);
+	status = fRegisterIO->WriteBounded32(kRegHMEBox[boxIndex], stdValue,
+		kH2CWriteTimeout);
 	if (status != B_OK)
 		return status;
 
@@ -795,7 +803,7 @@ RTL8814AUWiFiManager::_HandleScanComplete(const uint8* payload,
 
 /*! Block until the current scan completes (or timeout elapses).
     \param timeout  Relative timeout in microseconds, or B_INFINITE_TIMEOUT.
-    
+
 eturn  B_OK if the scan completed before the timeout, B_TIMED_OUT
              if not, or another error.
 */
