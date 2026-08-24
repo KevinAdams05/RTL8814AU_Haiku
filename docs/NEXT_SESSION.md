@@ -483,14 +483,29 @@ failure rate on that step, a retry is likely to convert most of those boots
 into working ones -- and the reference driver does reset the chip before
 retrying.
 
-Two things to do, in this order:
+**Retry implemented**: three attempts, re-running the power-on sequence between
+them, each attempt logged. The power-on is repeated rather than simply calling
+`Load()` again because the failure leaves the MCU halted and the download
+engine part-configured, and repeating the download into that state is what
+fails the second time. The reference driver also resets before retrying.
 
-1. **Retry the firmware load**, with a chip reset between attempts, and log
-   each attempt. Cheap, self-contained, and testable by counting attempts in
-   the syslog.
-2. **Find out why the first attempt fails.** `REG_MCUFWDL=0x00602000` at the
-   timeout is the clue worth decoding against the reference's own polling
-   loop.
+Caveat on how well that is tested: a power cycle cleared the condition, so the
+retry path cannot be provoked on demand. What has been verified is that the
+normal path still loads on the first attempt. The retry's value will only show
+in the failure rate over time.
+
+**Still to find out: why the first attempt fails.** The register values either
+side are the clue:
+
+| | `REG_MCUFWDL` | ready bits |
+|---|---|---|
+| failing | `0x00602000` | none -- bits 3-6, 14, 15 all clear |
+| healthy | `0x0060e078` | bits 3,4,5,6 (`MACINI`/`BBINI`/`RFINI_RDY`) plus 14, 15 |
+
+On failure the MCU never signalled *any* initialisation stage, which points at
+the firmware not executing at all rather than starting slowly. That is a
+different problem from a timeout being too short, and worth decoding against
+the reference's polling loop before touching the timeout.
 
 Note the interaction with warm reboots: a Haiku restart does not power-cycle
 USB, so a chip left in a bad state stays in it across reboots. That is

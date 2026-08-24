@@ -111,6 +111,12 @@ static const uint32 kAmpduMaxLength			= 0x1FFFF;	// 128 KB
 //   1 interrupt IN (C2H firmware events)
 // ---------------------------------------------------------------------------
 
+// How many times to attempt the firmware download before giving up. One
+// attempt is not enough: the CPU_DL_READY poll fails on roughly one boot in
+// five, and a failure there used to leave the adapter unusable until the next
+// boot. The power-on sequence is re-run between attempts.
+static const uint32 kFirmwareLoadAttempts	= 3;
+
 static const uint32 kBulkOutEndpointCount	= 3;
 
 // Minimum gap between recovery attempts on one bulk OUT pipe. A pipe that is

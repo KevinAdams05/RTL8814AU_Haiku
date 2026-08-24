@@ -415,10 +415,53 @@ RTL8814AUDevice::_InitHardware()
 		return status;
 	}
 
-	// Step 4: Load firmware — transfer DMEM and IRAM to the Lexra 3081
-	status = fFirmware->Load(RTL8814AU_FIRMWARE_PATH);
+	// Step 4: Load firmware — transfer DMEM and IRAM to the Lexra 3081.
+	//
+	// Retried, because a single attempt is not reliable on this chip. Over one
+	// long test session the syslog recorded 33 failures against 134
+	// successes -- roughly one boot in five -- always at the same place, the
+	// poll for CPU_DL_READY timing out. Previously that one failure ended
+	// initialisation and the adapter was unusable for the whole boot, which
+	// accounts for some unknown share of the per-boot flakiness chased
+	// elsewhere in this driver.
+	//
+	// The power-on sequence is re-run between attempts rather than just
+	// calling Load() again: the failure leaves the MCU halted and the
+	// download engine part-configured, and repeating the download into that
+	// state is what fails a second time. The reference driver likewise resets
+	// the chip before retrying. Note a Haiku restart does not power-cycle
+	// USB, so a chip wedged this way stays wedged across reboots -- which is
+	// exactly why these failures cluster at the end of a long session of
+	// rapid reboots rather than spreading evenly through it.
+	for (uint32 attempt = 1; attempt <= kFirmwareLoadAttempts; attempt++) {
+		status = fFirmware->Load(RTL8814AU_FIRMWARE_PATH);
+		if (status == B_OK) {
+			if (attempt > 1) {
+				dprintf(RTL8814AU_DRIVER_NAME ": firmware loaded on attempt "
+					"%u\n", (unsigned)attempt);
+			}
+			break;
+		}
+
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware load attempt %u of %u "
+			"failed: %s\n", (unsigned)attempt,
+			(unsigned)kFirmwareLoadAttempts, strerror(status));
+
+		if (attempt == kFirmwareLoadAttempts)
+			break;
+
+		// Put the chip back to a known state before trying again.
+		status_t resetStatus = _PowerOnSequence();
+		dprintf(RTL8814AU_DRIVER_NAME ": re-ran power-on before firmware "
+			"retry: %s\n", strerror(resetStatus));
+		if (resetStatus != B_OK) {
+			status = resetStatus;
+			break;
+		}
+	}
 	if (status != B_OK) {
-		dprintf(RTL8814AU_DRIVER_NAME ": firmware load failed: %s\n",
+		dprintf(RTL8814AU_DRIVER_NAME ": firmware load failed after %u "
+			"attempts: %s\n", (unsigned)kFirmwareLoadAttempts,
 			strerror(status));
 		return status;
 	}
