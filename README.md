@@ -1,59 +1,53 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 >[!WARNING]
->This is alpha version code. It works, but it is not finished.
->
->Current state in short: **both bands work, and so do both ways of
->connecting.** A WPA2-PSK network associates, completes the four-way
->handshake, installs CCMP keys, gets a DHCP lease, and carries ICMP and TCP
->on 2.4 GHz *and* 5 GHz — verified with a full SSH session over the air at
->every ping payload size from 56 to 1472 bytes. You can connect from the
->Deskbar network menu, the Network preferences panel, `ifconfig join`, or the
->bundled `wifi-join` helper.
->
->**5 GHz is much the better band**: about 54 Mbit/s sending and 15 receiving,
->against 11-32 and 2-3 on 2.4 GHz.
->
->Those results are from an ASUS USB-AC68. An Edimax AC1750 reaches the same
->standard on 2.4 GHz and associates on 5 GHz, but both are subject to an
->**intermittent stall of the data queue just after association**: most runs
->are clean, and when it happens the handshake never starts, so you get an
->association with no address. That one is open; see the CHANGELOG.
->
->The main shortfall is receive throughput on 2.4 GHz. Three deliberate
->simplifications account for most of it — every data frame is sent at a fixed
->rate with no rate adaptation, CCMP runs in software rather than on the chip's
->engine, and A-MPDU aggregation is disabled. All three are addressable.
+>This is alpha version code. It is start to work, but it is not finished.
+
 
 **Bug reports (please attach listdev output, syslog and/or screenshots) and PRs welcome! See "Logging Bugs / How to Help" section below**
 
 # rtl8814au (Unofficial) - Haiku Driver
 
-This is a driver for the Realtek rtl8814au series of USB wifi adapters. It is marked as "unofficial" because it is not developed by the Haiku maintainers/project team. There are no current plans to upstream into Haiku code. The driver is distributed as a standalone package, or you can build it from source.
+This is a driver for the Realtek rtl8814au series of USB wifi adapters. It is not developed by the Haiku maintainers/project team. There are no current plans to upstream into Haiku code. The driver is distributed as a standalone package, or you can build it from source.
 
 This is a native Haiku driver, not based on the FreeBSD compatibility layer. Realtek doesn't publish a driver datasheet for this chipset, so the Linux driver was used as a reference for things such as registers and init. However, the driver wasn't copied directly. The goal is a native "Haiku-first" development philosophy.
 
-Since this driver will be released as a standalone package we did not change any Haiku code. There are a couple things that could have been done on the OS level, but instead we had to do in the driver. This is outlined in more detail in the technical documentation.
-
 ---
 
-## Tested Hardware
+## Hardware Compatibility List
 
-This driver was physically tested on the following devices:
+Every device the driver claims is listed below, in the same order as
+`kSupportedDevices` in `src/RTL8814AU.h`. Only the first two have been in a
+machine; the rest are claimed on the strength of their USB ID appearing in the
+reference driver's RTL8814AU table.
 
+🚧 - in-progress
+✅ - tested and confirmed
+🟨 - not tested
+🟥 - tested and does not work
 
-| Field | ASUS USB-AC68 | Edimax EW-7833UAC |
-|---|---|---|
-| **Brand / Model** | ASUS USB-AC68 | Edimax EW-7833UAC |
-| **Marketing class** | 802.11ac AC1900, 4×4 dual-band | 802.11ac AC1750, 4×4 dual-band |
-| **USB VID:PID** | `0b05:1817` | `7392:a833` |
-| **USB Manufacturer string** | `Realtek` | `Realtek` |
-| **USB Product string** | `802.11ac NIC` | `Edimax AC1750 USB` |
-| **Serial** | `123456` | `123456` |
-| **Chipset** | Realtek RTL8814AU | Realtek RTL8814AU |
-| **USB version / speed** | USB 3.0 SuperSpeed (5 Gbps) | enumerates at both USB 2.0 HS and USB 3.0 SS |
-| **MxPwr** | 864 mA | not captured (same chip → same expectation) |
+| Device | Tested |  ID | Class |
+|---|---|---|---|
+| ASUS USB-AC68|🚧| 0b05:1817 | 802.11ac AC1900, 4×4 dual-band |
+| Edimax EW-7833UAC |🚧| 7392:a833 | 802.11ac AC1750, 4×4 dual-band |
+| ASUS USB-AC68 (rev 2) | 🟨 | 0b05:1852 | 802.11ac dual-band |
+| Netgear A7000 | 🟨 | 0846:9054 | 802.11ac dual-band |
+| D-Link DWA-192 | 🟨 | 2001:331a | 802.11ac dual-band |
+| TP-Link Archer T9UH | 🟨 | 2357:0106 | 802.11ac dual-band |
+| TRENDnet TEW-809UB | 🟨 | 20f4:809a | 802.11ac dual-band |
+| Elecom WDB-867DU3S | 🟨 | 056e:400b | 802.11ac dual-band |
+| Elecom WDC-867DU3S | 🟨 | 056e:400d | 802.11ac dual-band |
+
+The class column is deliberately vague for the untested rows. The chip is 4×4
+dual-band silicon, but what an adapter actually exposes is a property of how it
+was built — the two tested devices are marketed as AC1900 and AC1750 despite
+sharing it — and guessing a stream count or an AC number per model would be
+inventing detail rather than reporting it.
+
+One thing the untested rows have in common, and it is worth knowing before
+trying one: both tested adapters report **RF front-end class 1** from EFUSE
+`0x0CA`, and the per-band RFE routing is selected from that. An adapter
+reporting a class the driver does not carry falls back to a default and says so
+in the syslog. See [the band and channel doc](docs/phy-channel-and-band.md).
+
 
 ---
 
@@ -75,7 +69,7 @@ Diagrams in [docs/diagrams/](docs/diagrams/) — all SVG.
 
 ---
 
-## Logging Bugs / How to Help
+## Logging Bugs
 
 Bugs are welcome! To log a bug, [please log it here in github as an issue](https://github.com/KevinAdams05/rtl8814au_unofficial/issues), and include as much detail as possible.
 
@@ -134,6 +128,17 @@ ip -s link
 
 PRs are welcome! However, please test all code changes on physical hardware before opening the PR! On your PR indicate which device you tested on, and include the device ID.
 
+
+---
+
+## Contributing
+
+PRs are welcome! However, please follow the guidelines below.
+
+- Test all code changes on physical hardware before opening the PR!
+- On your PR indicate which device you tested on, and include the device ID.
+- Please adhere to the [style guide](docs/STYLE_GUIDE.md) (which is pretty much standard Haiku coding style).
+- Make sure to update documentation as needed.
 
 ---
 
