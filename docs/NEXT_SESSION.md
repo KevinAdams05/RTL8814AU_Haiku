@@ -133,19 +133,36 @@ reset will help and the command has to be issued some other way.
 
 ### 2. Why the first firmware-download attempt fails
 
-The retry is implemented and works around it, so this is no longer urgent, but
-the underlying fault is undiagnosed.
+The retry works around it, so this is not urgent, but the fault itself is
+undiagnosed. **Three plausible explanations have been eliminated by comparing
+against the reference**, so nobody needs to spend time on them again:
 
-| | `REG_MCUFWDL` | ready bits |
-|---|---|---|
-| failing | `0x00602000` | none -- bits 3-6, 14, 15 all clear |
-| healthy | `0x0060e078` | bits 3,4,5,6 (`MACINI`/`BBINI`/`RFINI_RDY`) plus 14, 15 |
+- **Not the wrong bit.** `CPU_DL_READY` really is `BIT(15)` of
+  `REG_8051FW_CTRL_8814A` (0x0080), a flag distinct from `WINTINI_RDY`
+  (`BIT(6)`) and added specifically for download-ready. We poll the same bit
+  the vendor does.
+- **Not too few polls.** The reference's `_FWFreeToGo8814A` allows 100.
+  `kFirmwareReadyAttempts` is 100.
+- **Not too short a wait.** The reference delays `rtw_mdelay_os(50)` per poll,
+  so five seconds in total. `kFirmwareReadyDelay` is 50 ms, so five seconds.
+  **Lengthening the timeout is the obvious wrong fix** -- ours already matches.
 
-On failure the MCU never signalled **any** initialisation stage, so the
-firmware was not executing rather than starting slowly. That is a different
-fault from too short a timeout, and worth decoding against the reference's
-polling loop **before** anyone lengthens the poll -- which is the obvious wrong
-fix.
+Decoding the register with the reference's own bit names:
+
+| | `REG_MCUFWDL` | bits 3-6 `MACINI`/`BBINI`/`RFINI`/`WINTINI_RDY` | bit 15 `CPU_DL_READY` |
+|---|---|---|---|
+| healthy | `0x0060e078` | all four set | set |
+| failing | `0x00602000` | **none set** | clear |
+
+So the MCU never signalled a single initialisation stage. It was not starting
+slowly; it was not running at all, and the failure is therefore **upstream of
+the poll**, somewhere in the download itself.
+
+That is as far as the capture and the source can take it. **The next step is a
+diagnostic, not a fix:** read `REG_8051FW_CTRL_8814A` back at each stage of the
+download -- after the DMEM section, after IRAM, and after the MCU is released --
+so the next failure says which stage did not complete. Cheap, and it turns an
+unattributable failure into a located one.
 
 A Haiku restart does not power-cycle USB, so a chip wedged this way stays
 wedged across reboots. A run of sudden failures should prompt a power cycle
@@ -160,9 +177,37 @@ Both fell out of decoding the mailbox writes, and both are pure additions:
 | `0x42` | `RSSI_SETTING` | 13x |
 | `0x46` | `RA_MASK_3SS` (marked "for 8814A") | 4x |
 
-`RSSI_SETTING` feeds the firmware's rate adaptation, and rate adaptation is
-stalled on exactly the kind of information these carry. Worth taking together
-with item 4.
+**These are not the standalone additions they first appeared to be.** Both are
+issued by **phydm**, Realtek's dynamic-management subsystem, which is the part
+this driver deliberately does not port -- so there is no small patch that
+"adds" them correctly.
+
+The authoritative payload for `0x42`, from `phydm_rssi_monitor.c`:
+
+```c
+h2c[0] = mac_id;
+h2c[1] = 0;
+h2c[2] = rssi;
+h2c[3] = is_rx | (stbc_en << 1) | (noisy << 2) | (bf_en << 6);
+h2c[4] = (ra_th_ofst & 0x7f) | (ra_ofst_direc << 7);
+h2c[5] = 0;
+h2c[6] = 0;
+```
+
+So sending it means having a **current link RSSI** and somewhere to send it
+from periodically. The receive path already computes RSSI per frame
+(`phyStatus[1] - 110` in `RxPath.cpp`), but it is only recorded on scan
+entries; nothing tracks it for the associated peer. **That makes this the same
+task as item 4**, not a precursor to it: the command is the interface to
+firmware rate adaptation, and sending it without real RSSI behind it would just
+feed the firmware noise.
+
+Caveat on the capture evidence: the command **IDs** are reliable, but the
+payload bytes decoded from the mailbox writes are **not**. The decoder reads
+each mailbox's extension bytes as whatever was last written there, and its
+output disagrees with the reference for `0x42` -- it shows `h2c[1] = 0x8C`
+where the reference sets that byte to zero unconditionally. Trust the
+reference's layout over `scratchpad/h2c-all.py` until that decoder is fixed.
 
 ### 4. Rate adaptation, hardware CCMP, aggregation
 

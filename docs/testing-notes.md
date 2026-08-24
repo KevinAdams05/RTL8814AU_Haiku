@@ -213,3 +213,25 @@ at probe (only the EFUSE readout) -- RQPN, EDCA, the queue map and the PHY are
 all set on *first open*, so a capture that misses `ip link set up` is useless.
 And `rfkill unblock` must come **after** `modprobe`, because reloading
 re-creates the device's rfkill switch blocked.
+
+
+## The H2C mailbox decoder is not trustworthy at byte level
+
+`scratchpad/h2c-all.py` decodes host-to-firmware commands out of a capture by
+watching the mailbox registers. Its **command IDs are reliable** -- they sit at
+a known offset and cross-check against the reference's own enum, and the
+`MACID_CFG` payload it produces decodes to a sensible rate ID.
+
+Its **payload bytes are not**. It takes each mailbox's four extension bytes as
+whatever was last written to them, which can belong to an earlier command in
+the same mailbox. Caught by comparing against the reference: for `RSSI_SETTING`
+the decoder reports `h2c[1] = 0x8C` where `phydm_rssi_monitor.c` sets that byte
+to zero unconditionally.
+
+So the decoder is fine for answering "does the vendor send this command, and
+how often" -- which is what retired the power-mode command and found the two
+missing ones. It is not fine for reconstructing a payload to copy. Take layouts
+from the reference and use the capture only to confirm the command is sent.
+
+Fixing it properly means tracking which command each extension write belongs
+to, rather than snapshotting the registers when the command byte lands.
