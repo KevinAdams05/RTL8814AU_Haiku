@@ -667,6 +667,23 @@ RTL8814AUWiFiManager::_SendMediaStatusCommand(bool connected)
 status_t
 RTL8814AUWiFiManager::SetActivePowerMode()
 {
+	// No current caller, and that is deliberate rather than an oversight.
+	//
+	// This used to be issued on every association and would block the calling
+	// thread permanently -- the H2C write goes through the USB stack's
+	// synchronous send_request, which has no timeout, and on this chip the
+	// transfer sometimes never completes. It was the driver's largest single
+	// failure: 9 of 14 associations on 5 GHz.
+	//
+	// It is also not a command the hardware needs. The vendor driver never
+	// sends it -- no 0x05 appears in any mailbox in either usbmon capture --
+	// because the reference defaults rtw_power_mgnt to PS_MODE_ACTIVE, so the
+	// chip is already in active mode.
+	//
+	// Kept rather than deleted because power-save support will eventually want
+	// the opposite direction (entering LPS/IPS), and this is where that
+	// belongs. Anything calling it must not do so from a thread that cannot
+	// afford to block forever.
 	return _SendSetPowerModeCommand(0);
 }
 

@@ -4830,15 +4830,30 @@ RTL8814AUDevice::_PostAssocLoop()
 		}
 		if (fRemoved)
 			continue;
-		// Out of power save first.  If the firmware is asleep in any sense
-		// the access point buffers our unicast rather than sending it, and
-		// the handshake below can never start.
-		if (fWiFiManager != NULL) {
-			status_t powerStatus = fWiFiManager->SetActivePowerMode();
-			dprintf(RTL8814AU_DRIVER_NAME ": post-assoc active power "
-				"mode: %s\n", strerror(powerStatus));
-		}
-
+		// The power-mode command is deliberately not sent.
+		//
+		// It used to be issued here first, on the reasoning that a firmware
+		// asleep in any sense would have the access point buffer our unicast
+		// so the handshake could never start. Three separate pieces of
+		// evidence say it is both unnecessary and harmful:
+		//
+		//   - The vendor driver never sends it. Decoding every H2C command in
+		//     two usbmon captures, across all four mailboxes, gives 0x01,
+		//     0x40, 0x42 and 0x46 -- and no 0x05 in either capture.
+		//   - It has nothing to do. The reference defaults rtw_power_mgnt to
+		//     PS_MODE_ACTIVE, so the chip is already in active mode and there
+		//     is no mode to change.
+		//   - The fear it was guarding against does not materialise. In the
+		//     boots where this call hung and never returned, M1 still arrived
+		//     -- so unicast was not being buffered.
+		//
+		// And it was the single largest failure in the driver. On 5 GHz it
+		// blocked the worker permanently in 9 of 14 associations, which meant
+		// the setup below never ran, the firmware was never told the
+		// association existed, and the handshake could not finish: 10 failures
+		// in 16 joins. Removing the call removes that entirely, without
+		// needing a bounded USB transfer -- an attempt at which ended in a
+		// KDL, see docs/NEXT_SESSION.md.
 		status_t setupStatus = _DoPostAssocSetup();
 		dprintf(RTL8814AU_DRIVER_NAME ": post-assoc setup: %s\n",
 			strerror(setupStatus));

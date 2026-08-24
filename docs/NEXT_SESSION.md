@@ -508,6 +508,41 @@ it is never told the association exists. M1 and M2 are often still seen in the
 log, but M3 never arrives -- consistent with our M2 not reaching the access
 point properly because the firmware does not know about the peer.
 
+### Resolved differently: the command should never have been sent
+
+Before rebuilding the bounded transfer, the donor driver was checked, and it
+answered the question outright: **the vendor never sends this command.**
+Decoding every H2C in two usbmon captures, across all four mailboxes:
+
+| H2C | name | vendor sends | we sent |
+|---|---|---|---|
+| `0x01` | `MEDIA_STATUS_RPT` | 2x | yes |
+| `0x40` | `MACID_CFG` (RA_INFO) | 4x | yes |
+| `0x42` | `RSSI_SETTING` | 13x | **no** |
+| `0x46` | `RA_MASK_3SS` (8814A-specific) | 4x | **no** |
+| `0x05` | `SET_PWR_MODE` | **never** | **every association** |
+
+And there is a reason it never needs to: the reference defaults
+`rtw_power_mgnt` to `PS_MODE_ACTIVE`, so the chip is already in active mode and
+there is no mode to change. The concern the call was guarding against does not
+materialise either -- in the boots where it hung, M1 still arrived, so unicast
+was not being buffered.
+
+So the call is simply removed. That deletes the driver's largest single failure
+without adding any kernel plumbing, which is the better outcome by a wide
+margin: the bounded-transfer attempt below ended in a KDL.
+
+**The lesson worth keeping: check whether the donor does the thing at all
+before engineering a safe way to do it.** A day went into making a hanging
+command safe to issue, when the command was never needed.
+
+**Two H2C commands are missing** and are now the obvious follow-up, since both
+are sent repeatedly by the vendor and neither has ever been sent by us:
+`0x42 RSSI_SETTING` (13 times -- feeds the firmware's rate adaptation) and
+`0x46 RA_MASK_3SS`, which the reference header marks explicitly "for 8814A".
+Worth investigating alongside the rate-adaptation work, which is stalled on
+exactly the kind of information those commands carry.
+
 ### A bounded H2C write was tried and reverted after a KDL
 
 Do not simply re-apply it. The approach was: queue the control transfer with
