@@ -121,7 +121,49 @@ to be **abandoned** instead:
 - If an abandoned callback ever does arrive it releases the semaphore, and the
   drain at the top of the next attempt discards that stale count.
 
-**Status: built, style-clean, staged on the test machine, and NOT yet measured.**
+#### Measured, 2026-08-25: the mechanism works, the retry does not
+
+12 joins on 5 GHz: **10 ok, 2 deauth, 0 timeout verdicts**. Counts bounded to
+this run's boots, because the cumulative syslog includes earlier builds:
+
+| signal | count | reading |
+|---|---|---|
+| `did not complete within` | 3 | timeouts still happen |
+| `retrying control write` | **2** | **the retry path executes** -- the previous build reached it 0 times |
+| `succeeded on attempt` | **0** | **a retry never succeeds** |
+| `marking the device unusable` | **0** | the hard-fail branch is correctly gone |
+| `post-assoc setup: No error` | 10 | |
+
+**What is fixed:** abandoning instead of cancelling does what it was meant to.
+The retry is now reachable, the device is never killed over one failed command,
+and a timeout no longer necessarily fails the join -- three timeouts occurred
+and only one produced a setup error.
+
+**What is not:** the retry is useless. `succeeded on attempt` is zero, which
+**confirms the open question rather than answering it**: control requests to
+one endpoint queue in order, so a retry issued while the previous transfer is
+still stuck sits behind it and gets nowhere. Retrying into a wedged endpoint
+cannot work, and no number of attempts will change that.
+
+**The rate did not change.** 2 failures in 12 against 3 in 16 before, Fisher
+one-sided p = 0.64 -- indistinguishable. Do not read the 83% as an improvement.
+
+**And the two remaining failures are not this bug:**
+
+- one had `post-assoc setup: No error`, then `M1=4, M2=4, M3=0` and reason 15.
+  The access point retransmitted M1 four times, we answered each time, and it
+  accepted none of them. Setup succeeded, so the firmware knew about the
+  association; something else stops M2 being accepted.
+- one had no EAPOL at all and an early reason 2.
+
+So the H2C hang is now survivable but the failures have moved elsewhere. **The
+next question is whether the control endpoint ever recovers on its own**, since
+if it does not then the command has to be issued another way -- before the
+first transfer wedges, or after a pipe reset. `clear_feature(ENDPOINT_HALT)` on
+the control pipe is the cheap thing to try next, by analogy with the bulk
+pipes.
+
+**Status: built, style-clean, deployed and measured as above.**
 The abandon-and-retry version has never run. What is known is that the
 version before it converts the hang into a survivable error but does not
 deliver the command. The open question is whether a retry succeeds while a
