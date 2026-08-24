@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # TX path
 
 How frames flow out of the kernel network stack onto the air.

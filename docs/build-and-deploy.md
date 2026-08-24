@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # Building and deploying
 
 The rtl8814au driver is a Haiku kernel addon.  It is built on a Haiku

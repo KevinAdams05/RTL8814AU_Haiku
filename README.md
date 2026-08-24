@@ -28,25 +28,15 @@ reference driver's RTL8814AU table.
 |---|---|---|---|
 | ASUS USB-AC68|🚧| 0b05:1817 | 802.11ac AC1900, 4×4 dual-band |
 | Edimax EW-7833UAC |🚧| 7392:a833 | 802.11ac AC1750, 4×4 dual-band |
-| ASUS USB-AC68 (rev 2) | 🟨 | 0b05:1852 | 802.11ac dual-band |
-| Netgear A7000 | 🟨 | 0846:9054 | 802.11ac dual-band |
-| D-Link DWA-192 | 🟨 | 2001:331a | 802.11ac dual-band |
-| TP-Link Archer T9UH | 🟨 | 2357:0106 | 802.11ac dual-band |
-| TRENDnet TEW-809UB | 🟨 | 20f4:809a | 802.11ac dual-band |
-| Elecom WDB-867DU3S | 🟨 | 056e:400b | 802.11ac dual-band |
-| Elecom WDC-867DU3S | 🟨 | 056e:400d | 802.11ac dual-band |
+| ASUS USB-AC68 (rev 2) | 🟨 | 0b05:1852 |  |
+| Netgear A7000 | 🟨 | 0846:9054 |  |
+| D-Link DWA-192 | 🟨 | 2001:331a |  |
+| TP-Link Archer T9UH | 🟨 | 2357:0106 |  |
+| TRENDnet TEW-809UB | 🟨 | 20f4:809a |  |
+| Elecom WDB-867DU3S | 🟨 | 056e:400b |  |
+| Elecom WDC-867DU3S | 🟨 | 056e:400d |  |
 
-The class column is deliberately vague for the untested rows. The chip is 4×4
-dual-band silicon, but what an adapter actually exposes is a property of how it
-was built — the two tested devices are marketed as AC1900 and AC1750 despite
-sharing it — and guessing a stream count or an AC number per model would be
-inventing detail rather than reporting it.
-
-One thing the untested rows have in common, and it is worth knowing before
-trying one: both tested adapters report **RF front-end class 1** from EFUSE
-`0x0CA`, and the per-band RFE routing is selected from that. An adapter
-reporting a class the driver does not carry falls back to a default and says so
-in the syslog. See [the band and channel doc](docs/phy-channel-and-band.md).
+The class column is empty for the untested rows. I will add in the details when/if I get devices to test, or based on reports from other users.
 
 
 ---
@@ -57,15 +47,12 @@ in the syslog. See [the band and channel doc](docs/phy-channel-and-band.md).
 Detailed docs live in [docs/](docs/).  Highlights:
 
 - [Architecture overview](docs/architecture.md) — how the driver is organized, threading model, where to start reading
-- [In-driver WPA2-PSK](docs/wpa2-in-driver.md) — why we don't use `wpa_supplicant`, the in-kernel 4-way handshake design
 - [Hardware initialization](docs/hardware-init.md) — power-on, EFUSE, MAC init, firmware load, PHY config
 - [RX path](docs/rx-path.md) and [TX path](docs/tx-path.md) — frame conversion, EAPOL diversion, descriptor build
 - [Wi-Fi management](docs/wifi-management.md) — scanning, auth + assoc state machine, H2C/C2H mailbox
 - [Firmware](docs/firmware.md) — blob layout, IDDMA load procedure, the 8-byte trailer gotcha
 - [IOCTL reference](docs/ioctl-reference.md) — the 80211 IOC handlers and what userland calls them
 - [Building and deploying](docs/build-and-deploy.md) — cross-build recipe, deploy strategy, package gotchas
-
-Diagrams in [docs/diagrams/](docs/diagrams/) — all SVG.
 
 ---
 
@@ -126,8 +113,6 @@ iw dev
 ip -s link
 ```
 
-PRs are welcome! However, please test all code changes on physical hardware before opening the PR! On your PR indicate which device you tested on, and include the device ID.
-
 
 ---
 
@@ -157,31 +142,7 @@ To uninstall, delete the `.hpkg` from the `packages/` directory and reboot.
 
 ### Building from source
 
-You need a Haiku x86_64 machine with:
-
-- A configured Haiku source tree with cross-tools built — follow the
-  [official Haiku build doc](https://www.haiku-os.org/development/build-haiku-from-source/)
-  for the `configure --build-cross-tools x86_64` setup.
-- A checkout of this repo.
-
-```sh
-# From the project root, with HAIKU_BUILD pointing at your haiku tree
-# (defaults to ~/haiku-build/haiku if unset)
-HAIKU_BUILD=$HOME/haiku-build/haiku bash package/build-hpkg.sh
-ls -lh build/rtl8814au-*.hpkg
-```
-
-The script copies our `src/*` into the Haiku tree's
-`src/add-ons/kernel/drivers/network/wlan/rtl8814au/`, copies the
-firmware blob into `data/system/data/firmware/rtl8814au/`, runs
-`jam -q -j4 rtl8814au` from the `generated.x86_64/` directory, and
-wraps the kernel addon + firmware blob + LICENSE into the .hpkg.
-
-To install the .hpkg you just built, drop it into
-`~/config/packages/` and reboot — same flow as a prebuilt download.
-
-See [docs/build-and-deploy.md](docs/build-and-deploy.md) for more
-detail.
+See [docs/build-and-deploy.md](docs/build-and-deploy.md) for more detail.
 
 ---
 

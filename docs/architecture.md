@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # Architecture
 
 The rtl8814au driver is a Haiku kernel add-on that talks to the Realtek

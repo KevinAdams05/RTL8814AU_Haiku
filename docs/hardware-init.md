@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # Hardware initialization
 
 The bring-up sequence the driver runs the first time the device is

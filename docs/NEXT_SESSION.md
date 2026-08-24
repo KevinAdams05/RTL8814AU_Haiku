@@ -462,6 +462,63 @@ deterministically killed the post-association H2C path** -- the interface
 associated, `B_NETWORK_WLAN_JOINED` fired, and nothing after it ran. The MAC
 configuration was not the missing piece. Do not spend another afternoon there.
 
+## SetActivePowerMode() hangs, and it is the dominant 5 GHz failure
+
+**This is the biggest open defect and the thing to work on next.** Measured on
+5 GHz with the Edimax: **16 joins, 5 ok, 10 timeout, 1 deauth** -- a 69%
+failure rate, against roughly 12% on 2.4 GHz.
+
+The mechanism is established rather than guessed. Counting across the run:
+
+| | count |
+|---|---|
+| `post-assoc worker running` | 17 |
+| `post-assoc worker stopped` | **0** |
+| `acquire_sem returned` (transient error) | 0 |
+| `associated with no post-assoc worker` | 0 |
+| `post-assoc active power mode` **returned** | **5** |
+| `post-assoc setup` | 4 |
+
+Seventeen workers started and **none ever exited**. The semaphore was valid and
+released every time -- `B_NETWORK_WLAN_JOINED` fires in every boot and the
+release sits immediately after it. Yet only five power-mode calls ever came
+back.
+
+The reason that pins it is the ordering in `_PostAssocLoop`:
+
+```c
+status_t powerStatus = fWiFiManager->SetActivePowerMode();
+dprintf(... "post-assoc active power mode: %s\n", ...);   // AFTER the call
+```
+
+So a missing line does not mean the worker never woke. It means the worker woke
+and **never returned from `SetActivePowerMode()`**. The threads are alive and
+blocked there permanently.
+
+One layer down, the blocking point is a USB control transfer.
+`SetActivePowerMode` is just `_SendH2CCommand`, which is register writes with no
+polling of its own, and `_VendorWrite` retries are bounded -- three attempts,
+2 ms apart -- and *return an error* rather than blocking. An error would still
+have printed the line. So the block is inside `send_request` itself: the USB
+stack waiting on a control transfer the device never completes.
+
+What follows from the hang explains the rest of the symptom. Without
+`_DoPostAssocSetup()` the firmware is never sent RA_INFO or MEDIA_STATUS_RPT, so
+it is never told the association exists. M1 and M2 are often still seen in the
+log, but M3 never arrives -- consistent with our M2 not reaching the access
+point properly because the firmware does not know about the peer.
+
+Where to start:
+
+- **Bound the call.** A post-association step must not be able to block
+  forever. If Haiku's `send_request` cannot be given a timeout, the H2C needs
+  issuing from somewhere that can be abandoned, or the worker needs a watchdog.
+- **Find out why the transfer stalls after a 5 GHz association specifically.**
+  The 5-to-1 difference in failure rate between the bands is the strongest clue
+  available and is not explained yet.
+- Note this **retires the claim that 5 GHz works**. It worked on the ASUS. On
+  the Edimax 5 GHz associates and then fails this way two times in three.
+
 ## Firmware load fails, and there is no retry (next thing to fix)
 
 After several dozen warm reboots in one session the adapter reached a state

@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # RX path
 
 How frames flow from the air into Haiku's network stack.

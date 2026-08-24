@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # rtl8814au — Documentation
 
 Reference for how the rtl8814au USB Wi-Fi driver for Haiku works

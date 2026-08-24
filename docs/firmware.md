@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # Firmware
 
 The RTL8814AU has an on-chip Lexra 3081 MIPS MCU that runs firmware

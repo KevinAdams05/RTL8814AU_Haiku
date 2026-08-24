@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # IOCTL reference
 
 Quick reference for the ioctl interface.  All of these go through

@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # In-driver WPA2-PSK
 
 The rtl8814au driver runs the entire WPA2-PSK 4-way handshake **inside

@@ -1,6 +1,3 @@
->[!NOTE]
->An LLM was used to aid in development of this code.
-
 # Wi-Fi management
 
 The 802.11 management plane: scanning, joining, the auth + assoc
