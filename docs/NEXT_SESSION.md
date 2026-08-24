@@ -163,7 +163,47 @@ first transfer wedges, or after a pipe reset. `clear_feature(ENDPOINT_HALT)` on
 the control pipe is the cheap thing to try next, by analogy with the bulk
 pipes.
 
-**Status: built, style-clean, deployed and measured as above.**
+#### Retry delay: added, and NOT yet exercised
+
+Re-reading the run above changed the diagnosis. "A retry never succeeds" looked
+like proof that a stuck endpoint blocks everything queued behind it. But **3
+timeouts produced only 1 failed setup**, so in the other cases a later control
+write on the same endpoint went through perfectly well. The endpoint is not
+wedged; the device just does not answer *instantly*, and the retry loop had no
+delay at all -- it asked again at the one moment guaranteed to fail. A 100 ms
+pause between attempts was added on that reasoning.
+
+**It has not been tested.** The next 14 boots scored 14 of 14 with **zero
+timeouts**, so the retry path never ran. A clean run that never exercises the
+fault is not evidence the fix works, and the score should not be quoted as
+though it were.
+
+Nor can the change explain the quiet run: **a delay after a timeout cannot
+prevent a timeout happening.** Going from roughly 3-in-12 to 0-in-14 is luck or
+a change in conditions -- P(0 in 14) is 0.02 at a 25% per-boot rate but 0.23 at
+10%, and the rate has never been pinned down.
+
+To settle it, keep running until a timeout appears, then read one line:
+
+- `succeeded on attempt` **> 0** -- the device needed a moment, the retry earns
+  its place, and the H2C defect is closed.
+- still **0** -- the "needs a moment" reading is wrong too, queue ordering
+  stands, and the command has to be issued **before** anything wedges rather
+  than retried.
+
+#### A dead end, checked so it is not tried again
+
+Clearing the halt on the control endpoint cannot work. Both
+`Device::ClearFeature` and `Pipe::ClearFeature` issue their request through
+`fDefaultPipe->SendRequest(...)` -- through the control pipe itself -- so a
+wedged control endpoint cannot be cleared by a control transfer on that same
+endpoint. `set_configuration()` has the same problem, and Haiku's USB API
+exposes no device reset. **There is no driver-level recovery for a genuinely
+wedged control endpoint**, which is precisely why the question above matters:
+if retrying cannot work, the only remaining option is to avoid wedging it.
+
+**Status: built, style-clean, deployed. The bounded write and the abandon
+behaviour are measured; the retry delay is not.**
 The abandon-and-retry version has never run. What is known is that the
 version before it converts the hang into a survivable error but does not
 deliver the command. The open question is whether a retry succeeds while a

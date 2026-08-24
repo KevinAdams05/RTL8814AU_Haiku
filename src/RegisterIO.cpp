@@ -45,6 +45,12 @@ static const uint32 kMaxRetryCount = 3;
 // serialises all register access, so ten would mean holding it for seconds.
 static const uint32 kControlWriteAttempts = 3;
 
+// Pause between attempts at a bounded control write. Retrying the instant a
+// transfer times out was measured to succeed zero times out of two; the device
+// needs a moment before it answers again. Three attempts at half a second each
+// plus two of these is still comfortably inside the association timeout.
+static const bigtime_t kControlRetryDelay = 100000;	// 100 ms
+
 
 RTL8814AURegisterIO::RTL8814AURegisterIO(usb_device device,
 	usb_module_info* usbModule)
@@ -470,6 +476,18 @@ RTL8814AURegisterIO::_VendorWriteBounded(uint16 address, const void* buffer,
 				dprintf(RTL8814AU_DRIVER_NAME ": retrying control write to "
 					"0x%04x (attempt %u of %u)\n", address,
 					(unsigned)(attempt + 1), (unsigned)kControlWriteAttempts);
+
+				// Wait before trying again. The first version retried
+				// immediately and never once succeeded -- 0 of 2 --
+				// which looked like proof that a stuck endpoint blocks
+				// everything behind it. The measurements say otherwise:
+				// three timeouts produced only one failed setup, so in
+				// the other cases a later control write on the same
+				// endpoint went through fine. The device answers again
+				// shortly afterwards; it just does not answer instantly,
+				// and an immediate retry asks at the one moment it is
+				// certain to fail.
+				snooze(kControlRetryDelay);
 				continue;
 			}
 			return B_TIMED_OUT;
