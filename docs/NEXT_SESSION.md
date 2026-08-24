@@ -462,6 +462,42 @@ deterministically killed the post-association H2C path** -- the interface
 associated, `B_NETWORK_WLAN_JOINED` fired, and nothing after it ran. The MAC
 configuration was not the missing piece. Do not spend another afternoon there.
 
+## Firmware load fails, and there is no retry (next thing to fix)
+
+After several dozen warm reboots in one session the adapter reached a state
+where firmware would not load at all:
+
+```
+firmware init ready timed out after 100 polls (REG_MCUFWDL=0x00602000)
+firmware load failed: Operation timed out
+```
+
+Across that session's syslog: **33 failures against 134 successes**. So this is
+not new, it has been happening intermittently all along, and it eventually
+became persistent.
+
+**There is no retry.** `_InitHardware` step 4 calls `fFirmware->Load()`, and on
+failure logs and returns. The device is then unusable for the whole boot, with
+no second attempt and no chip reset in between. Given a roughly one-in-five
+failure rate on that step, a retry is likely to convert most of those boots
+into working ones -- and the reference driver does reset the chip before
+retrying.
+
+Two things to do, in this order:
+
+1. **Retry the firmware load**, with a chip reset between attempts, and log
+   each attempt. Cheap, self-contained, and testable by counting attempts in
+   the syslog.
+2. **Find out why the first attempt fails.** `REG_MCUFWDL=0x00602000` at the
+   timeout is the clue worth decoding against the reference's own polling
+   loop.
+
+Note the interaction with warm reboots: a Haiku restart does not power-cycle
+USB, so a chip left in a bad state stays in it across reboots. That is
+presumably why the failures clustered towards the end of a long session of
+rapid reboots, and it means **a wedged adapter needs a real power cycle**, not
+a reboot. Worth knowing before concluding the driver has regressed.
+
 ## The test network is a measurement hazard
 
 A 16-boot run produced 4 successes and 11 never-associated, against 13 of 14 on
