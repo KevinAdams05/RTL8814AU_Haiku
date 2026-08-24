@@ -508,7 +508,36 @@ it is never told the association exists. M1 and M2 are often still seen in the
 log, but M3 never arrives -- consistent with our M2 not reaching the access
 point properly because the firmware does not know about the peer.
 
-### Resolved differently: the command should never have been sent
+### Resolved, and measured: 5 GHz went from 31% to 81%
+
+| build | joins | ok | failures |
+|---|---|---|---|
+| with the power-mode call | 16 | 5 | 11 |
+| without it | 16 | **13** | 3 |
+
+Fisher's exact, one-sided: **p = 0.0057**. Unlike most numbers in this
+document, that one is not noise.
+
+The mechanism was checked as well as the score, which matters because a score
+alone would not distinguish a fix from a good day:
+
+| | before | after |
+|---|---|---|
+| `post-assoc active power mode` returns | 5 (of 17 workers) | 0 -- call removed |
+| `post-assoc setup` ran | **4** | **11** |
+| `CCMP enabled` | -- | **11** |
+| workers stopped, panics | 0 | 0 |
+
+`post-assoc setup` and `CCMP enabled` come out at exactly 11 each. That 1:1
+correspondence is the causal chain in the log: the worker is no longer blocked,
+so the setup runs, so the handshake completes.
+
+**5 GHz and 2.4 GHz are now comparable** -- roughly 19% failures here against
+12% on 2.4 GHz -- so the remaining failure is the common residual rather than
+anything band-specific, and the five-to-one band difference noted earlier is
+explained and gone.
+
+### How it was resolved: the command should never have been sent
 
 Before rebuilding the bounded transfer, the donor driver was checked, and it
 answered the question outright: **the vendor never sends this command.**

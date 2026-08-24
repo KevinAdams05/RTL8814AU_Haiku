@@ -137,6 +137,30 @@ Both of the first two were written as "what the usbmon capture shows", and
 neither survived being checked against the actual bytes. A capture is only
 evidence for what you decode out of it.
 
+### 5 GHz stopped failing two joins in three
+
+The post-association power-mode command never returned. It is issued through
+the USB stack's synchronous request path, which has no timeout, and on this
+chip that transfer sometimes never completes -- so the worker thread issuing it
+blocked permanently. Everything after it was therefore skipped: the firmware
+was never told the association existed, and the four-way handshake could not
+finish.
+
+**The command is simply not sent any more.** The vendor driver never sends it
+either -- decoding every host-to-firmware command in two USB captures, across
+all four mailboxes, it does not appear once -- and there is nothing for it to
+do, since the chip is already in active mode. The concern it was guarding
+against does not occur: in the runs where it hung, the first handshake message
+still arrived.
+
+Measured over 16 joins on 5 GHz: **13 succeeded, against 5 before**. The
+supporting detail is that the post-association setup now runs 11 times and the
+handshake completes 11 times, exactly matching, where previously the setup ran
+4 times out of 17.
+
+5 GHz and 2.4 GHz now fail at comparable rates, so the large gap between the
+bands is closed.
+
 ### The four-way handshake could lose its own keys
 
 **A retransmitted M1 restarted the key derivation.** The access point re-sends
@@ -198,13 +222,9 @@ predicts how often it should have been breaking, and it does.
   `net_server`, which tears the association down immediately. This one is not
   the driver's doing.
 - No WEP, WPA3 or enterprise (802.1X) authentication.
-- **5 GHz on the Edimax fails about two joins in three**, and the cause is now
-  known: the post-association power-mode command never returns. The worker
-  thread issuing it blocks in a USB control transfer and stays blocked, so the
-  firmware is never told the association exists and the handshake cannot
-  complete. Measured over 16 joins: 5 succeeded. 5 GHz on the ASUS USB-AC68
-  was fine, so this is not simply "5 GHz does not work", and the difference
-  between the bands is not yet explained.
+- **About one join in six still fails on either band**, for reasons not yet
+  identified: the interface associates and then the handshake does not
+  complete. Retrying works.
 - **About one first-join in five used to fail on 2.4 GHz**, and that cause is
   known and fixed: a retransmitted EAPOL M1 restarted the key derivation. See
   below. **Roughly one first join in eight still fails there for a different
