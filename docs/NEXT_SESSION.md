@@ -736,6 +736,41 @@ presumably why the failures clustered towards the end of a long session of
 rapid reboots, and it means **a wedged adapter needs a real power cycle**, not
 a reboot. Worth knowing before concluding the driver has regressed.
 
+## Stability under load: receive is verified, transmit is not testable this way
+
+The current build was put under sustained load rather than only repeated joins.
+Receiving is clean:
+
+| | |
+|---|---|
+| transferred | 100 MB, incompressible, over 5 GHz |
+| rate | 46 s, about 17 Mbit/s |
+| integrity | MD5 matched exactly |
+| receive callbacks | 32768 -> 118784, i.e. 86,016 of them |
+| driver counters | `crc=0 drop=0 (walk=0 icv=0)` |
+| interface | 79,691 packets, **0 errors, 0 dropped**, 110.8 MB |
+| transmit timeouts, `queue_bulk` failures, callback errors, panics | none |
+
+**Transmit under load could not be measured, and the reason is a trap worth
+knowing.** Both of shredder's interfaces sit on the same subnet, and Haiku's
+routing sends everything out the wired one:
+
+- Pulling the 100 MB file back "achieved 88.9 Mbit/s" -- impossible on a link
+  that had just measured 17 Mbit/s inbound. The interface's `Transmit` counter
+  was **unchanged at 22 packets** afterwards, so none of it went over the air.
+- `ping -S 192.168.74.117` does not help. 2000 pings reported 0% loss, and the
+  wireless `Transmit` counter moved from 22 to **23**. Source binding sets the
+  source address; it does not override the route.
+
+So any transmit figure gathered this way is really a measurement of the
+gigabit wired link. **Check the interface's own `Transmit` counter before
+believing a transmit number** -- it is the only thing here that cannot be
+fooled by routing.
+
+Testing it properly needs the wired interface down, which severs the only
+control channel, so it needs either the cable physically out or a working
+serial console. IPMI is currently unavailable for the latter.
+
 ## The test network is a measurement hazard
 
 A 16-boot run produced 4 successes and 11 never-associated, against 13 of 14 on
