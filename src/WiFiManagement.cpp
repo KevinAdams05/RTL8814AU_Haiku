@@ -576,12 +576,26 @@ RTL8814AUWiFiManager::_SendH2CCommand(uint8 commandID,
 		memcpy(cmd + 1, payload, copyLen);
 	}
 
+	// Both mailbox writes use the bounded form.
+	//
+	// These are issued from the post-association worker, and the ordinary
+	// synchronous write has no timeout: on a device that accepts a control
+	// transfer and never completes it, the worker blocks permanently. That is
+	// not hypothetical -- it was the dominant 5 GHz failure, 10 joins in 16.
+	// The worker never returned from the power-mode command, so the firmware
+	// was never sent RA_INFO or MEDIA_STATUS_RPT, was never told the
+	// association existed, and the four-way handshake could not finish.
+	//
+	// Failing the command is much better than hanging: the caller sees an
+	// error, the worker stays alive, and the next association gets another
+	// attempt.
+
 	// Write extended payload first (bytes 4-6 → kRegHMEBoxExt)
 	uint32 extValue = (uint32)cmd[4]
 		| ((uint32)cmd[5] << 8)
 		| ((uint32)cmd[6] << 16);
-	status_t status = fRegisterIO->Write32(kRegHMEBoxExt[boxIndex],
-		extValue);
+	status_t status = fRegisterIO->WriteBounded32(kRegHMEBoxExt[boxIndex],
+		extValue, kH2CWriteTimeout);
 	if (status != B_OK)
 		return status;
 
@@ -591,7 +605,8 @@ RTL8814AUWiFiManager::_SendH2CCommand(uint8 commandID,
 		| ((uint32)cmd[1] << 8)
 		| ((uint32)cmd[2] << 16)
 		| ((uint32)cmd[3] << 24);
-	status = fRegisterIO->Write32(kRegHMEBox[boxIndex], stdValue);
+	status = fRegisterIO->WriteBounded32(kRegHMEBox[boxIndex], stdValue,
+		kH2CWriteTimeout);
 	if (status != B_OK)
 		return status;
 

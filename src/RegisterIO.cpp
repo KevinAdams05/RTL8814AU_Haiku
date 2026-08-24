@@ -40,6 +40,12 @@ static const uint8 kVendorRequestCode = 0x05;
 // during heavy traffic or immediately after resume from suspend.
 static const uint32 kMaxRetryCount = 3;
 
+// How long to wait for a cancelled control transfer to call back before
+// giving up on reclaiming its semaphore. Cancellation completes the transfer
+// with an error, so this should be immediate; the wait exists only so the
+// stack the URB points at is never freed underneath it.
+static const bigtime_t kBoundedWriteCancelGrace = 2000000;	// 2 seconds
+
 
 RTL8814AURegisterIO::RTL8814AURegisterIO(usb_device device,
 	usb_module_info* usbModule)
@@ -340,10 +346,136 @@ RTL8814AURegisterIO::_VendorRead(uint16 address, void* buffer, uint16 length)
 
 /*! Perform a USB vendor-specific control transfer to write to a register
     or memory address. Retries up to kMaxRetryCount times on transient errors.
+/*! State shared between a bounded write and its completion callback.
+
+    Lives on the caller's stack, so the caller must not return until the
+    callback has run -- see _VendorWriteBounded for how that is guaranteed
+    even on the timeout path.
+*/
+struct BoundedWriteRequest {
+	sem_id		done;
+	status_t	status;
+};
+
+
+void
+RTL8814AURegisterIO::_BoundedWriteCallback(void* cookie, status_t status,
+	void* data, size_t actualLength)
+{
+	BoundedWriteRequest* request
+		= static_cast<BoundedWriteRequest*>(cookie);
+	if (request == NULL)
+		return;
+
+	request->status = status;
+	release_sem_etc(request->done, 1, B_DO_NOT_RESCHEDULE);
+}
+
+
+/*! Vendor write that gives up instead of blocking forever.
+
+    The synchronous send_request() the ordinary writes use has no timeout. On
+    a device that accepts a control transfer and never completes it, the
+    calling thread blocks permanently -- which is exactly what happened to the
+    post-association worker: it issued the power-mode H2C, never returned, and
+    took the rest of the post-association setup with it. The firmware was then
+    never told the association existed and the handshake could not finish.
+    Measured at 10 failures in 16 joins on 5 GHz.
+
+    So this queues the request asynchronously and waits with a deadline.
+
+    The subtle part is the timeout path. A timed-out request is still
+    outstanding, and its buffer and semaphore are on this function's stack, so
+    returning immediately would hand the USB stack a dangling pointer. It is
+    therefore cancelled and then waited for again: cancel_queued_requests()
+    completes the transfer with an error, which runs the callback, which
+    releases the semaphore. Only once that has happened is it safe to leave.
+*/
+status_t
+RTL8814AURegisterIO::_VendorWriteBounded(uint16 address, const void* buffer,
+	uint16 length, bigtime_t timeout)
+{
+	if (!fDevicePresent)
+		return B_DEV_NOT_READY;
+	if (length > sizeof(uint32))
+		return B_BAD_VALUE;
+
+	// The URB points at this for the life of the transfer, so it cannot be
+	// the caller's buffer, which may be a temporary.
+	uint8 payload[sizeof(uint32)];
+	memcpy(payload, buffer, length);
+
+	BoundedWriteRequest request;
+	request.status = B_ERROR;
+	request.done = create_sem(0, "rtl8814au:bounded_write");
+	if (request.done < 0)
+		return request.done;
+
+	status_t status = fUSBModule->queue_request(fDevice,
+		USB_REQTYPE_VENDOR | USB_REQTYPE_DEVICE_OUT,
+		kVendorRequestCode,
+		address,
+		0,
+		length,
+		payload,
+		_BoundedWriteCallback,
+		&request);
+	if (status != B_OK) {
+		delete_sem(request.done);
+		return status;
+	}
+
+	status = acquire_sem_etc(request.done, 1, B_RELATIVE_TIMEOUT, timeout);
+	if (status == B_TIMED_OUT) {
+		dprintf(RTL8814AU_DRIVER_NAME ": vendor write to 0x%04x did not "
+			"complete within %" B_PRIdBIGTIME " us; cancelling\n",
+			address, timeout);
+
+		fUSBModule->cancel_queued_requests(fDevice);
+
+		// Wait for the callback the cancellation triggers. Leaving before it
+		// runs would free the buffer and semaphore it is about to touch.
+		if (acquire_sem_etc(request.done, 1, B_RELATIVE_TIMEOUT,
+				kBoundedWriteCancelGrace) != B_OK) {
+			// Nothing more can be done safely: the semaphore is deliberately
+			// leaked rather than deleted under a callback that may still fire.
+			dprintf(RTL8814AU_DRIVER_NAME ": cancelled vendor write to "
+				"0x%04x never called back; leaking its semaphore rather "
+				"than freeing it underneath the USB stack\n", address);
+			return B_TIMED_OUT;
+		}
+
+		delete_sem(request.done);
+		return B_TIMED_OUT;
+	}
+
+	delete_sem(request.done);
+	return status == B_OK ? request.status : status;
+}
+
+
+/*! 32-bit register write with a deadline. See _VendorWriteBounded.
+*/
+status_t
+RTL8814AURegisterIO::WriteBounded32(uint16 address, uint32 value,
+	bigtime_t timeout)
+{
+	uint32 littleEndian = B_HOST_TO_LENDIAN_INT32(value);
+	return _VendorWriteBounded(address, &littleEndian, sizeof(littleEndian),
+		timeout);
+}
+
+
+/*! Vendor-specific USB control write (bRequest 0x05).
+
+    Retries up to kMaxRetryCount times on transient errors. Note this uses the
+    USB stack's synchronous send_request, which has no timeout -- see
+    _VendorWriteBounded above for the form to use where blocking forever is
+    unacceptable.
 
     \param address  Register/memory address (placed in wValue)
     \param buffer   Data to write
-    \param length   Number of bytes to write (1–254 for USB control xfers)
+    \param length   Number of bytes to write (1-254 for USB control xfers)
     \return B_OK on success, or USB error code.
 */
 status_t
