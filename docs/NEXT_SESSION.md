@@ -26,6 +26,13 @@ version with retries is **built, staged on the test machine, and not yet
 measured**; see "Bounded H2C write, second attempt" below, including the
 finding that cancellation cannot reclaim a stuck transfer on this chip.
 
+**Failure rates in this document are overstated.** The harness counted any
+`RX DEAUTH` in the syslog as our failure, and the driver logs deauths it merely
+overhears -- a neighbouring access point deauthenticating its own client was
+recorded as a failed join. Fixed to require `toUs=1`, but every rate measured
+before that is inflated by an unknown amount. See
+[testing-notes.md](testing-notes.md).
+
 **Do not trust these two things without re-checking them:**
 
 - Any transmit throughput number. Both test interfaces share a subnet and

@@ -235,3 +235,33 @@ from the reference and use the capture only to confirm the command is sent.
 
 Fixing it properly means tracking which command each extension write belongs
 to, rather than snapshotting the registers when the command byte lands.
+
+
+## A neighbour's deauth is not your failure
+
+The join harness decided a run had failed by matching `RX DEAUTH` in the
+syslog. Neighbouring access points deauthenticate their own clients constantly,
+and the driver logs every deauth it hears, so **a stranger's frame counted as
+our failure.**
+
+Caught by an air capture rather than by reading the log. A run marked FAILED had
+exactly one driver event:
+
+```
+RX DEAUTH toUs=0 reason=7 from=02:c5:7d:2a:4d:0d
+```
+
+`toUs=0`, and from an access point belonging to a different network entirely.
+The capture confirmed our station transmitted **zero frames** in that window
+while the target access point sent 862 -- so the join never started, and the
+deauth was pure coincidence.
+
+**Every failure rate measured before this fix is overstated by some unknown
+amount.** The same `CenturyLink3673` deauth appears in earlier "failing" boots,
+which were probably not failures of ours at all. Match `RX DEAUTH toUs=1`.
+
+The wider point: this driver logs everything it hears, not just what is
+addressed to it, which is exactly what you want for diagnosis and exactly what
+will mislead an automated verdict. Anything the harness treats as evidence of
+*our* behaviour has to be filtered to frames addressed to us -- and the same
+caution applies to the beacon, probe and auth counters.
