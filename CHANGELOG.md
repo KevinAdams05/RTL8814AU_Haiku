@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+**Every frame was transmitted about 42 times.** The MAC's response-timing
+registers -- both SIFS registers, the two response-SIFS registers and the ACK
+timeout -- were declared in the source and never written, so the chip ran on
+its power-on defaults and did not register the access point's
+acknowledgements. Captured over the air, a management frame went out 13 times
+and a data frame as many as 49, while the access point acknowledged every
+single transmission within microseconds of receiving it. The frames were
+arriving and being acknowledged; the chip simply kept retrying them.
+
+It cost more than airtime. The same timing governs the ACK this station sends
+back, so association responses went unacknowledged too, and the access point
+gave up after retransmitting its response four times -- which is what a join
+that authenticates and then never associates looks like.
+
+Measured over the air, same access point, one join each:
+
+| | frames sent | first transmissions | retries | transmissions per frame |
+|---|---|---|---|---|
+| before | 510 | 12 | 498 | 42.5 |
+| after | 8 | 8 | 0 | 1.0 |
+
+
 **Every frame this driver sent went out with sequence number 0.** Measured over
 the air: 369 consecutive frames from this adapter, all numbered 0, while a
 vendor-driven adapter on the same access point numbered its frames 1, 2, 3.

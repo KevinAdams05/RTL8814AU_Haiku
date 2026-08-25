@@ -757,8 +757,12 @@ static const uint16 kRegMacSpecSIFS			= 0x042C;
 // gets no ACK drops the station from its table.
 static const uint16 kRegRRSR				= 0x0440;
 
+// Contention and TRX SIFS. The vendor driver writes 0x100a to both on this
+// chip. Left unwritten, the chip keeps its power-on values -- see the note on
+// kRegACKTo for what that costs.
 static const uint16 kRegSIFS_CTX			= 0x0514;
 static const uint16 kRegSIFS_TRX			= 0x0516;
+static const uint16 kSIFSInit				= 0x100A;
 
 // FWHW TX queue control — byte +2 bit 6 controls "real beacon" processing.
 // The reference driver clears this bit during firmware download so the
@@ -1017,9 +1021,30 @@ static const uint16 kRegRetryLimit			= 0x042A;
 // percent of its traffic, which is enough to flatten TCP.  The vendor driver
 // writes 0x3030, 48 each way.
 static const uint16 kRetryLimitInit			= 0x3030;
-static const uint16 kRegRespSIFSOFDM		= 0x063A;
-static const uint16 kRegRespSIFSCCK		= 0x063C;
+// Response timing, and the ACK timeout.
+//
+// All of these were declared and never written, so the chip ran on its
+// power-on defaults -- and the result was visible on the air: every frame this
+// driver sent was transmitted up to the retry limit, 13 times for a management
+// frame and as many as 49 for a data frame, even though the access point
+// acknowledged each transmission within microseconds. The chip was not
+// registering the ACKs, so it retried a frame that had already arrived.
+//
+// SIFS_R2T/T2T set how long after receiving a frame the MAC waits before
+// transmitting its response, and how long it expects to wait for one. The
+// vendor driver's SIFS_Timer for this chip is 0x0a0a0808: 0x08 for CCK both
+// ways, 0x0a for OFDM both ways.
+//
+// kRegRespSIFSOFDM was 0x063A here, which is neither of the response-SIFS
+// registers. It was never written, so it never did any harm; it is corrected
+// rather than kept.
+static const uint16 kRegRespSIFSCCK			= 0x063C;
+static const uint16 kRegRespSIFSOFDM		= 0x063E;
 static const uint16 kRegACKTo				= 0x0640;
+
+static const uint16 kRespSIFSCCKInit		= 0x0808;
+static const uint16 kRespSIFSOFDMInit		= 0x0A0A;
+static const uint8 kACKToInit				= 0x80;
 
 
 // ---------------------------------------------------------------------------

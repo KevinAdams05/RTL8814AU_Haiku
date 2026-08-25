@@ -896,6 +896,27 @@ RTL8814AUDevice::_InitMAC()
 	// to flatten TCP throughput.
 	fRegisterIO->Write16(kRegRetryLimit, kRetryLimitInit);
 
+	// Response timing and the ACK timeout, none of which was ever written.
+	//
+	// Left at their power-on defaults, the chip did not register the access
+	// point's acknowledgements: captured over the air, every frame was
+	// transmitted until the retry limit ran out -- 13 times for a management
+	// frame, up to 49 for a data frame -- while the access point acknowledged
+	// each individual transmission within microseconds of receiving it. The
+	// frames were arriving and being acknowledged; the chip just kept retrying
+	// them, wasting most of the airtime it was given.
+	//
+	// SIFS_R2T/T2T govern when the MAC transmits a response and when it
+	// expects one, so a wrong value makes it look for the ACK at the wrong
+	// moment. The vendor's SIFS_Timer for this chip is 0x0a0a0808 -- 0x08 for
+	// CCK in both directions, 0x0a for OFDM -- with 0x100a in both SIFS
+	// registers and an ACK timeout of 0x80.
+	fRegisterIO->Write16(kRegSIFS_CTX, kSIFSInit);
+	fRegisterIO->Write16(kRegSIFS_TRX, kSIFSInit);
+	fRegisterIO->Write16(kRegRespSIFSCCK, kRespSIFSCCKInit);
+	fRegisterIO->Write16(kRegRespSIFSOFDM, kRespSIFSOFDMInit);
+	fRegisterIO->Write8(kRegACKTo, kACKToInit);
+
 	// Transmit-hang control, which was never written.
 	//
 	// The vendor's MAC initialisation table for this chip puts 0x04 here, and
