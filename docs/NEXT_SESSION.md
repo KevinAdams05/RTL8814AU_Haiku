@@ -17,6 +17,12 @@ solid under sustained load: 100 MB transferred with a matching checksum,
 | The power-mode H2C is no longer sent -- the vendor never sends it either | 5 GHz went from 31% to 81%, p = 0.0057 |
 | Firmware download is retried with a power-on between attempts | one boot in five used to lose the adapter entirely |
 | Post-assoc worker survives a transient semaphore error | it could previously die silently and permanently |
+| `ifconfig down` wakes readers parked in `Read()` instead of leaving them blocked | `down` returned in 0 s instead of never; no more unkillable process |
+| `Open()` restarts the receive path that `Close()` stopped | a reopened interface received nothing at all, so scans listed no networks |
+
+Those last two together **removed the reboot from the test loop**: joins can
+now be repeated back to back, and the first five-attempt run reproduced a
+failure that 28 reboot-based attempts had never caught.
 
 **The one open defect.** About one join in six still fails on either band,
 always the same way: the association completes, `_DoPostAssocSetup()` never
@@ -79,71 +85,86 @@ in about four minutes.
 
 ## Open work, highest value first
 
-### 1. After `ifconfig down` the interface cannot be brought back
+### 1. `ifconfig down` and back up -- SOLVED, and it removes the reboot per test
 
-**The hang is fixed.** `ifconfig <device> down` used to never return, leaving
-an unkillable process and an interface unusable until reboot. Cause: a
-self-deadlock in `TxPath::CancelAll()`, which cancelled the bulk OUT transfers
-**while holding `fLock`**. XHCI's `CancelQueuedTransfers` runs each cancelled
-transfer's callback *inline on the calling thread* --
+**Both halves are fixed and verified.** `down` returns immediately, the
+interface comes back, and joins can be repeated without rebooting. Three
+consecutive down/up cycles: `down` returned in 0 s each time, scanning kept
+working (28 networks at baseline, then 26, 23, 26 -- ordinary variance), no
+stuck processes.
+
+**The hang was a reader thread parked in our own `Read()`.** The stack's
+`down_device_interface()` ends with:
 
 ```c
-endpointLocker.Unlock();
-for (...) { if (!force) transfers[i]->Finished(B_CANCELED, 0); }
+device->flags &= ~IFF_UP;
+device->module->down(device);
+...
+wait_for_thread(readerThread, &status);   // never returns
 ```
 
--- and `_TxCallback` takes `fLock` to release the slot. Haiku's mutexes are not
-recursive, so the thread waited for a lock it already held. Cancelling now
-happens outside the lock, which is taken afterwards only to reclaim the slots.
-`down` returns in under a second and the close path runs to completion.
+Its reader thread sits in `Read()`, which blocked on `fRxDataReady` with no
+timeout and nothing to wake it -- that semaphore is released only when a frame
+arrives, and by then the receive path has stopped, so no frame ever comes.
+Every step of our close hook completed; the hang was downstream, in a reader
+*we* had parked and never released.
 
-Worth noting `_RecoverStalledPipe` already dropped the lock before cancelling
-for exactly this reason. The same hazard in `CancelAll` was simply missed, so
-**check every `cancel_queued_transfers` call against the callback's locking** --
-those callbacks are not asynchronous.
+Fixed with a `fClosing` flag, checked both before blocking and after waking,
+and released exactly once per parked reader:
 
-**What remains:** after a close the interface is gone from the network stack.
-
-```
-ifconfig <device> up     -> "Could not add interface: Name in use"
-ifconfig <device>        -> "Interface not found!"
-ifconfig <device> scan   -> fails
+```c
+device->fClosing = true;
+int32 blocked = atomic_get(&device->fBlockedReaders);
+if (device->fRxDataReady >= 0 && blocked > 0)
+    release_sem_etc(device->fRxDataReady, blocked, B_DO_NOT_RESCHEDULE);
 ```
 
-The device node still exists and the driver is healthy, but nothing re-registers
-the interface, so **re-joining still needs a reboot** and every test attempt
-still costs one.
+The exact count matters. Releasing a fixed surplus "to be safe" is wrong: a
+release nobody consumes is indistinguishable from a frame arriving, so it
+strands whatever is actually queued and leaves the reader permanently one
+frame behind. `Read()` therefore registers itself in `fBlockedReaders` around
+the `acquire_sem_etc`, and nothing needs draining on reopen.
 
-**A control experiment says this is ours, not Haiku's.** The same sequence on
-an in-tree driver, an unused `ipro1000` port, behaves correctly: `down` returns
-in under a second, the interface stays queryable, and `up` restores it. So the
-stack is perfectly capable of taking an interface down and back up; something
-about our path stops it.
+Returning an error here is safe, and the stack source is the reason to believe
+it rather than a guess -- `device_reader_thread()` loops on
+`while ((device->flags & IFF_UP) != 0)`, and on any error other than
+`B_DEVICE_NOT_FOUND` it counts the error, snoozes 10 ms and *retries*. So a
+spurious error never makes it give up; only `B_DEVICE_NOT_FOUND` is special,
+because that triggers `device_removed()`. `B_DEV_NOT_READY` is correct.
 
-What has been ruled out:
+**Correcting an earlier note in this document.** It listed "`Read()` is not
+returning an error" under *what has been ruled out*. The observation was true
+and the inference from it was wrong: blocking there without returning anything
+was the entire fault.
 
-- **`Read()` is not returning an error.** It blocks on a semaphore with no
-  timeout, so `net_server`'s reader thread cannot be seeing a dead device.
-- **The stack has not lost the device.** `ifconfig` with no arguments still
-  enumerates `/dev/net/rtl8814au/0` -- it enumerates devices from `/dev` and
-  then queries each, and ours reports no interface.
-- **`--delete` cannot clear it either**, returning "Invalid Argument" while
-  `up` continues to report "Name in use". Whatever the stack is holding is not
-  reachable through `ifconfig`.
-- Nothing from `net_server` appears in the syslog around the close.
+**`TxPath::CancelAll()` self-deadlock was a real bug but not this one.** It
+cancelled bulk OUT transfers while holding `fLock`, and XHCI's
+`CancelQueuedTransfers` runs each cancelled transfer's callback *inline on the
+calling thread*, where `_TxCallback` takes `fLock` again. Haiku's mutexes are
+not recursive. Cancelling now happens outside the lock. It was reported as the
+cause of the hang on the strength of an invalid test -- `down` run against an
+interface that was **already down**, which returns instantly without ever
+reaching the close hook. `_RecoverStalledPipe` already dropped the lock before
+cancelling for this exact reason, so **check every `cancel_queued_transfers`
+call against its callback's locking**; those callbacks are not asynchronous.
 
-The lead worth following: **our driver logs `device close` when `ifconfig down`
-runs at all.** Whether `ipro1000` is closed by the same command is unknown and
-is the first thing to establish, because if it is not then the interesting
-question is why a wireless interface gets closed where an ethernet one does
-not -- `net_server` and `wpa_supplicant` treat wireless interfaces
-differently, and the re-add path may simply never have been exercised for one.
-Confirming that with a second wireless adapter would settle it; there is no
-other wireless hardware in the test machine at present.
+**The second bug: close stopped receiving and open never started it again.**
+With the hang gone, `down` then `up` gave a live interface that received
+nothing at all. Scanning still swept all 42 channels and still fired
+`B_NETWORK_WLAN_SCANNED`, but `ifconfig list` came back empty because not one
+beacon had arrived. `Close()` calls `fRxPath->Stop()` every time, while
+`Start()` is reached only from `_InitHardware()`, which is guarded by
+`fHardwareInitialized` and so runs only on the *first* open. A reopened device
+sat with no bulk IN transfers submitted. `Open()` now restarts the path if it
+is not running; `Start()` is idempotent and resubmits every receive buffer.
 
-Until that is solved, the testing cost recorded in
-[testing-notes.md](testing-notes.md) stands: one reboot per attempt, and long
-reboot-heavy runs can manufacture the instability they are trying to measure.
+This asymmetry had been invisible precisely because `down` hung, so every test
+began from a reboot and no reopen was ever exercised.
+
+**What this buys.** Five joins were run back to back with no reboot, and the
+fifth reproduced the reason-15 failure that 28 reboot-based attempts never
+caught once (item 7). A ~70 s loop now does what used to cost a reboot each
+time -- and reboot-heavy runs were themselves manufacturing instability.
 
 ### 2. Finish the bounded H2C write
 

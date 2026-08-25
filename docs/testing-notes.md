@@ -294,29 +294,37 @@ frames on the air with no driver-side record of sending any of them. Keep
 enough of the log to interpret the capture.
 
 
-## Every test attempt needs a reboot, and that is a cost
+## Test attempts no longer need a reboot (fixed 2026-08-25)
 
-The join harnesses reboot the test machine between attempts. That is not
-laziness: **there is no working way to re-join without one.** Measured on a
-live machine:
+For most of this driver's life every join attempt cost a reboot, because there
+was no working way to re-join without one:
 
 - Join once: succeeds.
 - Join again with no teardown: authentication is transmitted, nothing
   associates.
-- Join again after `ifconfig down` then `up`: nothing is transmitted at all,
-  and `ifconfig down` never returns -- see the interface-wedging bug at the top
-  of `NEXT_SESSION.md`.
+- Join again after `ifconfig down` then `up`: nothing transmitted at all, and
+  `down` itself never returned.
 
-So a sixty-attempt run means sixty reboots, and that has a real cost beyond
-wear. The firmware-download failures clustered at the end of a long session of
-rapid reboots and needed a **power cycle** to clear, because a Haiku restart
-does not power-cycle USB. **A long reboot-heavy run can therefore manufacture
-the very instability it is trying to measure.**
+**Both blockers are now fixed** (see item 1 of `NEXT_SESSION.md`): the close
+path wakes readers parked in `Read()`, and `Open()` restarts the receive path
+that `Close()` stops. A join attempt is now scan -> join -> check -> `down` ->
+`up`, about 70 seconds, with no reboot.
+
+This matters for measurement, not just convenience. The **first** five-attempt
+reboot-free run reproduced a reason-15 handshake failure that 28 reboot-based
+attempts had never produced once. Reboot-cycling was not sampling the fault --
+it was changing the conditions.
+
+**The old warning still stands for runs that genuinely need fresh boots.** The
+firmware-download failures clustered at the end of a long session of rapid
+reboots and needed a **power cycle** to clear, because a Haiku restart does not
+power-cycle USB. **A long reboot-heavy run can manufacture the very instability
+it is trying to measure.**
 
 Practical consequences:
 
-- Prefer many boots only when the thing being measured genuinely needs a fresh
-  boot. Most questions do not.
+- Prefer the reboot-free loop. Reserve reboots for questions that genuinely
+  need a fresh boot -- firmware download being the obvious one. Most do not.
 - Watch for firmware-load failures during a long run. Their appearance means
   the results after that point are suspect and the adapter needs a power cycle,
   not more attempts.

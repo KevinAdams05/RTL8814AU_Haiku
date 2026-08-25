@@ -168,6 +168,15 @@ private:
 	char						fDeviceName[64];
 	status_t					fInitStatus;
 	bool						fRemoved;
+
+	// Set while the device is closing, so a reader parked in Read() can be
+	// woken and told to give up. Without it net_server's reader thread waits
+	// on fRxDataReady forever and `ifconfig <device> down` never returns.
+	bool						fClosing;
+
+	// Number of threads currently parked in Read() on fRxDataReady, so the
+	// close path can release it exactly that many times.
+	int32						fBlockedReaders;
 	bool						fHardwareInitialized;
 
 	// Pending-join state populated by IEEE80211_IOC_SSID / _BSSID, used by

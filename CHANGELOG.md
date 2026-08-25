@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+**`ifconfig <device> down` no longer hangs, and the interface comes back.**
+Previously `down` never returned, left an unkillable process behind, and the
+interface stayed unusable until a reboot.
+
+- **A reader thread was parked in the driver's `Read()` with nothing to wake
+  it.** The network stack takes an interface down by clearing `IFF_UP` and then
+  waiting for its reader thread to exit; that thread was blocked on a semaphore
+  released only when a frame arrives, and the receive path had already stopped,
+  so no frame ever came. The close path now wakes each parked reader -- exactly
+  once per reader, since a release nobody consumes is indistinguishable from a
+  frame arriving and would strand whatever is queued.
+- **Reopening the device left it deaf.** `Close()` stops the receive path every
+  time, but it was only ever started from the first-open hardware init, so a
+  reopened interface had no receive transfers submitted. Scanning still swept
+  every channel and still reported completion, while the network list came back
+  empty because no beacon had been received. `Open()` now restarts it.
+- **`TxPath::CancelAll()` deadlocked against itself**, cancelling bulk OUT
+  transfers while holding the lock its own completion callback needs. USB
+  transfer cancellation on this stack runs those callbacks inline on the
+  calling thread, so the thread waited for a lock it already held.
+
+For anyone testing the driver, this is the difference between one reboot per
+join attempt and none.
+
 ## 0.3.0 — 2026-08-21
 
 **5 GHz works, and so does connecting from the Deskbar.** 0.2.0 could only

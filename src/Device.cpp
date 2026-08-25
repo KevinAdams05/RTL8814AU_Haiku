@@ -60,6 +60,8 @@ RTL8814AUDevice::RTL8814AUDevice(usb_device device, uint32 slotIndex,
 	fSlotIndex(slotIndex),
 	fInitStatus(B_NO_INIT),
 	fRemoved(false),
+	fClosing(false),
+	fBlockedReaders(0),
 	fHardwareInitialized(false),
 	fOpenCount(0),
 	fRegisterIO(NULL),
@@ -2459,6 +2461,29 @@ RTL8814AUDevice::Open(const char* name, uint32 flags, void** cookie)
 			return status;
 	}
 
+	// Reopening after a close: allow reads again. Nothing has to be drained
+	// off fRxDataReady, because Close() releases it once per parked reader and
+	// each of those releases is consumed by the reader it woke.
+	device->fClosing = false;
+
+	// Restart receiving if a previous close stopped it.
+	//
+	// The RX path is started by _InitHardware(), which runs only on the very
+	// first open, while Close() stops it every time. So a reopened device sat
+	// there with no bulk IN transfers submitted and never saw another frame:
+	// scanning still swept all 42 channels and still fired its notification,
+	// but the network list came back empty because not one beacon had been
+	// received. Start() is idempotent and resubmits every receive buffer, so
+	// calling it here is safe whether or not the path is already running.
+	if (device->fRxPath != NULL && !device->fRxPath->IsRunning()) {
+		status_t status = device->fRxPath->Start();
+		if (status != B_OK) {
+			dprintf(RTL8814AU_DRIVER_NAME ": open: could not restart the "
+				"RX path: %s\n", strerror(status));
+			return status;
+		}
+	}
+
 	atomic_add(&device->fOpenCount, 1);
 	*cookie = device;
 
@@ -2478,6 +2503,29 @@ RTL8814AUDevice::Close(void* cookie)
 		return B_BAD_VALUE;
 
 	dprintf(RTL8814AU_DRIVER_NAME ": device close\n");
+
+	// Wake anything parked in Read() before touching the hardware.
+	//
+	// Read() blocks on fRxDataReady with no timeout, and that semaphore is
+	// released only when a frame arrives. net_server keeps a reader thread
+	// sitting there, so once the receive path stops no frame ever comes and
+	// the reader never returns -- and the stack, waiting on it, never finishes
+	// tearing the interface down. That is why `ifconfig <device> down` never
+	// returned even though every step of this function completed: the hang was
+	// downstream of the driver, in a reader this driver had parked and never
+	// released.
+	//
+	// The old comment in Read() claimed B_CAN_INTERRUPT let the read be
+	// cancelled "when the device is closed". Nothing here interrupted it, so
+	// that was aspiration rather than description.
+	device->fClosing = true;
+	int32 blocked = atomic_get(&device->fBlockedReaders);
+	if (device->fRxDataReady >= 0 && blocked > 0) {
+		release_sem_etc(device->fRxDataReady, blocked,
+			B_DO_NOT_RESCHEDULE);
+	}
+	dprintf(RTL8814AU_DRIVER_NAME ": close: released %" B_PRId32
+		" blocked reader(s)\n", blocked);
 
 	// Logged step by step because this path hangs and there is no way to get
 	// a stack trace from it: `ifconfig <device> down` never returns, the
@@ -2721,18 +2769,31 @@ RTL8814AUDevice::Read(void* cookie, off_t position, void* buffer,
 	if (buffer == NULL || numBytes == NULL)
 		return B_BAD_VALUE;
 
-	// Block until a frame is available or the device is removed.
-	// B_CAN_INTERRUPT allows the read to be canceled when the device
-	// is closed or the thread is killed.
+	// Checked before blocking as well as after, so a reader arriving during
+	// the close cannot park on a semaphore nobody will release again.
+	if (device->fClosing) {
+		*numBytes = 0;
+		return B_DEV_NOT_READY;
+	}
+
+	// Block until a frame is available, the device is removed, or the close
+	// path releases us. Registering as a waiter first lets Close() release
+	// this semaphore exactly as many times as there are threads parked on it:
+	// a surplus release would be indistinguishable from a frame arriving and
+	// would strand whatever is actually queued.
+	atomic_add(&device->fBlockedReaders, 1);
 	status_t status = acquire_sem_etc(device->fRxDataReady, 1,
 		B_CAN_INTERRUPT, 0);
+	atomic_add(&device->fBlockedReaders, -1);
 	if (status != B_OK) {
 		*numBytes = 0;
 		return status;
 	}
 
-	// Check again after waking — the device may have been removed
-	if (device->fRemoved) {
+	// Check again after waking — the device may have been removed, or may be
+	// closing, in which case the wake was the close path releasing us rather
+	// than a frame arriving.
+	if (device->fRemoved || device->fClosing) {
 		*numBytes = 0;
 		return B_DEV_NOT_READY;
 	}
