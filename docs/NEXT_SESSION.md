@@ -529,6 +529,35 @@ The remaining limits are known and all deliberate:
 - **A-MPDU aggregation is disabled.** `MAX_AGG_NUM` and `AMPDU_DENSITY` are
   never set and Block-ACK state is not wired up.
 
+### 5b. Throughput, and why it still cannot be measured here
+
+The response-timing fix cut transmissions per frame from 42.5 to 1.0, so
+throughput should have improved substantially. It has not been measured,
+because there is still nowhere to measure it to.
+
+`Adams-Guest` looked ideal: it is a **separate subnet, 192.168.20.0/24**, so
+routing cannot divert its traffic out of the wired interface the way it does on
+the shared subnet. DHCP over the air works and shredder gets 192.168.20.16.
+But the network blocks client traffic -- neither shredder nor a second adapter
+on the same network can ping the gateway or each other.
+
+**That was checked against the vendor driver, and it fails there too**, so it
+is the network's policy and not ours. Worth remembering as the general
+technique: when a link-level test fails, run the same test with the vendor
+driver on the same network before spending any time on the driver.
+
+What would actually work, in order of preference:
+
+1. **The main 5 GHz network** (`AdamsFamily02-5G`), which is a normal subnet
+   with reachable hosts. Needs its passphrase; it has never been recorded, only
+   supplied for individual runs.
+2. **Drop the wired interface** over IPMI serial-over-LAN, so routing has no
+   alternative. The BMC and SOL setup are already documented.
+
+Either way, read the interface's own `Transmit` counter as well as any
+timing figure -- routing cannot fake the counter, and every transmit number in
+this document's history was suspect for exactly that reason.
+
 ### 6. Receive throughput
 
 Note the transmit figures below predate the discovery that transmit cannot be
