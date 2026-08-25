@@ -116,23 +116,32 @@ ring descriptor where it hands ownership to the DMA engine. Defining both
 names and setting both is harmless only because they are the same bit — but it
 makes "clear OWN" look like a change when it is a no-op.
 
-### `REG_HWSEQ_CTRL` (0x0423), and why it is sidestepped
+### `REG_HWSEQ_CTRL` (0x0423) — written, and required
 
-Sidestepped rather than open now. Every non-QoS descriptor used to set
-`HWSEQ_EN`, asking the MAC to supply the sequence number — a service this
-register never enabled, so **every frame went out as sequence 0**. Rather than
-fight the register (both placements tried hung the transmit path),
-`TxPath::Transmit` writes a real sequence number into the frame header and
-`HWSEQ_EN` is no longer set.
+**This section previously said the register was sidestepped. That was wrong,
+and the air proved it.** The reasoning was that `HWSEQ_EN` asked for a service
+`REG_HWSEQ_CTRL` never enabled, so `Transmit()` should write Sequence Control
+into the frame header instead. The header write does not work: **this chip's
+MAC overwrites those two bytes on transmit.** Measured on 2026-08-25 — the
+driver's own descriptor dump shows a data frame submitted with sequence 3 in
+its header, and the air shows sequence 0, as it did for all 369 frames captured
+from this station. A vendor-driven adapter on the same access point numbered
+its frames 1, 2, 3.
 
-Worth knowing: fixing this did **not** improve throughput, which was the
-hypothesis that prompted it. Sequence 0 on every frame is a real protocol
-violation and the fix stands on its own, but an access point's duplicate
-filtering was evidently not what was costing bandwidth. The constants remain
-for anyone who wants the hardware path instead.
+The register is now written, `kHwSeqCtrlAllQueues` (0xFF), from `_DoJoin()`.
+The vendor driver writes it once during hardware init; it goes in `_DoJoin()`
+here because writes in that part of our init have wedged the MAC scheduler
+before, which is also why the CAM clear lives there. `_DoJoin()` runs before
+the first authentication frame, so every frame that matters is covered.
 
-Moved here from `NEXT_SESSION.md`: it is a settled design decision about the
-transmit path, not a task.
+**Do not confuse this with 0x4FC**, which the vendor also documents as
+"EN_HWSEQ". That one is beacon-specific and written only for the 8822B and
+8822C. Citing it was part of why this register was wrongly written off.
+
+One caveat worth carrying: **per-join is not where the vendor writes it**, and
+writing it on every association is an untested difference. It is the first
+suspect if the transmit path misbehaves on a repeat join — see item 1 of
+`NEXT_SESSION.md`.
 
 ### No RTS/CTS, on any frame
 
@@ -158,21 +167,24 @@ only evidence for what you actually decode out of it.  Both this and the
 `0x0A04` override were written as "what the capture shows" and neither
 survived contact with the bytes.
 
-### The sequence number does not go in the descriptor
+### The sequence number goes in the descriptor, never the header
 
-The descriptor's `SEQ` field is at byte 36, bits 12-23, and we leave it zero.
-`HWSEQ_EN` (dword 8 bit 15) is also left clear.
+Sequencing is split exactly the way the reference driver splits it for this
+chip:
 
-Both were previously set, asking the MAC to assign sequence numbers — a
-service `REG_HWSEQ_CTRL` was never written to enable, so the number stayed at
-whatever the header carried, which was zero.  `Transmit()` now writes a real
-sequence counter into the frame header itself, which needs neither the bit nor
-the register.
+- **non-QoS frames** — `HWSEQ_EN` (dword 8 bit 15) set, `EN_HWEXSEQ` (bit 14)
+  clear, `DISQSELSEQ` (dword 0 bit 31) set, `HW_SSN_SEL` (dword 3 bits 6-7)
+  zero. The MAC numbers the frame.
+- **QoS frames** — an explicit number in the `SEQ` field, dword 9 bits 12-23.
 
-The vendor driver takes the other route on its QoS data frames: it writes the
-sequence into descriptor `SEQ` *and* the header, leaving `HWSEQ_EN` clear.
-Either is fine; what does not work is asking for hardware sequencing without
-enabling it.
+**The frame header is not an option on this chip.** The MAC overwrites Sequence
+Control on transmit; see the `REG_HWSEQ_CTRL` section above for the measurement.
+An earlier version of this document recommended the header, and it was wrong.
+
+Getting the field wrong is expensive rather than merely ineffective. Verified
+after the change: sequence numbers increment across frames (auth 2636,
+assoc-req 2637, twelve distinct values in one capture) and retransmissions
+correctly reuse the sequence of the frame they are retrying.
 
 This is worth stating explicitly because getting it wrong is expensive. A
 12-bit software counter was previously written at dword 3 bits 16-27. Those

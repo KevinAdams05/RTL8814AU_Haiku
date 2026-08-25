@@ -7,6 +7,42 @@ deliberately, of every MAC-range register at once.
 
 Regenerate with `scratchpad/mac-init-gaps.py <decoded-capture.txt>`.
 
+## This sweep is not exhaustive, and the proof is expensive
+
+**It missed the highest-impact missing writes in the driver.** On 2026-08-25 the
+MAC's response-timing registers turned out to be declared in our source and
+never written, which meant the chip never registered the access point's
+acknowledgements and transmitted every frame about **42 times**:
+
+| register | value the vendor uses |
+|---|---|
+| `REG_SIFS_CTX` 0x0514 | 0x100A |
+| `REG_SIFS_TRX` 0x0516 | 0x100A |
+| `REG_RESP_SIFS_CCK` 0x063C | 0x0808 |
+| `REG_RESP_SIFS_OFDM` 0x063E | 0x0A0A |
+| `REG_ACKTO` 0x0640 | 0x80 |
+
+**None of them appears in the table below**, even though the table lists
+0x0604, 0x0607, 0x0624 and 0x0652 — immediate neighbours — so the capture
+plainly covered that range. The vendor writes `REG_ACKTO` in
+`hal/rtl8814a/usb/usb_halinit.c`, so the write exists in its source; it simply
+was not in the capture this table was generated from.
+
+The lesson is about method, not about this file:
+
+- A **capture-based** sweep only sees what that particular run happened to do.
+  Anything conditional, anything before the capture started, anything on a code
+  path not taken, is invisible — and its absence looks exactly like "the vendor
+  does not write it either".
+- A **source-based** sweep sees writes that never actually execute, which is the
+  failure mode the method section below was written to avoid.
+
+So use both, and treat disagreement between them as the interesting signal. The
+response-timing registers were found by grepping the vendor source for the
+register names, after the air capture showed the symptom — not by this sweep.
+
+**Worth redoing from source**, and worth doing before trusting this table again.
+
 ## Method, and why the naive version is useless
 
 The comparison is between the registers the vendor driver writes during

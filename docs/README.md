@@ -21,6 +21,7 @@ For *using* the driver, see the [top-level README](../README.md).
 | [wifi-management.md](wifi-management.md) | Scan flow, join state machine, MLME, the Haiku ioctl glue |
 | [phy-channel-and-band.md](phy-channel-and-band.md) | RF register access (the two routes), what a channel change entails, the 2.4/5 GHz band switch |
 | [NEXT_SESSION.md](NEXT_SESSION.md) | Current state and the open work, highest value first. Tasks only — method and traps live in testing-notes.md, finished work in the CHANGELOG |
+| [solved-defects.md](solved-defects.md) | Faults that are fixed, and the evidence that settled them — including explanations this project once led with and later disproved. Read before re-opening anything on a hunch |
 | [wpa-supplicant-and-deskbar.md](wpa-supplicant-and-deskbar.md) | What it takes to connect from the Deskbar: the net_server/wpa_supplicant chain, the net80211 ioctl contract, how EAPOL really reaches userland, and why the in-driver handshake conflicts with the supplicant |
 | [wpa2-in-driver.md](wpa2-in-driver.md) | The in-driver WPA2-PSK implementation — why we don't use wpa_supplicant, why we don't use the chip's HW crypto, the 4-way handshake state machine, SW CCMP, and what was actually wrong for so long |
 | [ioctl-reference.md](ioctl-reference.md) | Quick reference for SIOCS80211 / SIOCG80211 IOC handlers and what userland calls them |
