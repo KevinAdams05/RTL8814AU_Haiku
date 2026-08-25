@@ -215,6 +215,18 @@ And `rfkill unblock` must come **after** `modprobe`, because reloading
 re-creates the device's rfkill switch blocked.
 
 
+New with the 2026-08-25 air captures:
+
+- `air-noreboot.sh` -- the join-attempt loop, one capture per attempt, kept
+  only when the attempt fails. No reboots: an attempt is scan, join, check,
+  `down`, `up`, about 70 seconds.
+- `air-eapol.py` -- decodes EAPOL-Key frames out of an air capture with the
+  802.11 header fields alongside, for comparing our M2 against a vendor M2 on
+  the same access point.
+- `seq-check.py` -- every frame a station transmitted, with sequence number and
+  retry bit. First-transmissions versus retries is the airtime-waste metric.
+- `air_eapol_util.py` -- the shared pcap/radiotap reader the two above use.
+
 ## The H2C mailbox decoder is not trustworthy at byte level
 
 `scratchpad/h2c-all.py` decodes host-to-firmware commands out of a capture by
@@ -293,6 +305,46 @@ from the driver log, which left a failure showing thirteen authentication
 frames on the air with no driver-side record of sending any of them. Keep
 enough of the log to interpret the capture.
 
+
+## The air is the only place some faults are visible
+
+Two hardware faults survived months of reading our own source, comparing USB
+submissions against the vendor's, and decoding descriptors byte by byte. Both
+fell out of a single over-the-air capture in an afternoon, because both are
+faults in what the chip does *after* the driver hands the frame over:
+
+- **Sequence numbers.** The driver wrote Sequence Control into the frame
+  header and its own descriptor dump confirmed the bytes were there --
+  sequence 3, plainly visible. The air showed sequence 0. This chip's MAC
+  overwrites those two bytes on transmit. No amount of reading the driver, or
+  even reading back what the driver submitted, could have shown that.
+- **Acknowledgement timing.** Every frame was transmitted about 42 times while
+  the access point acknowledged each transmission. From the driver's side a
+  transmit looks entirely successful, because it is: the frame goes out, and
+  goes out, and goes out.
+
+The method that worked, and is worth repeating:
+
+1. **Get a reference on the same access point.** Run the vendor Linux driver on
+   the same adapter model, join the same network, and capture it. Ours numbered
+   its frames 0, 0, 0; the vendor's 1, 2, 3. One line of output settled a
+   question that had been open for weeks.
+2. **Compare the air, not the submission.** `air-eapol.py` decodes EAPOL-Key
+   frames out of a capture with the 802.11 header fields beside them, so our M2
+   and the vendor's M2 can be diffed at the level the access point sees.
+3. **Count first transmissions separately from retries.** `seq-check.py` prints
+   every frame a station sends with its sequence and retry bit. The ratio
+   between them is a direct measure of how much airtime is being wasted, and it
+   is the metric that showed the response-timing fix working: 42.5
+   transmissions per frame before, 1.0 after.
+4. **Read the ACKs.** An ACK carries only Address 1, so it needs handling
+   separately from every other frame -- and it is the frame that tells you
+   whether the other end heard you. Believing "we retransmitted, so it was
+   lost" without checking for the ACK gets the direction of the fault backwards.
+
+The corollary is a rule for this driver: **when a register or descriptor field
+governs something that happens on the air, do not conclude anything from the
+value the driver wrote.** Capture it.
 
 ## Test attempts no longer need a reboot (fixed 2026-08-25)
 

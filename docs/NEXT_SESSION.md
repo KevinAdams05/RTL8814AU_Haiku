@@ -19,18 +19,47 @@ solid under sustained load: 100 MB transferred with a matching checksum,
 | Post-assoc worker survives a transient semaphore error | it could previously die silently and permanently |
 | `ifconfig down` wakes readers parked in `Read()` instead of leaving them blocked | `down` returned in 0 s instead of never; no more unkillable process |
 | `Open()` restarts the receive path that `Close()` stopped | a reopened interface received nothing at all, so scans listed no networks |
+| Frames carry real sequence numbers (`HWSEQ_EN` + `REG_HWSEQ_CTRL`) | every frame had gone out as sequence 0, breaking duplicate detection |
+| The MAC response-timing registers are written at last | frames were transmitted **42 times each**; now 1.0. Join failures 20% -> 3% |
 
 Those last two together **removed the reboot from the test loop**: joins can
 now be repeated back to back, and the first five-attempt run reproduced a
 failure that 28 reboot-based attempts had never caught.
 
-**The one open defect.** About one join in six still fails on either band,
-always the same way: the association completes, `_DoPostAssocSetup()` never
-returns, and the handshake dies. The cause is understood -- an H2C control
-transfer that never completes, through a path with no timeout. A bounded
-version with retries is **built, staged on the test machine, and not yet
-measured**; see "Bounded H2C write, second attempt" below, including the
-finding that cancellation cannot reclaim a stuck transfer on this chip.
+**The open defect, restated.** About one join in six used to fail, and the
+story in this document -- an H2C control transfer that never completes -- was
+never confirmed. Two hardware faults found by capturing the air on 2026-08-25
+account for the symptoms much better, and both are now fixed:
+
+- **Every frame went out as sequence 0.** 369 consecutive frames, one distinct
+  sequence number, where a vendor-driven adapter on the same access point
+  numbered its frames 1, 2, 3. The header cannot carry it on this chip -- the
+  MAC overwrites Sequence Control on transmit -- so it has to be asked for
+  through the descriptor.
+- **The MAC was not registering acknowledgements.** Its response-timing
+  registers were declared in the source and never written. Every frame was
+  transmitted about **42 times** while the access point acknowledged each
+  transmission within microseconds. The same timing governs the ACK we send
+  back, so association responses went unacknowledged and the access point gave
+  up after four tries -- which is exactly what "authenticates but never
+  associates" looks like.
+
+Measured, reboot-free, 30 attempts per configuration against the same access
+point:
+
+| configuration | join failures | transmissions per frame |
+|---|---|---|
+| baseline | 6 / 30 (20%) | 42.5 |
+| sequence numbers fixed | 6 / 21 (29%) | 42.5 |
+| response timing fixed too | 1 / 30 (3%) | **1.0** |
+
+The transmissions-per-frame collapse is unambiguous. The failure-rate
+improvement is consistent but not yet significant on its own (Fisher exact
+p = 0.10), so treat 3% as provisional until a second run is in.
+
+**The sequence-number fix alone changed nothing measurable**, which is worth
+recording: it is a genuine bug, verified fixed on the air, and it was not what
+was breaking joins.
 
 **Failure rates in this document are overstated.** The harness counted any
 `RX DEAUTH` in the syslog as our failure, and the driver logs deauths it merely
