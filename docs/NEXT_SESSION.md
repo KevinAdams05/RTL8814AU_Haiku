@@ -112,10 +112,34 @@ ifconfig <device> scan   -> fails
 
 The device node still exists and the driver is healthy, but nothing re-registers
 the interface, so **re-joining still needs a reboot** and every test attempt
-still costs one. "Name in use" alongside "Interface not found" suggests the
-stack still holds a half-removed registration rather than the driver having
-failed -- worth checking whether `net_server` needs to be told, or whether the
-open/close path should not be deregistering at all.
+still costs one.
+
+**A control experiment says this is ours, not Haiku's.** The same sequence on
+an in-tree driver, an unused `ipro1000` port, behaves correctly: `down` returns
+in under a second, the interface stays queryable, and `up` restores it. So the
+stack is perfectly capable of taking an interface down and back up; something
+about our path stops it.
+
+What has been ruled out:
+
+- **`Read()` is not returning an error.** It blocks on a semaphore with no
+  timeout, so `net_server`'s reader thread cannot be seeing a dead device.
+- **The stack has not lost the device.** `ifconfig` with no arguments still
+  enumerates `/dev/net/rtl8814au/0` -- it enumerates devices from `/dev` and
+  then queries each, and ours reports no interface.
+- **`--delete` cannot clear it either**, returning "Invalid Argument" while
+  `up` continues to report "Name in use". Whatever the stack is holding is not
+  reachable through `ifconfig`.
+- Nothing from `net_server` appears in the syslog around the close.
+
+The lead worth following: **our driver logs `device close` when `ifconfig down`
+runs at all.** Whether `ipro1000` is closed by the same command is unknown and
+is the first thing to establish, because if it is not then the interesting
+question is why a wireless interface gets closed where an ethernet one does
+not -- `net_server` and `wpa_supplicant` treat wireless interfaces
+differently, and the re-add path may simply never have been exercised for one.
+Confirming that with a second wireless adapter would settle it; there is no
+other wireless hardware in the test machine at present.
 
 Until that is solved, the testing cost recorded in
 [testing-notes.md](testing-notes.md) stands: one reboot per attempt, and long
