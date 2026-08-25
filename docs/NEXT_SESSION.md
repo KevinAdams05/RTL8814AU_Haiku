@@ -92,7 +92,14 @@ Current state at a glance:
 | | ASUS USB-AC68 | Edimax AC1750 |
 |---|---|---|
 | 2.4 GHz | works | works |
-| 5 GHz | works (54/15 Mbit/s) | associates; not yet carrying traffic |
+| 5 GHz | works (54/15 Mbit/s) | **works** -- 59 of 60 joins, WPA2-CCMP, DHCP lease over the air (2026-08-25) |
+
+**Caveat on everything measured on 2026-08-25: it is one adapter, one band,
+one access point.** The Edimax was in the machine; the ASUS has not been
+re-tested since. Both fixes are in code with no per-device branching, so they
+were affecting the ASUS too, but that is inference from the code rather than a
+measurement. Re-testing the ASUS is the gap between "works here" and
+"releasable".
 
 **There is one open failure and it affects both bands: an intermittent stall
 of the data queue just after association (item 6).** Most runs are clean,

@@ -89,7 +89,10 @@ both bands are verified end to end: association, four-way handshake, CCMP
 keys, DHCP lease, ICMP at every ping size from 56 to 1472 bytes, and a full
 SSH session over the air.
 
-On an Edimax AC1750, 2.4 GHz reaches the same standard, and 5 GHz associates.
+On an Edimax AC1750, 2.4 GHz reaches the same standard. 5 GHz only
+associated when 0.3.0 was written; as of 2026-08-25 it completes the
+handshake and takes a DHCP lease over the air as well -- see the unreleased
+section above, which is what changed it.
 Both are subject to an **intermittent stall of the data queue just after
 association** -- most runs are clean, but when it happens the handshake never
 starts. See the known limitations below.
