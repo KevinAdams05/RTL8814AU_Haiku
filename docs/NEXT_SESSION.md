@@ -79,7 +79,38 @@ in about four minutes.
 
 ## Open work, highest value first
 
-### 1. Finish the bounded H2C write
+### 1. `ifconfig down` hangs and wedges the interface
+
+**Deterministic, reproducible, and user-visible** -- which makes it better
+value than anything else on this list, all of which is intermittent.
+
+```
+ifconfig /dev/net/rtl8814au/0 down     <- never returns
+```
+
+The driver logs `device close` and `stopping RX receive loop`, the `ifconfig`
+process stays in the process list indefinitely, and afterwards the interface
+cannot be used: a subsequent `up` transmits nothing, and a fresh `scan` hangs
+too. Recovery needs a reboot.
+
+The user-facing consequence is worth stating plainly: **anyone who takes the
+interface down cannot bring it back without rebooting**, and anything that
+disconnects and reconnects hits this.
+
+It also explains a testing artefact recorded further down. Repeated joins
+within one boot "failed to associate", and the harness had to reboot between
+every attempt as a result. That was read as a quirk of re-joining while already
+associated; part of it is this bug.
+
+Found while looking for a way to avoid a reboot per test attempt -- there
+isn't one, and this is why.
+
+Where to start: `ETHER_INIT` is handled in `Device.cpp`, and the close path
+takes down the receive loop. The question is what it waits on that never
+completes -- the same shape as the two hangs already fixed in this driver, both
+of which were an unbounded wait on something the chip stopped answering.
+
+### 2. Finish the bounded H2C write
 
 **This is the one open defect**: about one join in six on either band, always
 the same way -- the association completes, `_DoPostAssocSetup()` never returns,
@@ -306,7 +337,7 @@ behind it. If it does, the next thing to establish is whether the endpoint ever
 recovers on its own, because if it does not then nothing short of a device
 reset will help and the command has to be issued some other way.
 
-### 2. Why the first firmware-download attempt fails
+### 3. Why the first firmware-download attempt fails
 
 The retry works around it, so this is not urgent, but the fault itself is
 undiagnosed. **Three plausible explanations have been eliminated by comparing
@@ -343,7 +374,7 @@ A Haiku restart does not power-cycle USB, so a chip wedged this way stays
 wedged across reboots. A run of sudden failures should prompt a power cycle
 before a bisect.
 
-### 3. Two H2C commands the vendor sends and we never do
+### 4. Two H2C commands the vendor sends and we never do
 
 Both fell out of decoding the mailbox writes, and both are pure additions:
 
@@ -384,7 +415,7 @@ output disagrees with the reference for `0x42` -- it shows `h2c[1] = 0x8C`
 where the reference sets that byte to zero unconditionally. Trust the
 reference's layout over `scratchpad/h2c-all.py` until that decoder is fixed.
 
-### 4. Rate adaptation, hardware CCMP, aggregation
+### 5. Rate adaptation, hardware CCMP, aggregation
 
 The remaining limits are known and all deliberate:
 
@@ -412,7 +443,7 @@ The remaining limits are known and all deliberate:
 - **A-MPDU aggregation is disabled.** `MAX_AGG_NUM` and `AMPDU_DENSITY` are
   never set and Block-ACK state is not wired up.
 
-### 5. Receive throughput
+### 6. Receive throughput
 
 Note the transmit figures below predate the discovery that transmit cannot be
 measured over the air on this bench -- see
@@ -497,7 +528,7 @@ Two other structural candidates, unmeasured:
    the device-wide `fLock`, which transmit also takes. Contention on one mutex
    across the whole driver is plausible at these rates.
 
-### 6. The data-queue stall -- open, but never reproduced under measurement
+### 7. The data-queue stall -- open, but never reproduced under measurement
 
 **This is the one open failure, and it is the most important thing in this
 document.** After a successful association the best-effort data queue
@@ -541,7 +572,7 @@ What is known:
   `/var/log/syslog` instead, and expect an `ssh` that runs `ifconfig` to hang
   until it is killed.
 
-### 7. Loose ends
+### 8. Loose ends
 
 - **`SetActivePowerMode()` hangs intermittently.** It is the post-assoc
   worker's first action and issues an H2C command; when it hangs, association

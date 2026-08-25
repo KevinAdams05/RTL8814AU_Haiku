@@ -292,3 +292,34 @@ And one in the capture harness itself: it saved only EAPOL and pipe-2 lines
 from the driver log, which left a failure showing thirteen authentication
 frames on the air with no driver-side record of sending any of them. Keep
 enough of the log to interpret the capture.
+
+
+## Every test attempt needs a reboot, and that is a cost
+
+The join harnesses reboot the test machine between attempts. That is not
+laziness: **there is no working way to re-join without one.** Measured on a
+live machine:
+
+- Join once: succeeds.
+- Join again with no teardown: authentication is transmitted, nothing
+  associates.
+- Join again after `ifconfig down` then `up`: nothing is transmitted at all,
+  and `ifconfig down` never returns -- see the interface-wedging bug at the top
+  of `NEXT_SESSION.md`.
+
+So a sixty-attempt run means sixty reboots, and that has a real cost beyond
+wear. The firmware-download failures clustered at the end of a long session of
+rapid reboots and needed a **power cycle** to clear, because a Haiku restart
+does not power-cycle USB. **A long reboot-heavy run can therefore manufacture
+the very instability it is trying to measure.**
+
+Practical consequences:
+
+- Prefer many boots only when the thing being measured genuinely needs a fresh
+  boot. Most questions do not.
+- Watch for firmware-load failures during a long run. Their appearance means
+  the results after that point are suspect and the adapter needs a power cycle,
+  not more attempts.
+- When an intermittent fault refuses to appear across a few dozen attempts,
+  consider that reboot-cycling may be changing the conditions rather than
+  sampling them.
