@@ -169,6 +169,11 @@ RTL8814AURxPath::Stop()
 
 	if (fBulkIn != 0)
 		fUSBModule->cancel_queued_transfers(fBulkIn);
+
+	// Cancelling runs each transfer's callback inline on this thread -- XHCI's
+	// CancelQueuedTransfers calls Finished() directly in a loop -- so anything
+	// the receive callback blocks on, this call blocks on too.
+	dprintf(RTL8814AU_DRIVER_NAME ": RX transfers cancelled\n");
 }
 
 

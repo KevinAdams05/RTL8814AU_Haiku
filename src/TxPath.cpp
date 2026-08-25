@@ -581,15 +581,32 @@ RTL8814AUTxPath::_RecoverStalledPipe(uint32 pipeIndex)
 void
 RTL8814AUTxPath::CancelAll()
 {
-	MutexLocker locker(fLock);
-
-	// Cancel all in-flight USB transfers on each bulk OUT pipe
+	// Cancel WITHOUT holding fLock. This used to take the lock first and
+	// deadlocked against itself, hanging `ifconfig <device> down` forever and
+	// leaving the interface unusable until the machine was rebooted.
+	//
+	// The reason is in the host controller: XHCI's CancelQueuedTransfers runs
+	// each cancelled transfer's callback **inline on the calling thread** --
+	//
+	//     endpointLocker.Unlock();
+	//     for (...) { if (!force) transfers[i]->Finished(B_CANCELED, 0); }
+	//
+	// -- and our _TxCallback takes fLock to clear the slot. Haiku's mutexes
+	// are not recursive, so the thread blocked waiting for a lock it already
+	// held. The close path logged "stopping RX receive loop" and stopped
+	// there, which is why the hang looked like a receive problem.
+	//
+	// _RecoverStalledPipe already dropped the lock before cancelling for this
+	// exact reason; this function was simply missed.
 	for (uint32 pipe = 0; pipe < kBulkOutEndpointCount; pipe++) {
 		if (fBulkOut[pipe] != 0)
 			fUSBModule->cancel_queued_transfers(fBulkOut[pipe]);
 	}
 
-	// Mark all transfer slots as free
+	// Then reclaim the slots. The callbacks above will have cleared most of
+	// them already; this covers any transfer whose callback did not run, which
+	// happens when a cancellation is forced.
+	MutexLocker locker(fLock);
 	for (uint32 i = 0; i < kTxTotalTransfers; i++)
 		fTransfers[i].inUse = false;
 }

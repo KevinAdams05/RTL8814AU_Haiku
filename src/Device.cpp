@@ -2479,16 +2479,24 @@ RTL8814AUDevice::Close(void* cookie)
 
 	dprintf(RTL8814AU_DRIVER_NAME ": device close\n");
 
+	// Logged step by step because this path hangs and there is no way to get
+	// a stack trace from it: `ifconfig <device> down` never returns, the
+	// process cannot be killed, and the interface is unusable until reboot.
+	// The last line printed says which call did not come back.
+
 	// Disconnect from any AP
 	if (device->fWiFiManager != NULL)
 		device->fWiFiManager->Disconnect();
+	dprintf(RTL8814AU_DRIVER_NAME ": close: disconnect done\n");
 
 	// Stop RX and TX data paths
 	if (device->fRxPath != NULL)
 		device->fRxPath->Stop();
+	dprintf(RTL8814AU_DRIVER_NAME ": close: RX stop done\n");
 
 	if (device->fTxPath != NULL)
 		device->fTxPath->CancelAll();
+	dprintf(RTL8814AU_DRIVER_NAME ": close: TX cancel done\n");
 
 	return B_OK;
 }

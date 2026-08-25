@@ -79,36 +79,47 @@ in about four minutes.
 
 ## Open work, highest value first
 
-### 1. `ifconfig down` hangs and wedges the interface
+### 1. After `ifconfig down` the interface cannot be brought back
 
-**Deterministic, reproducible, and user-visible** -- which makes it better
-value than anything else on this list, all of which is intermittent.
+**The hang is fixed.** `ifconfig <device> down` used to never return, leaving
+an unkillable process and an interface unusable until reboot. Cause: a
+self-deadlock in `TxPath::CancelAll()`, which cancelled the bulk OUT transfers
+**while holding `fLock`**. XHCI's `CancelQueuedTransfers` runs each cancelled
+transfer's callback *inline on the calling thread* --
+
+```c
+endpointLocker.Unlock();
+for (...) { if (!force) transfers[i]->Finished(B_CANCELED, 0); }
+```
+
+-- and `_TxCallback` takes `fLock` to release the slot. Haiku's mutexes are not
+recursive, so the thread waited for a lock it already held. Cancelling now
+happens outside the lock, which is taken afterwards only to reclaim the slots.
+`down` returns in under a second and the close path runs to completion.
+
+Worth noting `_RecoverStalledPipe` already dropped the lock before cancelling
+for exactly this reason. The same hazard in `CancelAll` was simply missed, so
+**check every `cancel_queued_transfers` call against the callback's locking** --
+those callbacks are not asynchronous.
+
+**What remains:** after a close the interface is gone from the network stack.
 
 ```
-ifconfig /dev/net/rtl8814au/0 down     <- never returns
+ifconfig <device> up     -> "Could not add interface: Name in use"
+ifconfig <device>        -> "Interface not found!"
+ifconfig <device> scan   -> fails
 ```
 
-The driver logs `device close` and `stopping RX receive loop`, the `ifconfig`
-process stays in the process list indefinitely, and afterwards the interface
-cannot be used: a subsequent `up` transmits nothing, and a fresh `scan` hangs
-too. Recovery needs a reboot.
+The device node still exists and the driver is healthy, but nothing re-registers
+the interface, so **re-joining still needs a reboot** and every test attempt
+still costs one. "Name in use" alongside "Interface not found" suggests the
+stack still holds a half-removed registration rather than the driver having
+failed -- worth checking whether `net_server` needs to be told, or whether the
+open/close path should not be deregistering at all.
 
-The user-facing consequence is worth stating plainly: **anyone who takes the
-interface down cannot bring it back without rebooting**, and anything that
-disconnects and reconnects hits this.
-
-It also explains a testing artefact recorded further down. Repeated joins
-within one boot "failed to associate", and the harness had to reboot between
-every attempt as a result. That was read as a quirk of re-joining while already
-associated; part of it is this bug.
-
-Found while looking for a way to avoid a reboot per test attempt -- there
-isn't one, and this is why.
-
-Where to start: `ETHER_INIT` is handled in `Device.cpp`, and the close path
-takes down the receive loop. The question is what it waits on that never
-completes -- the same shape as the two hangs already fixed in this driver, both
-of which were an unbounded wait on something the chip stopped answering.
+Until that is solved, the testing cost recorded in
+[testing-notes.md](testing-notes.md) stands: one reboot per attempt, and long
+reboot-heavy runs can manufacture the instability they are trying to measure.
 
 ### 2. Finish the bounded H2C write
 
