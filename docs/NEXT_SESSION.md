@@ -163,7 +163,56 @@ first transfer wedges, or after a pipe reset. `clear_feature(ENDPOINT_HALT)` on
 the control pipe is the cheap thing to try next, by analogy with the bulk
 pipes.
 
-#### Retry delay: added, and NOT yet exercised
+#### Settled: retrying a control write does not work, at any delay
+
+Two batches, 30 joins on 5 GHz: **27 ok, 3 failures.** The fault was heavily
+exercised the second time -- **12 control-write timeouts, 8 retries, 0
+successes.** With a 100 ms pause between attempts, and 0 of 2 without one.
+
+So the queue-ordering explanation is the right one after all: requests to a
+control endpoint complete in order, and one issued behind a transfer that is
+still stuck simply waits behind it. **No delay or attempt count fixes this**,
+and `kControlWriteAttempts` is now 1 -- retrying bought nothing while costing
+up to 1.2 s per failed command with a lock held that serialises every register
+access in the driver.
+
+The loop is left in the code rather than unpicked, because if a way is ever
+found to clear a stuck control endpoint then raising that constant is the
+entire change.
+
+Worth noting the timeout is usually survivable anyway: 12 timeouts produced
+only 5 failed setups, and 13 of 16 joins succeeded regardless.
+
+#### The dominant failure is now on-air, not in the driver
+
+The remaining failures are all one shape, and it is **not** the H2C bug --
+post-association setup succeeds in every case:
+
+```
+post-assoc setup: No error
+EAPOL M1 ... built M2 ... TX submit pipe=2 len=193 rate=0x04 ... TX done 193/193
+   (four times over)
+RX DEAUTH reason=15
+```
+
+The access point re-sends M1 four times, we answer each, and it accepts none.
+Compared against the boots that succeeded, the M2 submissions are **identical**
+-- same pipe, same queue, same 193 bytes, same rate 0x04 -- and two successful
+boots had a retransmission themselves, so retransmission alone is not fatal.
+
+That means M2 is built and submitted identically whether the join works or not,
+and **further driver-side inspection of the M2 path is unlikely to help.** The
+frame either is not reaching the access point or is not being accepted for a
+reason invisible from this side.
+
+**The next step is therefore an over-the-air capture during a failure**, not
+more code reading -- is M2 on the air at all, and does it look right? Note from
+[testing-notes.md](testing-notes.md) that air captures need the Edimax
+unplugged from the capturing laptop; a 4x4 radio inches from its antenna
+desensitises it enough to produce a capture full of corrupt frames with the
+station under test missing entirely.
+
+#### Retry delay: the reasoning that led there, now superseded
 
 Re-reading the run above changed the diagnosis. "A retry never succeeds" looked
 like proof that a stuck endpoint blocks everything queued behind it. But **3

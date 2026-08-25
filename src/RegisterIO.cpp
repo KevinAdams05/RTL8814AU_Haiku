@@ -40,15 +40,30 @@ static const uint8 kVendorRequestCode = 0x05;
 // during heavy traffic or immediately after resume from suspend.
 static const uint32 kMaxRetryCount = 3;
 
-// Attempts per bounded control write. The Realtek reference allows ten; three
-// is used here because each attempt can cost the full deadline and this lock
-// serialises all register access, so ten would mean holding it for seconds.
-static const uint32 kControlWriteAttempts = 3;
+// Attempts per bounded control write.
+//
+// One, on measured evidence, despite the Realtek reference allowing ten.
+// Retrying was tried twice and does not work on this chip: immediately after
+// the timeout it succeeded 0 times out of 2, and with a 100 ms pause in
+// between it succeeded **0 times out of 8** across 12 timeouts. Requests to a
+// control endpoint complete in order, so one issued behind a transfer that is
+// still stuck simply queues behind it, and no delay or attempt count changes
+// that.
+//
+// Retrying therefore bought nothing and cost up to 1.2 seconds per failed
+// command while holding a lock that serialises every register access in the
+// driver. Failing immediately is strictly better. The loop is left in place
+// rather than unpicked, because the moment someone finds a way to clear a
+// stuck control endpoint -- which Haiku currently offers no means of doing --
+// raising this constant is the whole change.
+//
+// A timeout is usually survivable in any case: 12 of them produced only 5
+// failed post-association setups, and 13 of 16 joins succeeded regardless.
+static const uint32 kControlWriteAttempts = 1;
 
-// Pause between attempts at a bounded control write. Retrying the instant a
-// transfer times out was measured to succeed zero times out of two; the device
-// needs a moment before it answers again. Three attempts at half a second each
-// plus two of these is still comfortably inside the association timeout.
+// Pause between attempts at a bounded control write. Kept only because the
+// retry loop is kept; see kControlWriteAttempts for why there is now just one
+// attempt and this is therefore unused in practice.
 static const bigtime_t kControlRetryDelay = 100000;	// 100 ms
 
 
