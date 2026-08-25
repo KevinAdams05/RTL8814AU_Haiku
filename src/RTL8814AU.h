@@ -846,6 +846,23 @@ static const uint16 kRegAmpduMaxLength		= 0x0458;
 // Do not confuse this with 0x4FC, which the vendor also documents as
 // "EN_HWSEQ".  That one is beacon-specific and is written only for the 8822B
 // and 8822C; it has nothing to do with per-frame sequencing on this chip.
+// TX packet-buffer page accounting, one register per queue: high queue, low
+// queue, normal queue, extra queue, public pool. Each holds two counts -- the
+// reference driver's "is the transmit buffer empty" test compares bits [3:2] of
+// the low half against bits [3:2] of the high half and calls them unequal when
+// pages are still held.
+//
+// Read per join as a diagnostic. The failure being chased is a latch: after
+// about fifteen joins the data queue stops transmitting entirely while the
+// management queue keeps working, which is what running out of pages on one
+// queue would look like -- the USB write still completes, because that only
+// reaches the chip's FIFO.
+static const uint16 kRegFifoPageInfo1		= 0x0230;	// high queue
+static const uint16 kRegFifoPageInfo2		= 0x0234;	// low queue
+static const uint16 kRegFifoPageInfo3		= 0x0238;	// normal queue
+static const uint16 kRegFifoPageInfo4		= 0x023C;	// extra queue
+static const uint16 kRegFifoPageInfo5		= 0x0240;	// public pool
+
 static const uint16 kRegHwSeqCtrl			= 0x0423;
 static const uint8 kHwSeqCtrlAllQueues		= 0xFF;
 

@@ -650,7 +650,58 @@ Two other structural candidates, unmeasured:
    the device-wide `fLock`, which transmit also takes. Contention on one mutex
    across the whole driver is plausible at these rates.
 
-### 7. The data-queue stall -- open, but never reproduced under measurement
+### 7. The reason-15 burst on the ASUS -- reproducible at last, cause unknown
+
+**This is the top open defect and it is now reproducible.** On the ASUS
+USB-AC68, joins fail in **bursts of consecutive attempts** that recover on
+their own: 15 in a row in one 30-attempt run, 4 in a row in the next
+20-attempt run. Roughly 19 failures in 50 attempts on that adapter, against
+1 in 60 on the Edimax the same day.
+
+Every failure has an identical signature: `assoc=1 M2=4 ok=0 reason=15`. The
+air capture says exactly what happens:
+
+- The station transmits **two frames and no more** -- authentication and the
+  association request, both fine, both acknowledged.
+- The access point sends **M1 four times** (replay counters 1, 2, 3, 4).
+- **No M2 ever reaches the air**, though the driver logs "built M2 (121
+  bytes)" and "M2 handed to the chip" four times, and the M1-retransmission
+  handling is correct each time ("keeping the existing SNonce and PTK").
+- The access point gives up: deauthenticate, reason 15.
+
+So the management queue transmits and the data queue does not, for the
+duration of the burst. This is the fault previously filed as "an intermittent
+stall of the data queue" and as "an H2C control transfer that never
+completes"; neither description was ever confirmed, and the air capture
+supersedes both.
+
+**Do not read the earlier run as a permanent latch.** The first ASUS run
+failed from attempt 16 to attempt 30 and looked like a latch that never
+cleared, but that is only where the run ended -- the next run recovered after
+four failures. It is a burst, not a threshold.
+
+**Hypothesis tested and dead: TX packet-buffer page exhaustion.** It fitted
+well -- a queue out of pages would accept the USB write and never transmit,
+and the management queue has its own pages. `_DoJoin()` now logs all five
+`FIFOPAGE_INFO` registers per join, and across 20 joins spanning a failure
+burst there is exactly **one distinct reading**: every queue at its configured
+count, `hi/lo/nml/ext = 0x20/0x20` and `pub = 0x776/0x776`. The pages are never
+short. The diagnostic is kept because it is cheap and it closes the question.
+
+**The next diagnostic, and why it has not been run yet.** The per-pipe submit
+and completion traces are capped at 8 per pipe per boot, so by the time a burst
+starts they are silent -- which is exactly why "the chip accepted the write" has
+never been verified for a *failing* M2. Lift that cap, or add a trace tied to
+EAPOL transmits specifically, and the question becomes answerable: is the M2
+submitted to the chip at all, and does its USB transfer complete? Those three
+outcomes point at three different bugs.
+
+**Also unresolved: whether this is the adapter or the conditions.** The ASUS
+runs were later in the day than the Edimax runs, so time-varying interference
+is not excluded. Alternating adapters, or re-running the Edimax now, would
+separate them -- and needs a hardware swap.
+
+### 7b. The old data-queue stall entry
 
 **This is the one open failure, and it is the most important thing in this
 document.** After a successful association the best-effort data queue

@@ -3633,6 +3633,36 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 		(void)fRegisterIO->Write8(kRegHwSeqCtrl, kHwSeqCtrlAllQueues);
 	}
 
+	// Diagnostic: TX packet-buffer pages, per queue, once per join.
+	//
+	// Chasing a latch. After roughly fifteen joins the data queue stops
+	// transmitting altogether -- captured over the air, the station sends its
+	// authentication and association request and then not one data frame,
+	// while the access point resends M1 four times and gives up. The
+	// management queue is unaffected. Running out of pages on one queue would
+	// look exactly like that, because the USB write only has to reach the
+	// chip's FIFO to report success.
+	//
+	// Each register carries the configured count in its high half and what is
+	// available in its low half, so a drift between the two halves that grows
+	// with every join is the thing to look for.
+	if (fRegisterIO != NULL) {
+		static uint32 sJoinCount = 0;
+		uint32 high = fRegisterIO->Read32(kRegFifoPageInfo1);
+		uint32 low = fRegisterIO->Read32(kRegFifoPageInfo2);
+		uint32 normal = fRegisterIO->Read32(kRegFifoPageInfo3);
+		uint32 extra = fRegisterIO->Read32(kRegFifoPageInfo4);
+		uint32 pub = fRegisterIO->Read32(kRegFifoPageInfo5);
+		dprintf(RTL8814AU_DRIVER_NAME ": TXPAGES join=%" B_PRIu32
+			" hi=%04x/%04x lo=%04x/%04x nml=%04x/%04x ext=%04x/%04x "
+			"pub=%04x/%04x\n", ++sJoinCount,
+			(unsigned)(high & 0xFFFF), (unsigned)(high >> 16),
+			(unsigned)(low & 0xFFFF), (unsigned)(low >> 16),
+			(unsigned)(normal & 0xFFFF), (unsigned)(normal >> 16),
+			(unsigned)(extra & 0xFFFF), (unsigned)(extra >> 16),
+			(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16));
+	}
+
 	// If we got stuck mid-handshake from a prior attempt that the AP
 	// ignored, allow a fresh start — we have no auth-timeout timer yet.
 	if (fJoinState == kJoinAuthenticating
