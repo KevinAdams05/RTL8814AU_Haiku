@@ -23,6 +23,9 @@ Measured over the air, same access point, one join each:
 | before | 510 | 12 | 498 | 42.5 |
 | after | 8 | 8 | 0 | 1.0 |
 
+Join failures over the same access point fell from 6 in 30 to **1 in 60**
+(Fisher exact p = 0.005, two independent 30-attempt runs).
+
 
 **Every frame this driver sent went out with sequence number 0.** Measured over
 the air: 369 consecutive frames from this adapter, all numbered 0, while a

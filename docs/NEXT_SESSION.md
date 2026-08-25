@@ -20,7 +20,7 @@ solid under sustained load: 100 MB transferred with a matching checksum,
 | `ifconfig down` wakes readers parked in `Read()` instead of leaving them blocked | `down` returned in 0 s instead of never; no more unkillable process |
 | `Open()` restarts the receive path that `Close()` stopped | a reopened interface received nothing at all, so scans listed no networks |
 | Frames carry real sequence numbers (`HWSEQ_EN` + `REG_HWSEQ_CTRL`) | every frame had gone out as sequence 0, breaking duplicate detection |
-| The MAC response-timing registers are written at last | frames were transmitted **42 times each**; now 1.0. Join failures 20% -> 3% |
+| The MAC response-timing registers are written at last | frames were transmitted **42 times each**; now 1.0. Join failures 20% -> 1.7%, p = 0.005 |
 
 Those last two together **removed the reboot from the test loop**: joins can
 now be repeated back to back, and the first five-attempt run reproduced a
@@ -51,11 +51,12 @@ point:
 |---|---|---|
 | baseline | 6 / 30 (20%) | 42.5 |
 | sequence numbers fixed | 6 / 21 (29%) | 42.5 |
-| response timing fixed too | 1 / 30 (3%) | **1.0** |
+| response timing fixed too | **1 / 60 (1.7%)** | **1.0** |
 
-The transmissions-per-frame collapse is unambiguous. The failure-rate
-improvement is consistent but not yet significant on its own (Fisher exact
-p = 0.10), so treat 3% as provisional until a second run is in.
+Both results hold up. The transmissions-per-frame collapse is unambiguous, and
+the failure-rate improvement is significant over two independent 30-attempt
+runs (30 with one failure, then 30 with none; Fisher exact p = 0.005 against
+the baseline).
 
 **The sequence-number fix alone changed nothing measurable**, which is worth
 recording: it is a genuine bug, verified fixed on the air, and it was not what
