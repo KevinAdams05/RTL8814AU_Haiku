@@ -265,3 +265,30 @@ addressed to it, which is exactly what you want for diagnosis and exactly what
 will mislead an automated verdict. Anything the harness treats as evidence of
 *our* behaviour has to be filtered to frames addressed to us -- and the same
 caution applies to the beacon, probe and auth counters.
+
+
+## The air-capture tooling needed three corrections before it could be trusted
+
+Every one of these would have produced a confident, wrong answer.
+
+- **A silently empty filter looks like "the frame was never sent".**
+  `air-analyse.py` parses radiotap and 802.11 itself rather than relying on
+  tcpdump's 802.11 primitives, which are not always compiled in. It was then
+  validated by pointing it at a station known to be present -- the access
+  point -- rather than by trusting a zero.
+- **Short control frames have no Address 2.** An ACK is frame control,
+  duration, Address 1 and FCS, so reading bytes 10..16 attributes checksum
+  bytes to whichever station they resemble. That inflated one validation from
+  5 real frames to 19 and would have reported "our station transmitted" when
+  it had transmitted nothing. Control frames are now excluded from address
+  attribution.
+- **"No EAPOL from us" is only suspicious if the driver tried to send one.**
+  The first verdict logic announced the RTS-bug signature for an attempt that
+  failed during authentication and never built an M2 -- there was nothing to
+  transmit, so the absence proved nothing. The verdict now says so and points
+  at the driver log.
+
+And one in the capture harness itself: it saved only EAPOL and pipe-2 lines
+from the driver log, which left a failure showing thirteen authentication
+frames on the air with no driver-side record of sending any of them. Keep
+enough of the log to interpret the capture.

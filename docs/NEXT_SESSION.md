@@ -212,7 +212,44 @@ and **further driver-side inspection of the M2 path is unlikely to help.** The
 frame either is not reaching the access point or is not being accepted for a
 reason invisible from this side.
 
-**The next step is therefore an over-the-air capture during a failure**, not
+#### Air capture, 28 attempts: the reason-15 mode did not recur
+
+Two runs of monitor-mode capture on channel 149, keeping the capture for any
+attempt that was not a clean success. **28 attempts, 25 clean.** The
+`M2built=4` reason-15 failure this was built to explain **did not happen once**,
+so the question it was meant to answer is still open.
+
+What the captures did settle is a *different* failure, and settle it properly:
+
+```
+frames transmitted by our station: 13   -- all mgmt/auth
+frames from the AP addressed to us: 5
+EAPOL from our station: 0
+driver: RX DEAUTH toUs=1 reason=2
+```
+
+**Thirteen authentication frames and not one association request.** The
+exchange stops at the auth-to-assoc transition, nowhere near the handshake, and
+the access point eventually gives up with reason 2. That is a distinct mode
+from the reason-15 one and worth chasing on its own -- the driver has clearly
+decided to keep re-authenticating rather than proceeding.
+
+Note the driver's own log showed only the deauth for that attempt. **The air
+capture is what revealed thirteen transmissions**, which is the case for having
+done this at all.
+
+Tooling now in `scratchpad/`: `air-capture.sh` (reboot, capture, join, keep
+non-clean attempts) and `air-analyse.py` (parses radiotap and 802.11 directly
+and says whether our frames reached the air). Both had to be corrected before
+they could be trusted -- see [testing-notes.md](testing-notes.md).
+
+**The reason-15 mode remains the open question**, and catching it needs a longer
+unattended loop rather than supervised batches: at roughly 1 in 8 the chance of
+missing it across 28 attempts was about 2%, so either it is rarer than measured
+-- plausible, since the deauth misfilter inflated earlier rates -- or
+conditions have shifted.
+
+**When it is caught, the capture answers it in one line**, not
 more code reading -- is M2 on the air at all, and does it look right? Note from
 [testing-notes.md](testing-notes.md) that air captures need the Edimax
 unplugged from the capturing laptop; a 4x4 radio inches from its antenna
