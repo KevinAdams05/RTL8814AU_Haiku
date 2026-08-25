@@ -827,17 +827,21 @@ static const uint16 kRegAmpduMaxLength		= 0x0458;
 // discarded, so a short lifetime looks exactly like "the chip accepted the
 // frame and never transmitted it".  The vendor driver disables expiry
 // outright; ours was left at the chip default of 0x10001000.
-// Hardware sequence-number control, one enable bit per queue.  Every non-QoS
-// descriptor this driver builds sets HWSEQ_EN, which asks the MAC to fill in
-// the frame's sequence number -- and that only works if the feature is
-// enabled here.  We never write it and it reads 0x00, so every frame requests
-// a service that is switched off; the vendor driver writes 0xFF.
+// Hardware sequence-number control, one enable bit per queue.  Non-QoS
+// descriptors set HWSEQ_EN to ask the MAC to fill in the frame's sequence
+// number, and that only works if the feature is enabled here.  The vendor
+// driver writes 0xFF for this chip during hardware init.
 //
-// NOT currently written, because both placements tried so far hang the driver:
-// during hardware init the M2 transmit never returns, and inside the
-// post-association sequence the worker dies before it. The vendor writes it
-// late in the association phase. See docs/NEXT_SESSION.md -- this is the top
-// open lead, not a dead one.
+// Written from _DoJoin() rather than from hardware init.  The vendor's
+// position is late in init, just after invalidating the security CAM, but
+// writes in that part of our init sequence have wedged the MAC scheduler
+// before -- which is why the CAM clear itself lives in _DoJoin.  _DoJoin runs
+// before the first authentication frame, so every frame that matters is
+// covered.
+//
+// Do not confuse this with 0x4FC, which the vendor also documents as
+// "EN_HWSEQ".  That one is beacon-specific and is written only for the 8822B
+// and 8822C; it has nothing to do with per-frame sequencing on this chip.
 static const uint16 kRegHwSeqCtrl			= 0x0423;
 static const uint8 kHwSeqCtrlAllQueues		= 0xFF;
 
@@ -1123,9 +1127,14 @@ static const uint32 kTxDescPktOffset_Mask	= 0x1F000000;
 static const uint32 kTxDescAGGEn			= (1 << 12);
 static const uint32 kTxDescBKRdy			= (1 << 13);
 
-// TX descriptor DWORD 3 (offset 0x0C)
-static const uint32 kTxDescSeq_Shift		= 16;
-static const uint32 kTxDescSeq_Mask			= 0x0FFF0000;
+// TX descriptor DWORD 3 (offset 0x0C).
+//
+// There is deliberately no sequence-number field here.  A 12-bit sequence
+// used to be written at bits 16-27 of this dword, which is USE_MAX_LEN,
+// MAX_AGG_NUM, NDPA and AMPDU_MAX_TIME -- not sequencing.  The real SEQ field
+// is in dword 9; see kTxDescSeqNum_Shift.
+static const uint32 kTxDescHwSsnSel_Shift	= 6;	// bits 6-7, left at 0
+static const uint32 kTxDescHwSsnSel_Mask	= 0x000000C0;
 
 // TX descriptor DWORD 4 (offset 0x10) — rate and bandwidth
 static const uint32 kTxDescDataRate_Shift	= 0;
@@ -1151,9 +1160,20 @@ static const uint32 kTxDescRtsRate_Shift	= 24;			// dword 4
 static const uint32 kTxDescRtsRate_Mask		= 0x1F000000;
 static const uint32 kTxDescRtsShort			= (1u << 12);	// dword 5
 
-// Sequence number, dword 9.  Only written for QoS frames; non-QoS frames set
-// HWSEQ_EN instead and let the hardware assign one.
-static const uint32 kTxDescSeqNum_Shift		= 12;
+// Sequencing, dwords 8 and 9.
+//
+// HWSEQ_EN (dword 8 bit 15) asks the MAC to number the frame itself, which is
+// what the vendor driver does for every non-QoS frame; EN_HWEXSEQ beside it
+// stays clear.  QoS frames instead carry an explicit number in the SEQ field
+// of dword 9.
+//
+// Note that neither path involves the frame header.  Writing Sequence Control
+// in the header does not work on this chip: the MAC overwrites those two bytes
+// on transmit.  Measured -- a frame submitted with sequence 3 in its header
+// reached the air as sequence 0, as did every other frame the driver sent.
+static const uint32 kTxDescHwSeqEn			= (1u << 15);	// dword 8
+static const uint32 kTxDescEnHwExSeq		= (1u << 14);	// dword 8
+static const uint32 kTxDescSeqNum_Shift		= 12;			// dword 9
 static const uint32 kTxDescSeqNum_Mask		= 0x00FFF000;
 
 // Descriptor offset 24 (dword 6).  Bit 0 of SW_DEFINE tells the firmware the

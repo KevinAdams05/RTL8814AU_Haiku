@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+**Every frame this driver sent went out with sequence number 0.** Measured over
+the air: 369 consecutive frames from this adapter, all numbered 0, while a
+vendor-driven adapter on the same access point numbered its frames 1, 2, 3.
+
+802.11 duplicate detection keys on (transmitter, sequence, fragment), so a
+receiver is entitled to treat every frame after the first as a retransmission
+of it. The visible symptoms were authentication being ignored outright -- 13
+transmissions, no reply from the access point -- and a retransmitted M2 being
+discarded once the first M2 had been seen.
+
+The sequence number cannot be written into the frame header on this chip: the
+MAC overwrites those two bytes on transmit. A frame submitted with sequence 3
+in its header reached the air as sequence 0. Sequencing has to be asked for
+through the descriptor, the way the reference driver does it -- `HWSEQ_EN` for
+non-QoS frames, the descriptor's own `SEQ` field for QoS frames -- and the MAC
+only honours `HWSEQ_EN` if `REG_HWSEQ_CTRL` enables the queue, which this
+driver never wrote.
+
+Verified over the air after the fix: sequence numbers increment (2636, 2637,
+...) and retransmissions correctly reuse their original's number.
+
+
 **`ifconfig <device> down` no longer hangs, and the interface comes back.**
 Previously `down` never returned, left an unkillable process behind, and the
 interface stayed unusable until a reboot.

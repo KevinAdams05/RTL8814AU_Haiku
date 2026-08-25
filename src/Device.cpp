@@ -3595,6 +3595,23 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 	}
 	fCcmpEnabled = false;
 
+	// Enable hardware sequence numbering for every queue.
+	//
+	// Non-QoS descriptors set HWSEQ_EN to have the MAC number the frame, and
+	// the MAC only honours that if this register enables the queue. Without it
+	// every frame went out as sequence 0 -- measured over the air, all 369 of
+	// them -- so the access point was entitled to treat each one as a
+	// retransmission of the last and drop it. That is what an ignored
+	// authentication and a discarded second M2 look like.
+	//
+	// Written here rather than in _InitHardware() for the same reason the CAM
+	// clear above is: register writes in that part of the init sequence have
+	// wedged the MAC scheduler. This runs before the first authentication
+	// frame, so it covers everything that matters.
+	if (fRegisterIO != NULL) {
+		(void)fRegisterIO->Write8(kRegHwSeqCtrl, kHwSeqCtrlAllQueues);
+	}
+
 	// If we got stuck mid-handshake from a prior attempt that the AP
 	// ignored, allow a fresh start — we have no auth-timeout timer yet.
 	if (fJoinState == kJoinAuthenticating

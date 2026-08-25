@@ -243,39 +243,25 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 	memcpy(transfer->buffer + kTxDescSize + packetOffset * 8, frameData,
 		frameLength);
 
-	// Assign the 802.11 sequence number in software.
+	// The 802.11 sequence number is NOT written here.
 	//
-	// The frame builders leave Sequence Control zero and the descriptor used
-	// to set HWSEQ_EN, asking the MAC to fill it in.  That only works if
-	// REG_HWSEQ_CTRL enables the feature, and it reads 0x00 -- so every frame
-	// this driver sent went out as **sequence 0**.  Auth and assoc survive
-	// that, being few and far apart, but an access point's duplicate
-	// detection keys on (transmitter, sequence, fragment), so a stream of
-	// identically-numbered data frames looks like one frame retransmitted
-	// forever.  That is the shape of a link that works and yet manages only
-	// about 2 Mbit/s of TCP on a 24 Mbps fixed rate.
+	// It used to be, straight into Sequence Control in the frame header, on the
+	// reasoning that the descriptor's HWSEQ_EN asked for a service
+	// REG_HWSEQ_CTRL never enabled. The header write does not work: this chip's
+	// MAC overwrites those two bytes on transmit. Measured over the air -- a
+	// frame submitted with sequence 3 in its header arrived as sequence 0, and
+	// so did all 369 frames captured from this station, while a vendor-driven
+	// adapter on the same access point numbered its frames 1, 2, 3.
 	//
-	// Doing it here rather than in the builders puts it in one place, on the
-	// copy the chip will actually read, and covers every frame.  It also
-	// avoids REG_HWSEQ_CTRL entirely, which matters: both placements tried
-	// for that register hung the transmit path.
+	// That is not a cosmetic fault. Duplicate detection keys on (transmitter,
+	// sequence, fragment), so every frame this driver sent looked to the access
+	// point like a retransmission of the previous one, and was entitled to be
+	// dropped. It shows up as authentication being ignored outright, and as a
+	// retransmitted M2 being discarded when the first M2 has already been seen.
 	//
-	// Sequence Control is little-endian with the fragment number in the low
-	// four bits: byte 22 holds frag plus the low nibble of the sequence,
-	// byte 23 the remaining eight bits.  Safe to write after software CCMP
-	// has run, because CCMP's additional authenticated data masks the
-	// Sequence Control field out.
-	if (frameLength >= 24) {
-		uint8* wireFrame = transfer->buffer + kTxDescSize + packetOffset * 8;
-		const uint8 frameType = (wireFrame[0] >> 2) & 0x03;
-		if (frameType == 0 || frameType == 2) {	// management or data
-			uint16 sequence = fSequenceNumber++;
-			if (fSequenceNumber > 0x0FFF)
-				fSequenceNumber = 0;
-			wireFrame[22] = (uint8)((sequence & 0x0F) << 4);
-			wireFrame[23] = (uint8)((sequence >> 4) & 0xFF);
-		}
-	}
+	// Sequencing is now the descriptor's business, as it is in the vendor
+	// driver: HWSEQ_EN for non-QoS frames, the SEQ field for QoS frames. See
+	// _BuildDescriptor().
 
 	// Record what we are about to submit, so the completion callback can
 	// tell a short transfer from a complete one.  Only the firmware-download
@@ -826,15 +812,30 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 	// rate" flag and pairs with USE_RATE, which we always set.
 	uint32 dword6 = kTxDescSwDefineFixedRate;
 
-	// DWORDs 8 and 9: sequencing.  Both are left zero.
+	// DWORDs 8 and 9: sequencing, split the way the reference driver splits it.
 	//
-	// HWSEQ_EN used to be set here for every non-QoS frame, asking the MAC to
-	// supply the sequence number -- a service REG_HWSEQ_CTRL never enabled,
-	// so the number stayed at whatever the header carried, which was zero.
-	// Transmit() now writes a real sequence into the frame header instead,
-	// which needs neither this bit nor that register.
+	// A non-QoS frame gets HWSEQ_EN and lets the MAC number it. A QoS frame
+	// carries an explicit number in the SEQ field of dword 9. EN_HWEXSEQ stays
+	// clear in both cases, and HW_SSN_SEL in dword 3 stays 0, selecting the
+	// first hardware sequence counter.
+	//
+	// Neither path touches the frame header, because on this chip the MAC
+	// overwrites Sequence Control on transmit -- see Transmit().
+	//
+	// HWSEQ_EN is a request the MAC only honours if REG_HWSEQ_CTRL enables the
+	// queue, so _DoJoin() writes that register before authenticating.
 	uint32 dword8 = 0;
 	uint32 dword9 = 0;
+	if (!isQosData) {
+		dword8 |= kTxDescHwSeqEn;
+		dword8 &= ~kTxDescEnHwExSeq;
+	} else {
+		uint16 sequence = fSequenceNumber++;
+		if (fSequenceNumber > 0x0FFF)
+			fSequenceNumber = 0;
+		dword9 |= ((uint32)sequence << kTxDescSeqNum_Shift)
+			& kTxDescSeqNum_Mask;
+	}
 
 	// Write the dwords (DWORD 7 reserved for descriptor checksum,
 	// computed below over the first 32 bytes).
