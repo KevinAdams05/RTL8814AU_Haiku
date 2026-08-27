@@ -73,6 +73,15 @@ public:
 	ChannelBand					CurrentBand() const
 									{ return fCurrentBand; }
 
+	// The channel the RF chain is actually on, read from RF register 0x18 of
+	// path A rather than from fCurrentChannel.
+	//
+	// The cached value says where the driver believes it put the chip, which
+	// is the thing in question when a frame is submitted successfully and
+	// never appears on the air. Expect roughly 0x53195 on channel 149 and
+	// 0x13124 on channel 36; the upper digits are all zero across 2.4 GHz.
+	uint32						ReadRfChannelRegister(uint32 path);
+
 private:
 	// Initialization sub-steps
 	status_t					_InitBBRegisters();

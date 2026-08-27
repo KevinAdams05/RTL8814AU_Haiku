@@ -1019,6 +1019,20 @@ RTL8814AUPhyConfig::_WriteRF(uint32 path, uint8 rfRegister, uint32 value)
 }
 
 
+/*! The channel the RF chain is actually on, from RF register 0x18.
+
+    Distinct from CurrentChannel(), which reports where the driver believes it
+    put the chip. When a frame is submitted successfully, completes on the USB
+    bus and still never reaches the air, "are we even on the right channel"
+    stops being a silly question.
+*/
+uint32
+RTL8814AUPhyConfig::ReadRfChannelRegister(uint32 path)
+{
+	return _ReadRF(path, kRfRegChannelStandalone);
+}
+
+
 /*! Read an RF register on a specific path via indirect access.
 
     \param path        RF path index (0=A, 1=B, 2=C, 3=D)

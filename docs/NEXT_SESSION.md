@@ -102,6 +102,13 @@ Joins on 5 GHz, measured the same way on the same access point on 2026-08-25:
 | Edimax AC1750 | **1 / 60** | across two independent 30-attempt runs |
 | ASUS USB-AC68 | **~19 / 50** | in bursts of consecutive failures (item 1) |
 
+**The ASUS rate is not stable, so do not compare builds across time.** The same
+build measured 4/20 one afternoon and 12/30 that evening, and 12/18 partway
+through a single run. Any build comparison has to interleave the builds within
+one session, in blocks, or it will attribute a drifting baseline to whichever
+build happened to run when conditions were worse. Three builds are already
+prepared for that comparison -- see step 0.
+
 The chip-level fixes are confirmed on *both* -- the ASUS shows 16 distinct
 sequence numbers for 16 frames and 1.1 transmissions per frame against 42.5
 before -- so those are not in question. What is in question is why the ASUS
@@ -218,7 +225,66 @@ the first thing to try.
 If all three builds show bursts, the bug predates today, and the old 81% figure
 was harness artefact.
 
-**Step 1. Make the failing M2 observable.** This is needed whichever way step 0
+### What the instrumentation settled on 2026-08-26
+
+**Nothing the driver can observe distinguishes a failing M2 from one that
+works.** Measured at the moment of a failing M2, across three failing joins
+against fifteen successful ones, then confirmed on a further run:
+
+| checked | failing value | verdict |
+|---|---|---|
+| `TXPAUSE` | 0x00 | nothing paused — the leading suspect, dead |
+| `SECCFG` | 0x00 | chip is not encrypting; stale-key theory does not apply |
+| pages, at the failing M2 | `nml 0020/0020`, `pub 0776/0776` | never short, now sampled at the right moment |
+| USB completion | `status=No error actual=193/193` | the transfer completes in full |
+| descriptor dwords | `84280099 000c0000 00010000 00000100 00000004 … 00008000` | **byte-identical** to a working join |
+| frame header | `08 01 00 00 <bssid> <us> <ap> 00 00` | identical |
+| RF channel, from RF 0x18 | `0x53195`, ch 149 | correct, and the cached value agrees |
+
+So the chip accepts a well-formed 193-byte frame on the right channel, reports
+success, and never transmits it.
+
+**A persuasive hypothesis died here, recorded so it is not re-run.** In the
+first two samples the failure correlated with H2C `MEDIA_STATUS_RPT`
+*succeeding*, and success with it timing out -- which would have echoed the
+earlier finding that removing the power-mode H2C fixed 5 GHz. Across all 18
+joins it does not hold: that H2C succeeded in 17 of them, 14 of which joined
+fine.
+
+**So the critical path is now step 3, not step 1.** Every driver-side avenue is
+exhausted, which makes "is the frame actually absent from the air?" the
+question that decides where this goes next:
+
+- **If the frame is genuinely not transmitted**, the remaining lead is the
+  chip's own TX report -- `REG_TX_RPT_CTRL` (0x04EC), bits 1 and 5, which the
+  vendor toggles to enable per-MACID transmit reporting. That arrives as a C2H
+  message, so it needs C2H handling this driver does not have yet. It is the
+  only way found so far to ask the chip "did you put it on the air" without a
+  monitor.
+- **If the frame is on the air and the access point is rejecting it**, the
+  investigation moves to frame content -- the MIC, the SNonce, and especially
+  the replay counter. In the one captured failure the access point's four M1s
+  carried replay counters 1, 2, 3 and 4; if our M2 answers a later M1 while
+  echoing the first counter, an access point is entitled to discard it. That is
+  a much more tractable problem than a silent chip.
+
+Those two branches share almost no work, which is why confirming the air
+observation comes first.
+
+**Blocked on one root command.** Monitor mode on the capture host does not
+survive a reboot of that machine, and `ip link set mon0 up` needs privileges
+`iw` and `tcpdump` have but `ip` does not:
+
+```sh
+sudo ip link set mon0 up && sudo iw dev mon0 set channel 149
+```
+
+`iw phy phy0 interface add mon0 type monitor` already works unprivileged, so
+mon0 usually exists but is down. Until then `MON=none` counts outcomes without
+capturing.
+
+**Step 1. Make the failing M2 observable.** *(done -- see above; kept for the
+reasoning)* This is needed whichever way step 0
 goes. The per-pipe submit and completion traces cap at 8 per pipe per boot, so
 they are silent by the time a burst starts -- which is exactly why "the chip
 accepted the write" has never been checked for a *failing* M2. Reset those

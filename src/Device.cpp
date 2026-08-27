@@ -4425,11 +4425,26 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			uint32 controlReg = fRegisterIO->Read32(kRegCR);
 			uint32 normal = fRegisterIO->Read32(kRegFifoPageInfo3);
 			uint32 pub = fRegisterIO->Read32(kRegFifoPageInfo5);
+			// Also the channel the RF chain is really on, read from RF
+			// register 0x18 rather than from the driver's cached value.
+			// Everything else about a failing M2 is identical to one that
+			// works, so "the chip is transmitting somewhere nobody is
+			// listening" is now a serious possibility -- and a previous
+			// channel hypothesis in this driver was built on a readback that
+			// only fired on a band change, which is why this reads the
+			// register every time.
+			uint32 rfChannel = 0;
+			if (fPhyConfig != NULL)
+				rfChannel = fPhyConfig->ReadRfChannelRegister(0);
 			dprintf(RTL8814AU_DRIVER_NAME ": M2CHIP txpause=0x%02x "
-				"seccfg=0x%02x cr=0x%08x nml=%04x/%04x pub=%04x/%04x\n",
+				"seccfg=0x%02x cr=0x%08x nml=%04x/%04x pub=%04x/%04x "
+				"rf0x18=0x%05x ch=%u\n",
 				txPause, secCfg, (unsigned)controlReg,
 				(unsigned)(normal & 0xFFFF), (unsigned)(normal >> 16),
-				(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16));
+				(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16),
+				(unsigned)rfChannel,
+				fPhyConfig != NULL
+					? (unsigned)fPhyConfig->CurrentChannel() : 0u);
 		}
 		return;
 	}

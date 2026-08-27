@@ -306,6 +306,26 @@ frames on the air with no driver-side record of sending any of them. Keep
 enough of the log to interpret the capture.
 
 
+## Two logging traps that hid evidence in plain sight
+
+**A capped trace is silent exactly when you need it.** The per-pipe transmit
+traces allowed 8 lines per pipe per boot. The firmware download spends that
+allowance in the first seconds, so every join afterwards logged nothing, and
+"no submit line for this pipe" read as "nothing was submitted" when it meant
+"we stopped looking". `TxPath::ResetTraces()` now restarts them at each
+association. Worth noting what saved this from being worse: the *completion*
+trace always logs a failed or short completion regardless of the cap, so the
+absence of `SHORT/FAILED` was real evidence even while the cap was hiding the
+successful completions.
+
+**`grep -a rtl8814au /var/log/syslog` drops multi-line output.** A `dprintf`
+with embedded newlines gets the driver-name prefix on its *first* line only, so
+filtering by the driver name silently discards every continuation line. The
+transmit descriptor dump is three lines: the header line survived the grep and
+the two `dw 0=... dw 5=...` lines did not, which made the descriptor look
+undumped for an entire session. Use `grep -a -A2` around the anchor line, or
+grep for the payload rather than the prefix.
+
 ## The air is the only place some faults are visible
 
 Two hardware faults survived months of reading our own source, comparing USB
