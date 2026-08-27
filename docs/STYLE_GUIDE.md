@@ -117,11 +117,20 @@ You may read Realtek's vendor trees (`morrownr/8814au`, `ulli-kroll/rtl8814au`,
 Windows driver in order to understand register semantics, power-on ordering,
 the IDDMA firmware-load procedure, and descriptor layouts.
 
-You may **not** copy code from them. The Linux trees are GPL; this driver is
-MIT (§16), and one copied function would force a relicense of the whole
-package. FreeBSD's `rtwn` is BSD-licensed and could in principle be ported, but
-we have not done so and mixing licenses in one file is not worth the audit
-burden — keep writing original Haiku-style code.
+You still may **not** copy code from them, and that rule has not changed just
+because this driver is now GPL v2 (§16). Keep writing original Haiku-style
+code: a driver that reads like its donor is harder to review, harder to fix,
+and harder to defend as our own work, whatever the licence says.
+
+What the licence change does buy is that the question "was that consulted too
+closely?" no longer has consequences. It was always the wrong question to have
+hanging over a driver whose hardest facts — register values, init ordering,
+descriptor bits — can only come from the vendor's tree or a datasheet nobody
+has.
+
+FreeBSD's `rtwn` is BSD-licensed and could in principle be ported, but we have
+not done so, and mixing licences in one file is still not worth the audit
+burden.
 
 When a register sequence was derived from a reference driver, name the function
 it came from in a comment. `src/RTL8814AU.h` and `src/Firmware.cpp` already do
@@ -154,7 +163,7 @@ but the *design* is not up for review on style grounds. See
 
 `tools/wifi-join.c` is C compiled against the public headers. It follows
 Haiku's *formatting* rules — tabs, 80 columns, brace placement, return type on
-its own line, MIT header — and is exempt from the rules that only make sense
+its own line, copyright header — and is exempt from the rules that only make sense
 in kernel C++:
 
 | Exempt | Because |
@@ -813,7 +822,7 @@ architecture — `RTL8814AU.h`, then `RegisterIO.h`, then the modules that own a
 ```cpp
 /*
  * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All rights reserved.
- * Distributed under the terms of the MIT License.
+ * Distributed under the terms of the GNU General Public License version 2.
  *
  * RegisterIO.h — Hardware register access for the RTL8814AU.
  *
@@ -908,14 +917,15 @@ An empty inline body is allowed on one line inside the class, and only there:
 
 ## 16. Copyright headers
 
-rtl8814au is **MIT-licensed**, and it stays MIT because we never copy from the
-GPL reference drivers (§1.3). Every source file starts with the Haiku two-line
-form:
+rtl8814au is **GPL v2-licensed**, matching the Realtek vendor driver used as a
+reference (§1.3). It was MIT until 2026-08-27; the change is precautionary
+rather than the result of any code being copied. Every source file starts with
+the Haiku two-line form:
 
 ```cpp
 /*
  * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All rights reserved.
- * Distributed under the terms of the MIT License.
+ * Distributed under the terms of the GNU General Public License version 2.
  *
  * <Filename> — one-line purpose.
  *
@@ -929,9 +939,12 @@ form:
 - Update the year on a substantive change. A typo fix does not bump it.
 - If a file ever gains a second author, add a `Authors:` block below the
   license line in the Haiku style; no file needs one today.
-- **Do not introduce GPL.** Not a header, not a helper, not "just this one
-  table". `package/PackageInfo` declares `licenses { "MIT" }` and the `.hpkg`
-  ships `LICENSE`; a GPL fragment makes both of those false.
+- **Still do not copy code in.** The licence no longer forbids it, but the
+  reasons to keep this driver original outlive the licence: code that reads
+  like its donor is harder to review and harder to fix, and we cannot debug
+  what we did not reason through. `package/PackageInfo` declares
+  `licenses { "GNU GPL v2" }` and the `.hpkg` ships `LICENSE`; keep both
+  accurate.
 
 ## 17. Resource management
 
@@ -1220,7 +1233,7 @@ Before opening a PR or cutting a release:
 - [ ] Any new member of `RTL8814AUDevice` is initialized in the constructor
       (§6).
 - [ ] No `goto`, no `#if 0`, no `nullptr`, no `TRUE`/`FALSE`.
-- [ ] Copyright header present, MIT, `Kevin Adams
+- [ ] Copyright header present, GPL v2, `Kevin Adams
       <kevinadams05@gmail.com>` (§16).
 - [ ] No code copied from a GPL reference driver — register knowledge only
       (§1.3).
@@ -1255,7 +1268,7 @@ Alloc:   new(std::nothrow) + NULL check, always
 Locking: MutexLocker, never mutex_lock/mutex_unlock
 Guard:   #ifndef RTL8814AU_FOO_H / #define / #endif  // RTL8814AU_FOO_H
 Doxygen: /*! ... */ above the definition, body indented FOUR SPACES
-License: MIT, Kevin Adams <kevinadams05@gmail.com>
+License: GPL v2, Kevin Adams <kevinadams05@gmail.com>
 
 rtl8814au rules that are not about formatting:
   every dprintf starts with RTL8814AU_DRIVER_NAME ": ", and is ASCII
@@ -1308,10 +1321,12 @@ Facts a contributor needs to keep examples accurate:
 
 rtl8814au ships as a standalone, unofficial `.hpkg` built by
 `package/build-hpkg.sh` on the Haiku cross-build server. The package is
-`rtl8814au` (MIT), and it also provides `cmd:wifi_join`. The repository lives at
+`rtl8814au` (GPL v2), and it also provides `cmd:wifi_join`. The repository lives at
 `KevinAdams05/rtl8814au_unofficial`.
 
-It is not part of the Haiku source tree. The MIT license and the driver-only
-scope leave the door open to upstreaming a fix, but the in-driver WPA2
+It is not part of the Haiku source tree, and since 2026-08-27 it is GPL v2,
+which closes the door on contributing it to Haiku's MIT-licensed tree. The
+driver-only scope would otherwise have left that open, as would the in-driver
+WPA2
 architecture (§1.4) is a workaround for a stack-level EAPOL problem and would
 have to be unwound first, so that is not a goal today.

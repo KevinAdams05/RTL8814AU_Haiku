@@ -1,6 +1,6 @@
 /*
  * Copyright 2026, Kevin Adams <kevinadams05@gmail.com>. All rights reserved.
- * Distributed under the terms of the MIT License.
+ * Distributed under the terms of the GNU General Public License version 2.
  *
  * wifi-join: bring up a WPA2-PSK network on the rtl8814au unofficial
  * driver.

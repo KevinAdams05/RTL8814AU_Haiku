@@ -157,7 +157,7 @@ ln -sf ../../bin/rtl8814au \
 cp "$FIRMWARE_SRC"/rtl8814aufw.bin \
 	"$PKG_ROOT/data/firmware/rtl8814au/rtl8814aufw.bin"
 
-# Ship the MIT license under documentation/.
+# Ship the license under documentation/.
 cp "$PROJ/LICENSE" \
 	"$PKG_ROOT/data/documentation/packages/rtl8814au/LICENSE"
 

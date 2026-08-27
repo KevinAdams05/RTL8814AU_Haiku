@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+**The licence is now the GNU General Public License, version 2.** It was MIT.
+
+This driver is original code written for Haiku, not a port, and no code has
+been copied from any reference driver. But its register semantics, power-on
+ordering, firmware-load procedure and descriptor layouts were worked out with
+Realtek's GPL-licensed Linux vendor driver open alongside, and several faults
+were found by diffing our behaviour against it -- most recently the two that
+made every frame go out as sequence 0 and every frame be transmitted 42 times.
+Licensing under the same terms as that reference removes any question about how
+closely it was consulted.
+
+One consequence worth stating plainly: **this closes the door on contributing
+the driver to Haiku's own tree**, which is MIT-licensed. It is distributed as a
+standalone package.
+
+
 **Every frame was transmitted about 42 times.** The MAC's response-timing
 registers -- both SIFS registers, the two response-SIFS registers and the ACK
 timeout -- were declared in the source and never written, so the chip ran on

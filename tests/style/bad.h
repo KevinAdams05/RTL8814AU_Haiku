@@ -1,4 +1,4 @@
-// No MIT copyright block here on purpose -> missing-copyright
+// No copyright block here on purpose -> missing-copyright
 #pragma once
 
 

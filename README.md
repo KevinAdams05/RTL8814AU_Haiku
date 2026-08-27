@@ -326,4 +326,15 @@ were:
 
 ## License
 
-Same as Haiku — MIT.
+**GNU General Public License, version 2.**
+
+This driver is original code written for Haiku, not a port. But its register
+semantics, power-on ordering, firmware-load procedure and descriptor layouts
+were worked out with Realtek's GPL-licensed Linux vendor driver open alongside
+as a reference, and several faults were found by diffing our behaviour against
+it. Licensing under the same terms removes any question about how closely that
+reference was consulted.
+
+Note that this is a change from MIT, and it means the driver cannot be
+contributed to Haiku's own tree, which is MIT-licensed. It is distributed as a
+standalone package.

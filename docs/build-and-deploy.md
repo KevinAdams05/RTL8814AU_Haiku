@@ -45,7 +45,7 @@ rtl8814au_unofficial/
 │   ├── PackageInfo         # .hpkg manifest
 │   └── build-hpkg.sh       # build + package script
 ├── docs/                   # documentation (you are here)
-├── LICENSE                 # MIT
+├── LICENSE                 # GNU GPL v2
 └── README.md
 ```
 

@@ -145,7 +145,7 @@ RULES = {
     "abbreviated-name":
         ("source", "Abbreviated identifier - spell it out (§3.1)"),
     "missing-copyright":
-        ("source", "Missing MIT copyright header (§16)"),
+        ("source", "Missing copyright header (§16)"),
     "header-guard":
         ("source", "Header guard missing or does not match the filename"
             " (§15.2)"),
@@ -834,10 +834,10 @@ def flush_include_group(group, add):
 
 
 def check_copyright(text, add):
-    """The MIT block has to be the first thing in the file (§16)."""
+    """The copyright block has to be the first thing in the file (§16)."""
     head = text[:600]
     if "Copyright" not in head or "Kevin Adams" not in head \
-            or "MIT License" not in head:
+            or "General Public License" not in head:
         add("missing-copyright", 1)
 
 
@@ -908,9 +908,10 @@ SELF_TEST_EXPECTED = {
 # the rules would ship having never matched. They get a scratch file instead.
 SELF_TEST_BYTES = {
     "crlf.cpp": (b"/* Copyright 2026, Kevin Adams <kevinadams05@gmail.com>\r\n"
-        b" * MIT License */\r\n", {"eol-crlf"}),
+        b" * GNU General Public License version 2 */\r\n", {"eol-crlf"}),
     "noeol.cpp": (b"/* Copyright 2026, Kevin Adams "
-        b"<kevinadams05@gmail.com>\n * MIT License */", {"no-final-eol"}),
+        b"<kevinadams05@gmail.com>\n * GNU General Public License version 2"
+        b" */", {"no-final-eol"}),
 }
 
 

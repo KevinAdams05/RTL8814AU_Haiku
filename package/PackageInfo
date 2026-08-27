@@ -31,7 +31,7 @@ packager		"Kevin Adams <kevinadams05@gmail.com>"
 vendor			"Kevin Adams"
 
 licenses {
-	"MIT"
+	"GNU GPL v2"
 }
 
 copyrights {
