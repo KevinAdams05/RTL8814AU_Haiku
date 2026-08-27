@@ -128,20 +128,25 @@ its header, and the air shows sequence 0, as it did for all 369 frames captured
 from this station. A vendor-driven adapter on the same access point numbered
 its frames 1, 2, 3.
 
-The register is now written, `kHwSeqCtrlAllQueues` (0xFF), from `_DoJoin()`.
-The vendor driver writes it once during hardware init; it goes in `_DoJoin()`
-here because writes in that part of our init have wedged the MAC scheduler
-before, which is also why the CAM clear lives there. `_DoJoin()` runs before
-the first authentication frame, so every frame that matters is covered.
+The register is now written, `kHwSeqCtrlAllQueues` (0xFF), from `_InitMAC()` —
+once, where the reference driver writes it.
+
+It was originally written from `_DoJoin()`, on every association, out of caution
+about register writes in our init sequence wedging the MAC scheduler (which is
+why the CAM clear lives in `_DoJoin()`). That caution was misplaced for this
+part of init: the response-timing registers went into `_InitMAC()` without
+trouble.
 
 **Do not confuse this with 0x4FC**, which the vendor also documents as
 "EN_HWSEQ". That one is beacon-specific and written only for the 8822B and
 8822C. Citing it was part of why this register was wrongly written off.
 
-One caveat worth carrying: **per-join is not where the vendor writes it**, and
-writing it on every association is an untested difference. It is the first
-suspect if the transmit path misbehaves on a repeat join — see item 1 of
-`NEXT_SESSION.md`.
+That per-join placement was tested against once-at-init, interleaved, 18 joins
+each: zero failures at init against two per-join. **Not significant** (Fisher
+exact p = 0.49), so the move stands on matching the reference driver and
+writing a set-once register once — not on that difference. It does mean
+per-join was not the cause of the reason-15 burst, though it is not fully
+exonerated either: the comparison could not separate 0 failures from 2.
 
 ### No RTS/CTS, on any frame
 

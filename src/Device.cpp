@@ -917,6 +917,29 @@ RTL8814AUDevice::_InitMAC()
 	fRegisterIO->Write16(kRegRespSIFSOFDM, kRespSIFSOFDMInit);
 	fRegisterIO->Write8(kRegACKTo, kACKToInit);
 
+	// Enable hardware sequence numbering for every queue.
+	//
+	// Non-QoS descriptors set HWSEQ_EN to have the MAC number the frame, and
+	// the MAC only honours that if this register enables the queue. Without it
+	// every frame went out as sequence 0 -- measured over the air, all 369 of
+	// them -- so the access point was entitled to treat each one as a
+	// retransmission of the last and drop it.
+	//
+	// This is where the reference driver writes it: once, during hardware
+	// initialisation. It was originally written from _DoJoin() instead, on
+	// every association, out of caution -- register writes in the older part
+	// of our init sequence have wedged the MAC scheduler, which is why the CAM
+	// clear lives in _DoJoin(). That caution turned out to be misplaced for
+	// this part of init: the response-timing registers above went here without
+	// trouble.
+	//
+	// Measured interleaved against the per-join version, 18 joins each: zero
+	// failures here against two there. That is **not** significant (Fisher
+	// exact p = 0.49), so the move is made on the grounds that it matches the
+	// reference driver and writes a set-once register once, not on the
+	// strength of that difference.
+	fRegisterIO->Write8(kRegHwSeqCtrl, kHwSeqCtrlAllQueues);
+
 	// Transmit-hang control, which was never written.
 	//
 	// The vendor's MAC initialisation table for this chip puts 0x04 here, and
@@ -3615,23 +3638,6 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 		snooze(500);
 	}
 	fCcmpEnabled = false;
-
-	// Enable hardware sequence numbering for every queue.
-	//
-	// Non-QoS descriptors set HWSEQ_EN to have the MAC number the frame, and
-	// the MAC only honours that if this register enables the queue. Without it
-	// every frame went out as sequence 0 -- measured over the air, all 369 of
-	// them -- so the access point was entitled to treat each one as a
-	// retransmission of the last and drop it. That is what an ignored
-	// authentication and a discarded second M2 look like.
-	//
-	// Written here rather than in _InitHardware() for the same reason the CAM
-	// clear above is: register writes in that part of the init sequence have
-	// wedged the MAC scheduler. This runs before the first authentication
-	// frame, so it covers everything that matters.
-	if (fRegisterIO != NULL) {
-		(void)fRegisterIO->Write8(kRegHwSeqCtrl, kHwSeqCtrlAllQueues);
-	}
 
 	// Give this association its own allowance of transmit trace lines. The
 	// per-pipe traces are capped, and without this they are exhausted during

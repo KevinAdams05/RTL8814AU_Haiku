@@ -195,7 +195,36 @@ MON=mon0 HOST=user@<shredder> SSID=<5GHz network> \
 Failed attempts keep their capture; successful ones are discarded. Decode with
 `scripts/air-eapol.py <pcap>` and `scripts/seq-check.py <pcap> <our-mac>`.
 
-**Step 0. Establish whether this is a regression. Do this first.** The ASUS was
+### Step 0 is done: it is NOT a regression from the sequence-number fix
+
+Measured 2026-08-26/27, **interleaved** in six-attempt blocks over three rounds
+so all three builds met the same conditions:
+
+| build | contents | joins failing |
+|---|---|---|
+| A | everything | 2 / 18 (11%) |
+| B | A with the sequence-number mechanism disabled | **4 / 18 (22%)** |
+| D | A with `REG_HWSEQ_CTRL` written once at init | 0 / 18 (0%) |
+
+**B is worse than A, not better.** Removing the sequence-number fix did not
+remove the failure, so it is not something we introduced. Everything else in
+this item is therefore worth pursuing.
+
+No pair is statistically significant (best is B vs D at p = 0.10; A vs D is
+p = 0.49), because conditions were unusually good: build A failed 11% here
+against 40% for the *same build* the previous evening. That drift is exactly
+why the comparison had to be interleaved, and it is also what cost it the power
+to say more.
+
+`REG_HWSEQ_CTRL` has been moved to `_InitMAC()` regardless -- it matches the
+reference driver and writes a set-once register once -- but **not** on the
+strength of 0 versus 2 failures.
+
+**A longer A-versus-D run is the cheapest open question**: with failure rates
+around 10%, separating 0% from 11% needs roughly 60 attempts per arm, about
+four hours interleaved and unattended.
+
+**Step 0 as originally written, kept for the method.** The ASUS was
 previously reported at roughly 81% first-join success on 5 GHz; it measured
 about 62% today (19 failures in 50). Those figures come from different
 harnesses and are not directly comparable -- the older one counted neighbours'
