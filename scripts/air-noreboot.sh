@@ -25,6 +25,12 @@
 # acceptable on a test bench and on a network you own; it is not a way to
 # handle a credential you care about.
 #
+# Set MON=none to skip capturing altogether. Worth knowing when that is the
+# right call: comparing join *failure rates* between builds needs only the
+# syslog verdict, and monitor mode on this host needs root to bring the
+# interface up, so requiring a capture blocks a measurement that does not
+# depend on one. Capture when diagnosing a failure, not when counting them.
+#
 # Usage: MON=mon0 HOST=user@<ip> SSID=<network> \
 #            air-noreboot.sh <passphrase> [attempts]
 
@@ -41,24 +47,35 @@ mkdir -p "$OUT"
 
 rsh() { timeout "$1" ssh -o BatchMode=yes -o ConnectTimeout=15 "$HOST" "$2" 2>/dev/null; }
 
-cleanup() { pkill -f "tcpdump -i $MON" 2>/dev/null; echo "==> stopped"; }
+cleanup() {
+	[ "$MON" != none ] && pkill -f "tcpdump -i $MON" 2>/dev/null
+	echo "==> stopped"
+}
 trap cleanup EXIT
 
-if ! iw dev "$MON" info >/dev/null 2>&1; then
-	echo "ERROR: $MON is gone; monitor mode needs rebuilding by hand" >&2
+CAPTURING=yes
+if [ "$MON" = "none" ]; then
+	CAPTURING=no
+	echo "==> capture disabled (MON=none); counting outcomes only"
+elif ! iw dev "$MON" info >/dev/null 2>&1; then
+	echo "ERROR: $MON is gone; monitor mode needs rebuilding by hand." >&2
+	echo "       Re-run with MON=none to count outcomes without capturing." >&2
 	exit 1
 fi
 
 kept=0
 for a in $(seq 1 "$ATTEMPTS"); do
 	PCAP="$OUT/attempt-$a.pcap"
-	rm -f "$PCAP"
-	tcpdump -i "$MON" -w "$PCAP" -s 0 -Z "$USER" >/dev/null 2>&1 &
-	CAP=$!
-	sleep 2
-	if ! kill -0 "$CAP" 2>/dev/null; then
-		echo "ERROR: tcpdump would not start" >&2
-		exit 1
+	CAP=""
+	if [ "$CAPTURING" = yes ]; then
+		rm -f "$PCAP"
+		tcpdump -i "$MON" -w "$PCAP" -s 0 -Z "$USER" >/dev/null 2>&1 &
+		CAP=$!
+		sleep 2
+		if ! kill -0 "$CAP" 2>/dev/null; then
+			echo "ERROR: tcpdump would not start" >&2
+			exit 1
+		fi
 	fi
 
 	VERDICT=$(timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=15 "$HOST" \
@@ -80,17 +97,23 @@ timeout 20 ifconfig $DEV up >/dev/null 2>&1
 REMOTE
 )
 	sleep 1
-	kill "$CAP" 2>/dev/null; wait "$CAP" 2>/dev/null
+	if [ -n "$CAP" ]; then
+		kill "$CAP" 2>/dev/null; wait "$CAP" 2>/dev/null
+	fi
 
 	OKC=$(echo "$VERDICT" | sed -n 's/.*ok=\([0-9]*\).*/\1/p')
 	if [ "${OKC:-0}" -gt 0 ]; then
-		rm -f "$PCAP"
-		echo "attempt $a: OK        ($VERDICT)  [capture discarded]"
+		[ -n "$CAP" ] && rm -f "$PCAP"
+		echo "attempt $a: OK        ($VERDICT)"
 	else
 		kept=$((kept+1))
 		rsh 30 'cat /boot/home/last-attempt.txt' > "$OUT/attempt-$a.syslog"
-		SZ=$(stat -c %s "$PCAP" 2>/dev/null || echo 0)
-		echo "attempt $a: **FAILED** ($VERDICT)  [kept $(basename "$PCAP"), $SZ bytes]"
+		if [ -n "$CAP" ]; then
+			SZ=$(stat -c %s "$PCAP" 2>/dev/null || echo 0)
+			echo "attempt $a: **FAILED** ($VERDICT)  [kept $(basename "$PCAP"), $SZ bytes]"
+		else
+			echo "attempt $a: **FAILED** ($VERDICT)"
+		fi
 	fi
 done
 echo "==> $kept failure(s) captured in $OUT"
