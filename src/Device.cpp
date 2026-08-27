@@ -4442,15 +4442,28 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			uint32 rfChannel = 0;
 			if (fPhyConfig != NULL)
 				rfChannel = fPhyConfig->ReadRfChannelRegister(0);
+
+			// And the chip's per-queue "this queue has drained" flags. This
+			// is the one thing a successful queue_bulk() cannot tell us, and
+			// it splits the remaining possibilities cleanly: the M2 is
+			// confirmed absent from the air, so either the chip is still
+			// holding it -- this queue reads non-empty -- or the chip took it
+			// and dropped it, and the queue reads empty. The read costs a USB
+			// control transfer, so a frame that was going to be transmitted
+			// has had time to drain by the time the value arrives.
+			uint16 queueEmpty = 0;
+			if (fTxPath != NULL)
+				queueEmpty = fTxPath->ReadTxQueueEmpty();
 			dprintf(RTL8814AU_DRIVER_NAME ": M2CHIP txpause=0x%02x "
 				"seccfg=0x%02x cr=0x%08x nml=%04x/%04x pub=%04x/%04x "
-				"rf0x18=0x%05x ch=%u\n",
+				"rf0x18=0x%05x ch=%u qempty=0x%04x\n",
 				txPause, secCfg, (unsigned)controlReg,
 				(unsigned)(normal & 0xFFFF), (unsigned)(normal >> 16),
 				(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16),
 				(unsigned)rfChannel,
 				fPhyConfig != NULL
-					? (unsigned)fPhyConfig->CurrentChannel() : 0u);
+					? (unsigned)fPhyConfig->CurrentChannel() : 0u,
+				(unsigned)queueEmpty);
 		}
 		return;
 	}

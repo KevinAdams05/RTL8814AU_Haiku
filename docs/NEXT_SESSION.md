@@ -280,6 +280,70 @@ earlier finding that removing the power-mode H2C fixed 5 GHz. Across all 18
 joins it does not hold: that H2C succeeded in 17 of them, 14 of which joined
 fine.
 
+### Step 3 is done: the M2 is genuinely not transmitted (2026-08-27)
+
+Confirmed with a control, on an independently rebuilt monitor setup (`wlo1`
+switched to type monitor on iwlwifi -- see below), against the current build:
+
+| observation | value |
+|---|---|
+| frames our station transmitted, whole attempt | **2** -- auth (seq 1945), assoc-req (seq 1946) |
+| data frames from us | **0** |
+| frames in the capture | 9129 |
+| the access point's M1 retries, to our MAC | **5**, spanning 2.1 s |
+| ACKs addressed to us | 2 -- one per frame we sent |
+
+The control is what matters. The monitor was demonstrably live and on-channel
+*throughout the M2 window*, because it captured the access point's five M1
+retries to our own MAC in that window, and the two ACKs the access point sent
+for our auth and association request. A frame sent at a rate the monitor could
+not decode would have looked identical to a frame never sent; that is now
+excluded.
+
+Sequence numbers increment (1945, 1946) and there are no retransmissions, so
+both of the 2026-08-25 fixes are working on this adapter.
+
+**And the chip is not holding the frame either.** `ReadTxQueueEmpty()` existed
+in the tree, unused, with a docstring describing exactly this question. Wired
+into the per-M2 readback, it reads `qempty=0x0fff` -- every queue drained -- on
+all four M2s of a failing attempt, identical to a successful join.
+
+So the chip accepts a well-formed 193-byte frame, reports a successful USB
+completion, is on the right channel, is not paused, is not encrypting, has
+pages free, **drains its transmit queue**, and the frame never reaches the air.
+It is consumed and discarded, not buffered and not stuck.
+
+**That kills the whole "on the air but rejected" branch** -- content, MIC, and
+the replay counter, which was separately dead by inspection anyway
+(`fM1ReplayCounter` is re-read from every M1 before the repeat branch, so a
+resent M2 carries the right counter).
+
+### The monitor setup that works, and the one that must not be repeated
+
+**Do not plug an RTL8814AU into the capture host for monitor mode.** The
+out-of-tree `8814au` driver deadlocks in `cfg80211_rtw_add_virtual_intf` on
+kernel 7.0.0 -- the call that creates a monitor interface. Hung-task traces,
+then `iw`, `ip`, a udev worker, `wpa_supplicant` and a kworker all stuck
+unkillable in D state. Only a reboot clears it. This cost a bench reboot.
+
+**What works** is changing the built-in interface's *type* rather than adding a
+second interface, because none of iwlwifi's four valid interface combinations
+includes `monitor`:
+
+```sh
+sudo nmcli radio wifi on && sudo nmcli dev set wlo1 managed no && \
+sudo rfkill unblock wifi && sudo ip link set wlo1 down && \
+sudo iw dev wlo1 set type monitor && sudo ip link set wlo1 up && \
+sudo iw dev wlo1 set channel 149
+```
+
+Order matters and cost a round trip: `nmcli radio wifi off` sets an rfkill soft
+block, and then `ip link set up` fails with "Operation not possible due to
+RF-kill" and the type change silently does not stick. Unblock first. Revert
+with `sudo iw dev wlo1 set type managed && sudo nmcli dev set wlo1 managed yes`.
+
+### What is left
+
 **So the critical path is now step 3, not step 1.** Every driver-side avenue is
 exhausted, which makes "is the frame actually absent from the air?" the
 question that decides where this goes next:
