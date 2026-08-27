@@ -3633,6 +3633,12 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 		(void)fRegisterIO->Write8(kRegHwSeqCtrl, kHwSeqCtrlAllQueues);
 	}
 
+	// Give this association its own allowance of transmit trace lines. The
+	// per-pipe traces are capped, and without this they are exhausted during
+	// the firmware download and silent for every join that follows.
+	if (fTxPath != NULL)
+		fTxPath->ResetTraces();
+
 	// Diagnostic: TX packet-buffer pages, per queue, once per join.
 	//
 	// Chasing a latch. After roughly fifteen joins the data queue stops
@@ -4396,6 +4402,35 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		fEapolState = kEapolWaitM3;
 		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> WaitM3 "
 			"(M2 handed to the chip)\n");
+
+		// Read the chip back on every M2, so a failing attempt is described
+		// while it is failing rather than at the join that preceded it.
+		//
+		// "Handed to the chip" means `queue_bulk()` accepted the frame, and no
+		// more than that: the call is asynchronous. When this fails, the access
+		// point resends M1 four times and no M2 ever reaches the air, so
+		// something between here and the antenna is discarding it while
+		// management frames on another queue keep transmitting.
+		//
+		// TXPAUSE is the first suspect precisely because it gates
+		// transmission per queue, which is the shape of the symptom. SECCFG
+		// is the second: the comment in _DoJoin() records that leftover
+		// security state makes the chip mangle our M2 so the access point
+		// never sees a valid one -- this exact symptom -- and although the
+		// descriptor asks for no encryption, that is worth confirming rather
+		// than assuming.
+		if (fRegisterIO != NULL) {
+			uint8 txPause = fRegisterIO->Read8(kRegTxPause);
+			uint8 secCfg = fRegisterIO->Read8(kRegSecCfg);
+			uint32 controlReg = fRegisterIO->Read32(kRegCR);
+			uint32 normal = fRegisterIO->Read32(kRegFifoPageInfo3);
+			uint32 pub = fRegisterIO->Read32(kRegFifoPageInfo5);
+			dprintf(RTL8814AU_DRIVER_NAME ": M2CHIP txpause=0x%02x "
+				"seccfg=0x%02x cr=0x%08x nml=%04x/%04x pub=%04x/%04x\n",
+				txPause, secCfg, (unsigned)controlReg,
+				(unsigned)(normal & 0xFFFF), (unsigned)(normal >> 16),
+				(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16));
+		}
 		return;
 	}
 

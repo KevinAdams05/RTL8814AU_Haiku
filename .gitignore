@@ -17,3 +17,7 @@ package/build.ps1
 *~
 *.bak
 .vscode/
+
+# Output of scripts/air-noreboot.sh: per-attempt captures and syslog extracts.
+# It writes into the current directory, which is the repo when run from here.
+air-nr/

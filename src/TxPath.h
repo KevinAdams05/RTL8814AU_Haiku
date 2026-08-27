@@ -126,6 +126,10 @@ public:
 	// device removal to clean up in-flight USB operations.
 	void						CancelAll();
 
+	// Restart the capped per-pipe traces, so each association gets its own
+	// allowance of log lines rather than spending it all at boot.
+	void						ResetTraces();
+
 	// TX statistics
 	uint32						FramesSent() const { return fFramesSent; }
 	uint32						FramesFailed() const

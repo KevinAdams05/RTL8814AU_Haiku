@@ -133,6 +133,27 @@ RTL8814AUTxPath::~RTL8814AUTxPath()
 
     \return B_OK on successful submission (NOT delivery confirmation).
 */
+// Bumped by ResetTraces(), so the capped per-pipe traces below start counting
+// again. Without it they spend their whole allowance in the first moments of a
+// boot -- most of it on the firmware download -- and are silent for the rest of
+// it. Silent is exactly what they are when an intermittent failure starts, and
+// "no log line for this pipe" then reads as "this pipe failed" when it really
+// means "we stopped looking".
+static int32 sTxTraceGeneration = 0;
+
+
+/*! Restart the capped per-pipe transmit traces.
+
+    Called at the start of each association, so every attempt gets its own
+    allowance of submit, completion and descriptor lines.
+*/
+void
+RTL8814AUTxPath::ResetTraces()
+{
+	atomic_add(&sTxTraceGeneration, 1);
+}
+
+
 status_t
 RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 	TxQueueSelect queueSelect, uint8 dataRate, uint8 macID,
@@ -280,6 +301,11 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 	// our own code can.
 	{
 		static uint32 sDumped[kBulkOutEndpointCount] = {};
+		static int32 sDumpedGeneration = -1;
+		if (sDumpedGeneration != atomic_get(&sTxTraceGeneration)) {
+			sDumpedGeneration = atomic_get(&sTxTraceGeneration);
+			memset(sDumped, 0, sizeof(sDumped));
+		}
 		if (pipeIndex < kBulkOutEndpointCount && sDumped[pipeIndex] < 1) {
 			sDumped[pipeIndex]++;
 			const uint32* words
@@ -313,8 +339,13 @@ RTL8814AUTxPath::Transmit(const uint8* frameData, uint32 frameLength,
 	// completely different causes and the same symptom.
 	{
 		static uint32 sSubmitted[kBulkOutEndpointCount] = {};
+		static int32 sSubmittedGeneration = -1;
+		if (sSubmittedGeneration != atomic_get(&sTxTraceGeneration)) {
+			sSubmittedGeneration = atomic_get(&sTxTraceGeneration);
+			memset(sSubmitted, 0, sizeof(sSubmitted));
+		}
 		if (pipeIndex < kBulkOutEndpointCount
-			&& sSubmitted[pipeIndex] < 8) {
+			&& sSubmitted[pipeIndex] < 12) {
 			sSubmitted[pipeIndex]++;
 			dprintf(RTL8814AU_DRIVER_NAME ": TX submit pipe=%" B_PRIu32
 				" queue=%d len=%" B_PRIu32 " rate=0x%02x\n",
@@ -975,11 +1006,16 @@ RTL8814AUTxPath::_TxCallback(void* cookie, status_t status, void* data,
 		// and "no log line for pipe 2" reads as "pipe 2 failed" when it
 		// actually means "we never looked". That cost real debugging time.
 		static uint32 sLogged[kBulkOutEndpointCount] = {};
+		static int32 sLoggedGeneration = -1;
+		if (sLoggedGeneration != atomic_get(&sTxTraceGeneration)) {
+			sLoggedGeneration = atomic_get(&sTxTraceGeneration);
+			memset(sLogged, 0, sizeof(sLogged));
+		}
 		bool bad = status != B_OK
 			|| actualLength != (size_t)transfer->submitLength;
 		const uint32 pipe = transfer->pipeIndex < kBulkOutEndpointCount
 			? transfer->pipeIndex : 0;
-		if (bad || sLogged[pipe] < 8) {
+		if (bad || sLogged[pipe] < 12) {
 			if (!bad)
 				sLogged[pipe]++;
 			dprintf(RTL8814AU_DRIVER_NAME ": TX done pipe=%" B_PRIu32
