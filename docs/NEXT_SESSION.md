@@ -446,33 +446,58 @@ never uses the register and no datasheet in the corpus documents it, so the
 direction is inferred, not established. Worth confirming before building much on
 it.
 
-### The C2H path has never delivered anything, and that is the next thread
+### C2H: the path is correct, the silence is expected -- do not chase it
 
-Asking for the drop reason per frame, via the descriptor's `SPE_RPT` bit
-(dword 2 bit 19), produced **nothing** -- and not just no transmit report:
-across this driver's entire life the syslog contains no `TX report:`, no
-`unknown C2H event`, no firmware debug line. **Not one C2H event of any kind
-has ever arrived.**
+**Correcting the previous entry, which recommended debugging this.** It is not a
+bug and it is not the next thread.
 
-That is a finding in itself, and a more tractable one than the defect. The
-plumbing all looks present: the interrupt IN endpoint 0x85 is found at probe,
-`WiFiManager::Start()` is called, it submits the transfer, and
-`HandleC2HEvent()` dispatches five event types and logs anything unrecognised.
-Something in between never fires.
+C2H on this chip arrives **inline in the RX bulk stream**, flagged by `RPT_SEL`
+in RX descriptor dword 2 bit 28 -- confirmed against the reference driver's
+`GET_RX_STATUS_DESC_RPT_SEL_8814A`, which is the same offset and bit. **This
+driver already implements that correctly**, in the RX callback, with a dispatch
+into `HandleC2HEvent()` and a log line for the first twelve events. The
+interrupt-IN listener in `WiFiManagement.cpp` is vestigial: its own comment
+records that the endpoint was the wrong place to look. Debugging that listener,
+which the previous entry suggested, would be chasing dead code.
 
-Worth knowing before chasing it: this driver drives scanning itself rather than
-via firmware, so scan-complete and connection-status events were never expected.
-But *nothing at all* points at the transfer, not the event mix.
+The reason nothing arrives is that **nothing requests a report**:
 
-**Check, in order:** does the interrupt IN transfer ever complete (log its
-callback, including errors)? Does it need re-submitting after each completion,
-and does that happen? Is the endpoint's max packet size and interval right? Is
-the firmware configured to emit C2H at all -- on other Realtek parts that needs
-a register this chip may name differently, which has now caught us three times.
+- Transmit reporting has no reachable enable on this chip. 0x04EC is the
+  dropped-packet counter here, not `TX_RPT_CTRL`.
+- The per-frame request, `SPE_RPT` in transmit descriptor dword 2 bit 19 (our
+  bit position is right), was tried on data frames and produced nothing. The
+  reference driver sets it **only in its management-frame branch** -- "CCX-TXRPT
+  ack for xmit mgmt frames" -- so on this chip the instrument only works on the
+  frames that already succeed.
 
-Getting C2H working would give the drop reason directly (`RETRY_OVER` versus
-`LIFE_TIME_OVER`), and it is also the prerequisite for firmware-driven rate
-adaptation (item 4).
+**Consequence: the drop reason is not obtainable by any cheap route.** Stop
+trying to get it. `RETRY_OVER` versus `LIFE_TIME_OVER` would have been decisive,
+lifetime is already excluded by register readback, and there is no third route
+short of firmware work.
+
+### The axis never tested: a different access point
+
+Every measurement of this defect, on both adapters, has been against **one
+network on one access point** -- `Adams-Guest`, 5 GHz channel 149. The
+possibility that the access point is a participant has never been tested, and it
+is the only variable left that is both plausible and cheap to change.
+
+It is not far-fetched. The failure is the access point declining to proceed
+after our M2 goes missing, the rate is unstable in a way no driver-side variable
+explains, and the one comparison suggesting this is adapter-specific -- Edimax
+1/60 against ASUS ~15% -- was made across different hours rather than
+interleaved.
+
+**Two experiments, in order of value:**
+
+1. **Join a different access point.** Needs a passphrase for one; only
+   `Adams-Guest` credentials are recorded. Any second network settles whether
+   the access point is involved, and it is a handful of attempts, not a
+   30-attempt run, if the effect is large.
+2. **Interleave the two adapters against the same access point**, the way builds
+   are interleaved, to settle whether the Edimax really is better or was simply
+   measured at a better hour. Needs a physical swap per block, so it needs Kevin
+   and is worth doing only after (1).
 
 ### What is left
 
