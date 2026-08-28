@@ -78,6 +78,22 @@ for a in $(seq 1 "$ATTEMPTS"); do
 		fi
 	fi
 
+	# Refuse to count a wedged interface as a failure.
+	#
+	# After enough down/up cycles the interface stops being registered with the
+	# network stack: `ifconfig <dev>` says "Interface not found!" and `up` says
+	# "Could not add interface: Name in use", while the driver itself is fine
+	# and still receiving. Every attempt after that fails for a reason with
+	# nothing to do with whatever is being measured, and silently inflates the
+	# failure rate -- so stop instead, and say why.
+	if ! rsh 30 "ifconfig $DEV 2>&1 | grep -qv 'Interface not found'"; then
+		echo "ABORT: the interface has stopped being registered with the" >&2
+		echo "       stack (\"Interface not found\"). The driver is probably" >&2
+		echo "       still alive; the test machine needs a reboot. Results so" >&2
+		echo "       far are usable, later attempts would not have been." >&2
+		break
+	fi
+
 	VERDICT=$(timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=15 "$HOST" \
 		"sh -s '$SSID' '$PASS' '$DEV'" 2>/dev/null <<'REMOTE'
 SSID=$1; PASS=$2; DEV=$3
