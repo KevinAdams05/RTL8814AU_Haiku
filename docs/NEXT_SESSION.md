@@ -138,7 +138,38 @@ MON=mon0 HOST=user@<shredder> SSID=<5GHz network> \
 
 ## Open work, highest value first
 
-### 1. The reason-15 burst on the ASUS -- reproducible, cause unknown
+### 1. The reason-15 failure -- pre-existing, NOT a regression
+
+**Read this before concluding anything has got worse.** The rates measured
+against this defect look alarming next to nothing, and this document spent days
+quoting them without a baseline. The baseline is in the 0.3.0 CHANGELOG, under
+Known limitations, written before any of the 2026-08-25 work:
+
+> "About one join in six still fails on either band"
+
+One in six is **17%**. The ASUS measures **~15%** now. The signature was recorded
+there too -- "the four-way handshake stalled at M2 with the access point
+re-sending M1 four times and giving up with a reason-15 timeout" -- which is
+`assoc=1 M2=4 reason=15`, exactly what is still being chased. There is no record
+of either adapter ever measuring better than about 85%.
+
+So nothing regressed. What changed is that it became **visible**: every attempt
+used to cost a reboot, so nobody ran thirty back to back, and a 1-in-6 defect
+rarely bit inside a short supervised batch. A 35-minute reboot-free run now
+surfaces four or five failures, which reads as a broken adapter.
+
+Two things did move, both forward:
+
+- **The Edimax improved from 20% to 1.7%** (p = 0.005) with the response-timing
+  fix -- better than the historical 15-19% either adapter ever had.
+- **The regression question was tested, not assumed.** Interleaved A/B/D:
+  build B with the sequence-number change *disabled* failed 4/18, against 2/18
+  with it enabled. Removing the change made it worse.
+
+**Always quote a measured rate against the 17% baseline.** Doing otherwise is
+what made this look like a regression.
+
+### The failure itself -- reproducible, cause unknown
 
 **This is the top open defect and it is now reproducible.** On the ASUS
 USB-AC68, joins fail in **bursts of consecutive attempts** that recover on
