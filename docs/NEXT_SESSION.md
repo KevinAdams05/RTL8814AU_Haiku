@@ -393,6 +393,52 @@ very queue and endpoint where our data frame is dropped**, so the discriminator
 is not the queue. What still differs is frame type -- management versus data --
 and MACID, which is already known-correct.
 
+### A constraint that should have been applied sooner
+
+**A permanently-missing register write or H2C command cannot explain a failure
+that only happens 15% of the time.** It is a constant; the outcome varies.
+
+That retires a whole class of candidate causes that has absorbed a lot of
+effort here, including the two H2C commands the vendor sends and we never do
+(item 3). They may well be worth adding on their own merits -- `H2C_RA_MASK_3SS`
+(0x46) is marked *for 8814A* in the reference driver, so it is chip-specific and
+plausibly required -- but **neither can be the cause of this defect**, and
+neither should be attempted as a fix for it.
+
+Applied to what varies, the same reasoning also killed the post-association
+race. The sequence of events is identical in every single join --
+`RA_INFO -> MEDIA_STATUS_RPT -> first M2 -> post-assoc setup completes` -- across
+13 successes and 2 failures. The first M2 is always sent before post-assoc setup
+finishes, in the working case as much as the failing one, so the overlap is not
+the discriminator either.
+
+### What actually varies, and the clue nobody has chased
+
+Only three things vary between attempts: the air, the access point's state, and
+the chip's internal state. Of those, one has a measured correlation already:
+
+**The failure rate tracks time of day.** The same build measured 4/20 one
+afternoon and 12/30 that evening, 11% on one night and 40% the next. That is a
+large effect and it points at **medium contention** -- which fits the one drop
+reason left standing, since `retry-over` is precisely what a MAC reports when it
+cannot win a transmit opportunity within its retry budget.
+
+**The experiment that follows is cheap and uses data already being collected.**
+The harness captures the air for each attempt; compute channel utilisation from
+each capture and correlate it against the outcome. Successful attempts' captures
+are currently discarded, so keep a short one for those too. If busy air predicts
+failure, this is contention and the fix is in transmit timing or retry policy,
+not in a missing register.
+
+**One caveat on the instrument, stated because it changes the reading if wrong.**
+`REG_DROP_PKT_NUM` is assumed here to count *transmit* drops. It sits in the
+protocol page, which is transmit territory, and it increments exactly once per
+M2 on a failing attempt and not at all across twelve successes -- a correlation
+tight enough that it is hard to read as anything else. But the reference driver
+never uses the register and no datasheet in the corpus documents it, so the
+direction is inferred, not established. Worth confirming before building much on
+it.
+
 ### What is left
 
 **So the critical path is now step 3, not step 1.** Every driver-side avenue is
