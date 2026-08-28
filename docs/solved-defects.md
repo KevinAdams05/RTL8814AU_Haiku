@@ -6,11 +6,30 @@ hunch. Every entry here was measured, not argued.
 
 ## `ifconfig down` hung, and the interface would not come back
 
-**Both halves are fixed and verified.** `down` returns immediately, the
-interface comes back, and joins can be repeated without rebooting. Three
+**The hang is fixed. Re-registration is only mostly fixed -- see the caveat
+below, added 2026-08-28.** `down` returns immediately and joins can be repeated
+without rebooting, which is what removed the reboot per test attempt. Three
 consecutive down/up cycles: `down` returned in 0 s each time, scanning kept
-working (28 networks at baseline, then 26, 23, 26 -- ordinary variance), no
-stuck processes.
+working (28 networks at baseline, then 26, 23, 26), no stuck processes.
+
+> **Caveat: it still wedges after many cycles.** After roughly 150 down/up
+> cycles in one session the interface stops being registered with the stack,
+> with exactly the signature this entry was opened for:
+>
+> ```
+> ifconfig <dev>      -> "Interface not found!"
+> ifconfig <dev> up   -> "Could not add interface: Name in use"
+> ```
+>
+> The driver is unharmed -- still receiving, beacons counting up, scan sweeps
+> completing and notifying -- but the interface cannot be queried, so
+> `ifconfig list` returns nothing and every later join attempt fails for an
+> unrelated reason. Only a reboot clears it.
+>
+> It survives a handful of cycles and fails after many, which is why the
+> three-cycle verification above passed and why this went unnoticed for days.
+> `scripts/air-noreboot.sh` now aborts when it sees this rather than silently
+> recording failures. Still open; see `NEXT_SESSION.md`.
 
 **The hang was a reader thread parked in our own `Read()`.** The stack's
 `down_device_interface()` ends with:

@@ -400,7 +400,7 @@ that only happens 15% of the time.** It is a constant; the outcome varies.
 
 That retires a whole class of candidate causes that has absorbed a lot of
 effort here, including the two H2C commands the vendor sends and we never do
-(item 3). They may well be worth adding on their own merits -- `H2C_RA_MASK_3SS`
+(item 4). They may well be worth adding on their own merits -- `H2C_RA_MASK_3SS`
 (0x46) is marked *for 8814A* in the reference driver, so it is chip-specific and
 plausibly required -- but **neither can be the cause of this defect**, and
 neither should be attempted as a fix for it.
@@ -596,7 +596,36 @@ But **the ASUS is the primary adapter** -- 0.3.0 was developed on it -- so
 shipping 0.4.0 with a roughly 38% join failure there is not viable. This defect
 gates the release. Nothing else on this list does.
 
-### 2. Why the first firmware-download attempt fails
+### 2. The interface wedges after many down/up cycles
+
+Reopened 2026-08-28. Most of the lifecycle fix holds -- `down` returns, the
+interface comes back, testing needs no reboot per attempt -- but after roughly
+150 cycles in one session the interface stops being registered with the stack:
+
+```
+ifconfig <dev>      -> "Interface not found!"
+ifconfig <dev> up   -> "Could not add interface: Name in use"
+```
+
+The driver is unharmed: still receiving, beacons counting up, scan sweeps
+completing and firing their notification. It is the stack-side registration that
+is lost, so `ifconfig list` returns nothing and every later join attempt fails
+for an unrelated reason. Only a reboot clears it.
+
+**Why it matters beyond tidiness:** it silently inflates any failure rate
+measured across a long run, and it has already produced one false finding -- an
+access-point comparison that returned "0 of 4" for one network, which was really
+that SSID having dropped out of the scan list on a wedged interface.
+`scripts/air-noreboot.sh` now checks before each attempt and aborts.
+
+**Where to start:** the close path releases readers and stops the receive path,
+and `Open()` restarts it -- all verified. What is not verified is what the *stack*
+does across many cycles: `up_device_interface()` only respawns its reader thread
+when `up_count` is zero, and `interface_protocol_down()` decrements it, so a
+count that drifts by one would produce exactly this. Instrument `fOpenCount`
+against the stack's own up/down calls over many cycles and look for the drift.
+
+### 3. Why the first firmware-download attempt fails
 
 The retry works around it, so this is not urgent, but the fault itself is
 undiagnosed. **Three plausible explanations have been eliminated by comparing
@@ -633,7 +662,7 @@ A Haiku restart does not power-cycle USB, so a chip wedged this way stays
 wedged across reboots. A run of sudden failures should prompt a power cycle
 before a bisect.
 
-### 3. Two H2C commands the vendor sends and we never do
+### 4. Two H2C commands the vendor sends and we never do
 
 Both fell out of decoding the mailbox writes, and both are pure additions:
 
@@ -663,7 +692,7 @@ So sending it means having a **current link RSSI** and somewhere to send it
 from periodically. The receive path already computes RSSI per frame
 (`phyStatus[1] - 110` in `RxPath.cpp`), but it is only recorded on scan
 entries; nothing tracks it for the associated peer. **That makes this the same
-task as item 3**, not a precursor to it: the command is the interface to
+task as item 4**, not a precursor to it: the command is the interface to
 firmware rate adaptation, and sending it without real RSSI behind it would just
 feed the firmware noise.
 
@@ -674,7 +703,7 @@ output disagrees with the reference for `0x42` -- it shows `h2c[1] = 0x8C`
 where the reference sets that byte to zero unconditionally. Trust the
 reference's layout over `scratchpad/h2c-all.py` until that decoder is fixed.
 
-### 4. Rate adaptation, hardware CCMP, aggregation
+### 5. Rate adaptation, hardware CCMP, aggregation
 
 The remaining limits are known and all deliberate:
 
@@ -702,7 +731,7 @@ The remaining limits are known and all deliberate:
 - **A-MPDU aggregation is disabled.** `MAX_AGG_NUM` and `AMPDU_DENSITY` are
   never set and Block-ACK state is not wired up.
 
-### 5. Throughput, and why it cannot be measured here
+### 6. Throughput, and why it cannot be measured here
 
 The response-timing fix cut transmissions per frame from 42.5 to 1.0, so
 throughput should have improved substantially. It has not been measured,
@@ -731,7 +760,7 @@ Either way, read the interface's own `Transmit` counter as well as any
 timing figure -- routing cannot fake the counter, and every transmit number in
 this document's history was suspect for exactly that reason.
 
-### 6. Receive throughput
+### 7. Receive throughput
 
 Note the transmit figures below predate the discovery that transmit cannot be
 measured over the air on this bench -- see
@@ -816,7 +845,7 @@ Two other structural candidates, unmeasured:
    the device-wide `fLock`, which transmit also takes. Contention on one mutex
    across the whole driver is plausible at these rates.
 
-### 7. Loose ends
+### 8. Loose ends
 
 - **`SetActivePowerMode()` hangs intermittently.** It is the post-assoc
   worker's first action and issues an H2C command; when it hangs, association
