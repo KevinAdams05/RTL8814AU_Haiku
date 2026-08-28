@@ -784,6 +784,17 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 	if (queueSelect != kTxQueueMGT && queueSelect != kTxQueueCMD)
 		dword2 |= kTxDescBK;
 
+	// SPE_RPT (dword 2 bit 19) asks the firmware for a transmit report on this
+	// frame. It is deliberately not set.
+	//
+	// It was tried, as the last route to the drop *reason* for the reason-15
+	// defect -- the register route does not exist on this chip, since 0x04EC
+	// is a dropped-packet counter here. Nothing arrived. Not a transmit
+	// report, not an "unknown C2H event", nothing: the C2H interrupt-IN path
+	// in this driver has never delivered a single event of any kind. So the
+	// bit is unverified rather than useless, and setting it without evidence
+	// only makes later descriptor debugging harder.
+
 	// DWORD 3: USE_RATE only.
 	//
 	// This dword used to also carry a 12-bit software sequence number at

@@ -417,11 +417,18 @@ the discriminator either.
 Only three things vary between attempts: the air, the access point's state, and
 the chip's internal state. Of those, one has a measured correlation already:
 
-**The failure rate tracks time of day.** The same build measured 4/20 one
-afternoon and 12/30 that evening, 11% on one night and 40% the next. That is a
-large effect and it points at **medium contention** -- which fits the one drop
-reason left standing, since `retry-over` is precisely what a MAC reports when it
-cannot win a transmit opportunity within its retry budget.
+**Contention is dead too, and the "time of day" effect was over-read.** Air
+utilisation during each attempt -- capture bytes per fixed window, now reported
+for every attempt -- does not predict the outcome at all: median 1.89 MB across
+9 successes against 1.85 MB across 5 failures, with fully overlapping ranges
+(1.66-2.24 against 1.70-2.32).
+
+And the time-of-day claim that motivated it does not hold up either. Tested
+rather than asserted: 4/20 one afternoon against 12/30 that evening is
+p = 0.216, and 2/18 against 12/30 is p = 0.049. One marginal result and one
+null. **The rate is unstable, which is reason enough to interleave every build
+comparison, but "it tracks time of day" is not established** and should not be
+built on.
 
 **The experiment that follows is cheap and uses data already being collected.**
 The harness captures the air for each attempt; compute channel utilisation from
@@ -438,6 +445,34 @@ tight enough that it is hard to read as anything else. But the reference driver
 never uses the register and no datasheet in the corpus documents it, so the
 direction is inferred, not established. Worth confirming before building much on
 it.
+
+### The C2H path has never delivered anything, and that is the next thread
+
+Asking for the drop reason per frame, via the descriptor's `SPE_RPT` bit
+(dword 2 bit 19), produced **nothing** -- and not just no transmit report:
+across this driver's entire life the syslog contains no `TX report:`, no
+`unknown C2H event`, no firmware debug line. **Not one C2H event of any kind
+has ever arrived.**
+
+That is a finding in itself, and a more tractable one than the defect. The
+plumbing all looks present: the interrupt IN endpoint 0x85 is found at probe,
+`WiFiManager::Start()` is called, it submits the transfer, and
+`HandleC2HEvent()` dispatches five event types and logs anything unrecognised.
+Something in between never fires.
+
+Worth knowing before chasing it: this driver drives scanning itself rather than
+via firmware, so scan-complete and connection-status events were never expected.
+But *nothing at all* points at the transfer, not the event mix.
+
+**Check, in order:** does the interrupt IN transfer ever complete (log its
+callback, including errors)? Does it need re-submitting after each completion,
+and does that happen? Is the endpoint's max packet size and interval right? Is
+the firmware configured to emit C2H at all -- on other Realtek parts that needs
+a register this chip may name differently, which has now caught us three times.
+
+Getting C2H working would give the drop reason directly (`RETRY_OVER` versus
+`LIFE_TIME_OVER`), and it is also the prerequisite for firmware-driven rate
+adaptation (item 4).
 
 ### What is left
 

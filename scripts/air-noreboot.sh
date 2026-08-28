@@ -102,15 +102,23 @@ REMOTE
 	fi
 
 	OKC=$(echo "$VERDICT" | sed -n 's/.*ok=\([0-9]*\).*/\1/p')
+	# Capture size is reported for every attempt, including the ones whose
+	# capture is then discarded. It is a serviceable proxy for how busy the
+	# air was during the attempt -- bytes captured per fixed window -- and the
+	# failure rate here tracks time of day strongly enough that contention is
+	# the leading remaining explanation. Correlating size against outcome tests
+	# that without any new instrument.
+	SZ=0
+	[ -n "$CAP" ] && SZ=$(stat -c %s "$PCAP" 2>/dev/null || echo 0)
+
 	if [ "${OKC:-0}" -gt 0 ]; then
 		[ -n "$CAP" ] && rm -f "$PCAP"
-		echo "attempt $a: OK        ($VERDICT)"
+		echo "attempt $a: OK        ($VERDICT) air=${SZ}"
 	else
 		kept=$((kept+1))
 		rsh 30 'cat /boot/home/last-attempt.txt' > "$OUT/attempt-$a.syslog"
 		if [ -n "$CAP" ]; then
-			SZ=$(stat -c %s "$PCAP" 2>/dev/null || echo 0)
-			echo "attempt $a: **FAILED** ($VERDICT)  [kept $(basename "$PCAP"), $SZ bytes]"
+			echo "attempt $a: **FAILED** ($VERDICT) air=${SZ}  [kept $(basename "$PCAP")]"
 		else
 			echo "attempt $a: **FAILED** ($VERDICT)"
 		fi
