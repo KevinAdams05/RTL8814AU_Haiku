@@ -475,6 +475,28 @@ trying to get it. `RETRY_OVER` versus `LIFE_TIME_OVER` would have been decisive,
 lifetime is already excluded by register readback, and there is no third route
 short of firmware work.
 
+### The access-point comparison is still unanswered, and here is why
+
+It was attempted twice and both runs are void. The second network failed 8 of 8
+while the first ran 6 of 8 -- which looked like a large, clean effect and was
+entirely an artefact: **each block of the second network followed a successful
+join to the first, which left the chip's BSSID filter pinned to the wrong access
+point, so the second SSID was not in the scan list to be joined.** That bug is
+now fixed (see the CHANGELOG), and the comparison can be run again -- the
+harness alternates SSIDs without a reboot, so it is about 40 minutes for 16
+attempts each.
+
+Two lessons worth carrying rather than repeating:
+
+- **"No BSS matching X in scan list - run a scan first" was a misleading
+  message.** A scan had just listed the network three times over. The message
+  now prints the requested SSID with its length and the scanned entries with
+  theirs, because the lookup requires an exact length match and a length
+  disagreement is indistinguishable from a missing network.
+- **An experiment that alternates networks was the wrong shape** while a
+  connect-then-scan bug existed. Interleaving is still right; it just needs the
+  thing being alternated to be independent between blocks, and it was not.
+
 ### The axis never tested: a different access point
 
 Every measurement of this defect, on both adapters, has been against **one

@@ -2256,6 +2256,37 @@ RTL8814AUDevice::_ScanSweep()
 		return;
 	}
 
+	// Accept beacons from every access point again before sweeping.
+	//
+	// Enabling CCMP after a successful handshake sets CBSSID_DATA and
+	// CBSSID_BCN, so the chip only accepts frames whose BSSID matches the
+	// access point we joined. Nothing ever cleared them again, and they
+	// survive a disconnect and an interface down/up, so **after the driver had
+	// connected once it could not see another network until reboot**: a scan
+	// swept all 42 channels, reported success, and collected beacons from the
+	// one BSSID it was still filtered to.
+	//
+	// That is a user-visible fault on its own -- connect, then look at the
+	// network list, and everything else has vanished -- and it quietly
+	// invalidated measurements here. An access-point comparison failed 8 of 8
+	// on the second network purely because each of its blocks followed a
+	// successful join to the first, leaving the filter pinned to the wrong
+	// BSSID.
+	//
+	// Clearing it here rather than on disconnect is deliberate: a sweep is
+	// exactly the operation that needs every beacon, and the connected check
+	// above means this only runs when there is no link to protect.
+	if (fRegisterIO != NULL) {
+		uint32 rcr = fRegisterIO->Read32(kRegRCR);
+		uint32 unfiltered = rcr & ~(kRCR_CBSSID_DATA | kRCR_CBSSID_BCN);
+		if (unfiltered != rcr) {
+			fRegisterIO->Write32(kRegRCR, unfiltered);
+			dprintf(RTL8814AU_DRIVER_NAME ": scan-sweep: RCR 0x%08x->0x%08x "
+				"(cleared CBSSID so beacons from every AP are accepted)\n",
+				(unsigned)rcr, (unsigned)unfiltered);
+		}
+	}
+
 	uint8 returnChannel = fPhyConfig->CurrentChannel();
 	bigtime_t startedAt = system_time();
 	uint32 visited = 0;
@@ -3724,8 +3755,25 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 		}
 		const BssEntry* match = fWiFiManager->FindBssBySsid(ssid, ssidLen);
 		if (match == NULL) {
-			dprintf(RTL8814AU_DRIVER_NAME ": _DoJoin: no BSS matching "
-				"'%s' in scan list - run a scan first\n", ssid);
+			// Say what was compared, not just that it failed.
+			//
+			// This message read "run a scan first" for a network that a scan
+			// had just listed three times over: `ifconfig list` showed
+			// AdamsFamily02-5G and this lookup could not find it. The lookup
+			// requires an exact ssidLength match, so a length disagreement
+			// between what userland sends and what the scan stored looks
+			// exactly like a missing network -- and the old message sent the
+			// reader off to re-run a scan that was never the problem.
+			dprintf(RTL8814AU_DRIVER_NAME ": _DoJoin: no BSS matching '%s' "
+				"(len=%" B_PRIu32 ") among %" B_PRIu32 " scanned\n",
+				ssid, ssidLen, fWiFiManager->BssCount());
+			BssEntry entries[8];
+			uint32 got = fWiFiManager->GetScanResults(entries, 8);
+			for (uint32 i = 0; i < got; i++) {
+				dprintf(RTL8814AU_DRIVER_NAME ":   scanned[%" B_PRIu32
+					"] len=%u '%s'\n", i, (unsigned)entries[i].ssidLength,
+					entries[i].ssid);
+			}
 			return B_NAME_NOT_FOUND;
 		}
 		memcpy(resolved, match->bssid, 6);

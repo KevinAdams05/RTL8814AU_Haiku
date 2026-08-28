@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+**After connecting once, the driver could not see any other network until
+reboot.** Enabling CCMP at the end of a successful handshake sets the chip's
+BSSID filter (`CBSSID_DATA` and `CBSSID_BCN`), so only frames from the access
+point you joined are accepted. Nothing ever cleared it again -- not a
+disconnect, not taking the interface down and back up -- so every later scan
+swept all 42 channels, reported success, and collected beacons from that one
+BSSID.
+
+What you would see: connect to a network, then open the network list, and
+everything else has vanished. Measured on the same machine, scanning after a
+connect and an interface down/up:
+
+| | networks found |
+|---|---|
+| before | 1 |
+| after | 29 |
+
+A scan sweep now clears the filter before it starts, which is the right place
+for it: sweeping is exactly the operation that needs beacons from everyone, and
+the sweep already declines to run while a link is up.
+
+
 **The licence is now the GNU General Public License, version 2.** It was MIT.
 
 This driver is original code written for Haiku, not a port, and no code has
