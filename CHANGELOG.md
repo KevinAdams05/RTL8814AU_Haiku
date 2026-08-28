@@ -61,8 +61,13 @@ Measured over the air, same access point, one join each:
 | before | 510 | 12 | 498 | 42.5 |
 | after | 8 | 8 | 0 | 1.0 |
 
-Join failures over the same access point fell from 6 in 30 to **1 in 60**
-(Fisher exact p = 0.005, two independent 30-attempt runs).
+The transmissions-per-frame figure is a direct measurement and stands. Join
+failure rates are **not** quoted here, because this driver's rate drifts between
+roughly 10% and 67% on its own -- the same build has measured 30% and 13% in two
+tests -- so the sequential before-and-after comparison originally reported
+(6 in 30 down to 1 in 60) cannot be separated from that drift. Whether this fix
+also improves the join rate is untested; that it removes 97% of the
+retransmissions is not in doubt.
 
 
 **Every frame this driver sent went out with sequence number 0.** Measured over

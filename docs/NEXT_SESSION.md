@@ -53,10 +53,24 @@ point:
 | sequence numbers fixed | 6 / 21 (29%) | 42.5 |
 | response timing fixed too | **1 / 60 (1.7%)** | **1.0** |
 
-Both results hold up. The transmissions-per-frame collapse is unambiguous, and
-the failure-rate improvement is significant over two independent 30-attempt
-runs (30 with one failure, then 30 with none; Fisher exact p = 0.005 against
-the baseline).
+**One of these two results holds up; the other has to be downgraded.**
+
+The transmissions-per-frame collapse, 42.5 to 1.0, is unambiguous and stands. It
+is a direct measurement of a mechanism -- count the frames on the air, divide by
+the distinct sequence numbers -- not a success rate, so drift cannot touch it.
+
+**The failure-rate column cannot carry the weight it was given.** Those three
+configurations were measured *sequentially*, hours and days apart, and
+2026-08-28 established that this rate drifts between roughly 10% and 67% on its
+own: the same build measured 30% and 13% in two tests, and one adapter went 30%,
+60%, 10% across three blocks of one afternoon. A 20%-to-1.7% improvement is
+exactly the shape drift produces. The `p = 0.005` was computed against a
+baseline taken on a different day, which the test could not know.
+
+So: the response-timing fix is real and its airtime effect is measured. Whether
+it also improved the join failure rate is **unproven**, and would need an
+interleaved comparison against the pre-fix build to establish. That comparison
+has not been run.
 
 **The sequence-number fix alone changed nothing measurable**, which is worth
 recording: it is a genuine bug, verified fixed on the air, and it was not what
@@ -94,26 +108,39 @@ Current state at a glance:
 | 2.4 GHz | works | works |
 | 5 GHz | works (54/15 Mbit/s) | **works** -- 59 of 60 joins, WPA2-CCMP, DHCP lease over the air (2026-08-25) |
 
-**The two adapters no longer behave the same, and that is the open problem.**
-Joins on 5 GHz, measured the same way on the same access point on 2026-08-25:
+**The two adapters behave the same.** Settled 2026-08-28 by an interleaved
+comparison on one access point -- three rounds of ten attempts each, with a
+physical swap between blocks so both met the same conditions:
 
-| adapter | joins failing | notes |
+| round | ASUS | Edimax |
 |---|---|---|
-| Edimax AC1750 | **1 / 60** | across two independent 30-attempt runs |
-| ASUS USB-AC68 | **~19 / 50** | in bursts of consecutive failures (item 1) |
+| 1 | 3 / 10 | 4 / 10 |
+| 2 | 6 / 10 | 1 / 10 |
+| 3 | 1 / 10 | 2 / 10 |
+| **pooled** | **10 / 30 (33%)** | **7 / 30 (23%)** |
 
-**The ASUS rate is not stable, so do not compare builds across time.** The same
-build measured 4/20 one afternoon and 12/30 that evening, and 12/18 partway
-through a single run. Any build comparison has to interleave the builds within
-one session, in blocks, or it will attribute a drifting baseline to whichever
-build happened to run when conditions were worse. Three builds are already
-prepared for that comparison -- see step 0.
+Fisher exact `p = 0.567`. The within-round winner flips twice. **So the earlier
+reading -- Edimax 1/60 against ASUS ~15%, taken hours apart -- was an artefact of
+when each was measured, and "the Edimax is the good adapter" is withdrawn.** The
+absolute rates in that comparison are inflated for both, because it ran on the
+instrumented build (see below), but it compared like with like.
 
-The chip-level fixes are confirmed on *both* -- the ASUS shows 16 distinct
-sequence numbers for 16 frames and 1.1 transmissions per frame against 42.5
-before -- so those are not in question. What is in question is why the ASUS
-still fails, and whether the difference is the adapter or the conditions: the
-ASUS runs were later in the day, and the two were never alternated.
+**Absolute rates here are close to meaningless; only interleaved comparisons
+carry information.** Same build, same adapter, same access point, measured
+twice: 30% and 13%. One adapter across three blocks of a single afternoon: 30%,
+60%, 10%. Any claim in this project's history that rests on comparing two
+sequential runs is unsafe, including several that were made confidently.
+
+**And the instrumentation was making it worse.** A per-M2 register readback
+added on 2026-08-28 put nine synchronous USB control transfers on the EAPOL
+critical path and took failures from 30% to 67% (`p = 0.009`). Removed in
+`e4d7db0`, and removal was sufficient: against the build that had measured 1 in
+60, the cleaned-up build is 4/30 against 2/30, `p = 0.671`. Full account in
+[testing-notes.md](testing-notes.md).
+
+The chip-level fixes are confirmed on *both* adapters -- the ASUS shows 16
+distinct sequence numbers for 16 frames and 1.1 transmissions per frame against
+42.5 before -- so those are not in question.
 
 **Everything below was verified end to end**, on runs that did not hit the
 failure:
