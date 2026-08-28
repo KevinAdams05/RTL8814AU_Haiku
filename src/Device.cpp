@@ -4474,69 +4474,18 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 		dprintf(RTL8814AU_DRIVER_NAME ": EAPOL state -> WaitM3 "
 			"(M2 handed to the chip)\n");
 
-		// Read the chip back on every M2, so a failing attempt is described
-		// while it is failing rather than at the join that preceded it.
+		// No per-M2 register readback here any more.
 		//
-		// "Handed to the chip" means `queue_bulk()` accepted the frame, and no
-		// more than that: the call is asynchronous. When this fails, the access
-		// point resends M1 four times and no M2 ever reaches the air, so
-		// something between here and the antenna is discarding it while
-		// management frames on another queue keep transmitting.
+		// There was one, and it did its job: it established that the chip counts
+		// every failing M2 as a dropped packet, and it retired lifetime expiry,
+		// TXPAUSE, SECCFG, page exhaustion and the RF channel as causes. But it
+		// cost **nine synchronous USB control transfers on the EAPOL critical
+		// path**, one of them an indirect RF read worth several transfers, all
+		// executed between handing M2 to the chip and being able to process M3.
 		//
-		// TXPAUSE is the first suspect precisely because it gates
-		// transmission per queue, which is the shape of the symptom. SECCFG
-		// is the second: the comment in _DoJoin() records that leftover
-		// security state makes the chip mangle our M2 so the access point
-		// never sees a valid one -- this exact symptom -- and although the
-		// descriptor asks for no encryption, that is worth confirming rather
-		// than assuming.
-		if (fRegisterIO != NULL) {
-			uint8 txPause = fRegisterIO->Read8(kRegTxPause);
-			uint8 secCfg = fRegisterIO->Read8(kRegSecCfg);
-			uint32 controlReg = fRegisterIO->Read32(kRegCR);
-			uint32 normal = fRegisterIO->Read32(kRegFifoPageInfo3);
-			uint32 pub = fRegisterIO->Read32(kRegFifoPageInfo5);
-			// Also the channel the RF chain is really on, read from RF
-			// register 0x18 rather than from the driver's cached value.
-			// Everything else about a failing M2 is identical to one that
-			// works, so "the chip is transmitting somewhere nobody is
-			// listening" is now a serious possibility -- and a previous
-			// channel hypothesis in this driver was built on a readback that
-			// only fired on a band change, which is why this reads the
-			// register every time.
-			uint32 rfChannel = 0;
-			if (fPhyConfig != NULL)
-				rfChannel = fPhyConfig->ReadRfChannelRegister(0);
-
-			// And the chip's per-queue "this queue has drained" flags. This
-			// is the one thing a successful queue_bulk() cannot tell us, and
-			// it splits the remaining possibilities cleanly: the M2 is
-			// confirmed absent from the air, so either the chip is still
-			// holding it -- this queue reads non-empty -- or the chip took it
-			// and dropped it, and the queue reads empty. The read costs a USB
-			// control transfer, so a frame that was going to be transmitted
-			// has had time to drain by the time the value arrives.
-			uint16 queueEmpty = 0;
-			if (fTxPath != NULL)
-				queueEmpty = fTxPath->ReadTxQueueEmpty();
-
-			// The chip's dropped-packet counter. Everything else says this
-			// frame is fine and it still never reaches the air, so the
-			// question is whether the chip is counting it as dropped.
-			uint16 dropped = fRegisterIO->Read16(kRegDropPktNum);
-			uint8 lifetimeEn = fRegisterIO->Read8(kRegLifetimeEn);
-			dprintf(RTL8814AU_DRIVER_NAME ": M2CHIP txpause=0x%02x "
-				"seccfg=0x%02x cr=0x%08x nml=%04x/%04x pub=%04x/%04x "
-				"rf0x18=0x%05x ch=%u qempty=0x%04x dropped=%u lt_en=0x%02x\n",
-				txPause, secCfg, (unsigned)controlReg,
-				(unsigned)(normal & 0xFFFF), (unsigned)(normal >> 16),
-				(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16),
-				(unsigned)rfChannel,
-				fPhyConfig != NULL
-					? (unsigned)fPhyConfig->CurrentChannel() : 0u,
-				(unsigned)queueEmpty, (unsigned)dropped,
-				(unsigned)lifetimeEn);
-		}
+		// That is an observer effect, and a candidate for having made the thing
+		// it measured worse. Put it back only for a specific question, and
+		// measure with it removed before believing any rate taken with it in.
 		return;
 	}
 

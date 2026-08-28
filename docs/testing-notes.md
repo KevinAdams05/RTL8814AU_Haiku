@@ -326,6 +326,43 @@ the two `dw 0=... dw 5=...` lines did not, which made the descriptor look
 undumped for an entire session. Use `grep -a -A2` around the anchor line, or
 grep for the payload rather than the prefix.
 
+## The instrumentation made the fault worse -- measure with it removed
+
+On 2026-08-28 a per-M2 register readback was added to characterise the reason-15
+failure: TXPAUSE, SECCFG, CR, two page registers, the RF channel, the transmit
+queue-empty flags, the dropped-packet counter and the lifetime enable. **Nine
+synchronous USB control transfers, one of them an indirect RF read worth several
+more, all on the EAPOL critical path** -- executed between handing M2 to the chip
+and being able to process M3.
+
+Measured, interleaved, 30 attempts each:
+
+| build | join failures |
+|---|---|
+| with the readback | 20 / 30 (67%) |
+| with it removed | 9 / 30 (30%) |
+
+`p = 0.009`. **The diagnostics more than doubled the failure rate they were added
+to investigate.** Every rate quoted while they were in is inflated.
+
+Removing them was also sufficient: against the earlier build that had measured
+1 failure in 60, the cleaned-up current build is 4/30 against 2/30, `p = 0.67`.
+There was no second regression -- the instrumentation was the whole of it.
+
+**The rule this gives:** on a path with a deadline -- a handshake, an interrupt
+handler, anything an access point is timing -- a synchronous register read is not
+free and is not passive. Before trusting any rate measured with new
+instrumentation in place, measure again with it removed, interleaved. And prefer
+instrumentation that is off the critical path: a one-shot dump, a counter read at
+join time, a value latched now and printed later.
+
+**How it was nearly missed.** Kevin said the driver seemed to have regressed. I
+compared the ASUS against its shipped 17% baseline, found ~15%, and concluded
+nothing had regressed. That was the wrong comparison: the regression was on the
+*other* adapter against *its own* best measurement, 1.7% to 23%, `p = 0.0017`.
+Reaching for the baseline that makes a concern disappear is how a real regression
+survives a check.
+
 ## The air is the only place some faults are visible
 
 Two hardware faults survived months of reading our own source, comparing USB

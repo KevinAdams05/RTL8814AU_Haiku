@@ -166,8 +166,18 @@ Two things did move, both forward:
   build B with the sequence-number change *disabled* failed 4/18, against 2/18
   with it enabled. Removing the change made it worse.
 
-**Always quote a measured rate against the 17% baseline.** Doing otherwise is
-what made this look like a regression.
+**Always quote a measured rate against the 17% baseline**, and say which build
+and which hour it came from. Doing otherwise is what made this look like a
+regression -- and then hid a real one.
+
+**The rates in this document taken between 2026-08-28's diagnostics and their
+removal are inflated** and should not be compared with anything. See
+testing-notes.md: nine synchronous control transfers on the EAPOL critical path
+took failures from 30% to 67%, `p = 0.009`.
+
+**Absolute rates are close to meaningless here; only interleaved comparisons
+are.** Same build, same adapter, same access point, measured twice: 30% and 13%.
+One adapter across three blocks of one afternoon: 30%, 60%, 10%.
 
 ### The failure itself -- reproducible, cause unknown
 
