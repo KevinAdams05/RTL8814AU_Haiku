@@ -532,10 +532,29 @@ static const uint16 kRegTxPktEmpty			= 0x041A;
 // the peer acknowledged it.  That is the one thing neither a successful USB
 // completion nor an empty TX queue can tell us: whether the frame actually
 // made it onto the air and was received.
-static const uint16 kRegTxReportCtrl		= 0x04EC;
-static const uint16 kRegTxReportTime		= 0x04F0;
-static const uint8 kTxReportEnableBits		= (1 << 1) | (1 << 5);
-static const uint16 kTxReportTimeDefault	= 0x3DF0;
+// On this chip these two addresses are NOT the transmit-report registers.
+//
+// The generic Realtek header names 0x04EC `REG_TX_RPT_CTRL` and 0x04F0
+// `REG_TX_RPT_TIME`, and this driver wrote enable bits to the first and 0x3DF0
+// to the second on every initialisation. The chip-specific header names them
+// differently:
+//
+//   0x04EC  REG_DROP_PKT_NUM_8814A   -- a dropped-packet counter
+//   0x04F0  REG_PTCL_TX_RPT_8814A    -- protocol transmit report
+//
+// So the "enable" was being written into a counter, which is why the readback
+// said 0x00 -> 0x00 on every boot while the log claimed success, and why not
+// one C2H transmit report ever arrived. The vendor driver never touches either
+// address on this chip; its generic `REG_TX_RPT_CTRL` write is for other
+// chips, from a debug path. The Realtek datasheets in the reference corpus do
+// not document 0x04EC at all, so the chip-specific header is the best
+// authority available. Same trap as 0x4FC and `EN_HWSEQ`: a generic name that
+// means something else here.
+//
+// The drop counter is kept because it is worth reading: a chip that accepts a
+// frame, drains its queue and never transmits it may well be counting it here.
+static const uint16 kRegDropPktNum			= 0x04EC;	// read-only counter
+static const uint16 kRegPtclTxRpt			= 0x04F0;
 static const uint16 kRegRQPN_NPQ			= 0x0214;
 
 // 8814A-specific page-allocation registers.  Unlike the older 8192-series
@@ -866,7 +885,23 @@ static const uint16 kRegFifoPageInfo5		= 0x0240;	// public pool
 static const uint16 kRegHwSeqCtrl			= 0x0423;
 static const uint8 kHwSeqCtrlAllQueues		= 0xFF;
 
-static const uint16 kRegPktLifeTime			= 0x04C0;
+// Transmit lifetime. Two registers, and this driver only ever wrote one.
+//
+// 0x04C0 holds the lifetime *values*, packed as (BE/BK << 16) | (VO/VI), each
+// 0xFFFF for "as long as possible" -- which is what we write. But whether the
+// MAC enforces expiry at all is controlled separately by REG_LIFETIME_EN, one
+// enable bit per access category in the low nibble, and **we have never
+// touched it**. The reference driver computes both together and leaves the
+// enable nibble at zero unless something asks for expiry.
+//
+// This matters because the chip counts a frame it expires as dropped, and its
+// C2H transmit report has a dedicated LIFE_TIME_OVER flag -- so expiry is a
+// real failure mode here, not a theoretical one. A frame that is accepted,
+// whose queue drains, that never reaches the air and that increments the
+// dropped-packet counter is exactly what expiry looks like from outside.
+static const uint16 kRegLifetimeEn			= 0x0426;
+static const uint8 kLifetimeEnAcMask		= 0x0F;
+static const uint16 kRegPktLifeTime			= 0x04C0;	// (BE/BK << 16) | VO/VI
 static const uint32 kPktLifeTimeDisabled	= 0xFFFFFFFF;
 
 // Protection mode (RTS/CTS) control, and the retry/aggregation limits beside
@@ -1132,7 +1167,12 @@ static const uint32 kTxDescHTC				= (1 << 25);	// HT control present
 static const uint32 kTxDescLS				= (1 << 26);	// Last segment
 static const uint32 kTxDescFS				= (1 << 27);	// First segment
 // Ask the firmware for a transmit report on this frame (descriptor dword 2,
-// bit 19).  Pairs with kRegTxReportCtrl.
+// bit 19).
+//
+// Nothing pairs with this at the register level any more: the register this
+// comment used to name, 0x04EC, is a dropped-packet counter on this chip and
+// not a report control -- see kRegDropPktNum. Whether the firmware honours
+// this descriptor bit on its own is untested; the driver does not set it.
 static const uint32 kTxDescSpeRpt			= (1u << 19);
 
 // Fields the reference driver sets on a non-QoS frame that this driver did

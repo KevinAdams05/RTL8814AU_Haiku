@@ -895,6 +895,9 @@ RTL8814AUDevice::_InitMAC()
 	// costs several percent of frames on a real link and is more than enough
 	// to flatten TCP throughput.
 	fRegisterIO->Write16(kRegRetryLimit, kRetryLimitInit);
+	dprintf(RTL8814AU_DRIVER_NAME ": retry limit(0x042A) 0x%04x -> 0x%04x\n",
+		(unsigned)kRetryLimitInit,
+		(unsigned)fRegisterIO->Read16(kRegRetryLimit));
 
 	// Response timing and the ACK timeout, none of which was ever written.
 	//
@@ -1026,6 +1029,14 @@ RTL8814AUDevice::_InitMAC()
 	// never being transmitted. The MACID_SLEEP default matters too, because
 	// bit 1 is the management and broadcast MACID.
 	fRegisterIO->Write32(kRegPktLifeTime, kPktLifeTimeDisabled);
+
+	// Report what that actually achieved, and whether expiry is even enabled.
+	// The value register is only half the story -- see kRegLifetimeEn -- and
+	// today's lesson from 0x04EC is that a write is not a result.
+	dprintf(RTL8814AU_DRIVER_NAME ": lifetime: EN(0x0426)=0x%02x "
+		"VALUE(0x04C0)=0x%08x\n",
+		(unsigned)fRegisterIO->Read8(kRegLifetimeEn),
+		(unsigned)fRegisterIO->Read32(kRegPktLifeTime));
 	fRegisterIO->Write32(kRegMacIdSleep, 0);
 	fRegisterIO->Write8(kRegProtModeCtrl, kProtModeCtrlInit);
 	fRegisterIO->Write32(kRegProtModeCtrlHigh, kProtModeCtrlHighInit);
@@ -1059,12 +1070,18 @@ RTL8814AUDevice::_InitMAC()
 	// Turn on per-frame transmit reporting.  Plain register writes, so this
 	// is safe here — unlike an H2C command, which blocks device
 	// initialisation and boots the machine unreachable.
-	uint8 reportCtrl = fRegisterIO->Read8(kRegTxReportCtrl);
-	fRegisterIO->Write8(kRegTxReportCtrl, reportCtrl | kTxReportEnableBits);
-	fRegisterIO->Write16(kRegTxReportTime, kTxReportTimeDefault);
-	dprintf(RTL8814AU_DRIVER_NAME ": TX report enabled (RPT_CTRL 0x%02x -> "
-		"0x%02x)\n", (unsigned)reportCtrl,
-		(unsigned)fRegisterIO->Read8(kRegTxReportCtrl));
+	// Read, do not write, 0x04EC and 0x04F0.
+	//
+	// This used to write transmit-report enable bits to 0x04EC and 0x3DF0 to
+	// 0x04F0, on the generic Realtek names for those addresses. On this chip
+	// they are a dropped-packet counter and the protocol transmit report -- see
+	// kRegDropPktNum. The enable never took (0x00 -> 0x00 on every boot, while
+	// the log said "enabled"), and writing 0x3DF0 into a protocol
+	// transmit-report register was never intended by anything.
+	dprintf(RTL8814AU_DRIVER_NAME ": drop counter 0x04EC=0x%04x "
+		"ptcl tx rpt 0x04F0=0x%04x\n",
+		(unsigned)fRegisterIO->Read16(kRegDropPktNum),
+		(unsigned)fRegisterIO->Read16(kRegPtclTxRpt));
 
 	// Enable DMA engines
 	status = _EnableDMA();
@@ -4454,16 +4471,23 @@ RTL8814AUDevice::_HandleEapolFrame(const uint8* payload, uint32 length,
 			uint16 queueEmpty = 0;
 			if (fTxPath != NULL)
 				queueEmpty = fTxPath->ReadTxQueueEmpty();
+
+			// The chip's dropped-packet counter. Everything else says this
+			// frame is fine and it still never reaches the air, so the
+			// question is whether the chip is counting it as dropped.
+			uint16 dropped = fRegisterIO->Read16(kRegDropPktNum);
+			uint8 lifetimeEn = fRegisterIO->Read8(kRegLifetimeEn);
 			dprintf(RTL8814AU_DRIVER_NAME ": M2CHIP txpause=0x%02x "
 				"seccfg=0x%02x cr=0x%08x nml=%04x/%04x pub=%04x/%04x "
-				"rf0x18=0x%05x ch=%u qempty=0x%04x\n",
+				"rf0x18=0x%05x ch=%u qempty=0x%04x dropped=%u lt_en=0x%02x\n",
 				txPause, secCfg, (unsigned)controlReg,
 				(unsigned)(normal & 0xFFFF), (unsigned)(normal >> 16),
 				(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16),
 				(unsigned)rfChannel,
 				fPhyConfig != NULL
 					? (unsigned)fPhyConfig->CurrentChannel() : 0u,
-				(unsigned)queueEmpty);
+				(unsigned)queueEmpty, (unsigned)dropped,
+				(unsigned)lifetimeEn);
 		}
 		return;
 	}
@@ -4964,6 +4988,19 @@ RTL8814AUDevice::_TxEapolDataFrame(const uint8* apMac,
 	memcpy(wireFrame + i, eapol, eapolLen);
 	i += eapolLen;
 
+	// EAPOL goes out on the best-effort queue, which maps to bulk OUT
+	// endpoint 0x04.
+	//
+	// Moving it to the voice queue was tried, because that maps to endpoint
+	// 0x02 -- the one the authentication and association frames use, which
+	// reach the air in every failing attempt while the M2 on 0x04 does not.
+	// Measured interleaved against this, 24 attempts each: 4/24 failed on the
+	// voice queue against 3/24 here. No improvement, so the endpoint is not
+	// what distinguishes the frames that transmit from the frame that does not,
+	// and the change is not kept.
+	//
+	// What still distinguishes them is frame type: auth and assoc-req are
+	// management frames, the M2 is a data frame.
 	return fTxPath->Transmit(wireFrame, i, kTxQueueBE,
 		_LowestBasicRate(), 0, kSecurityNone, false);
 }

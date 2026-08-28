@@ -342,6 +342,57 @@ block, and then `ip link set up` fails with "Operation not possible due to
 RF-kill" and the type change silently does not stick. Unblock first. Revert
 with `sudo iw dev wlo1 set type managed && sudo nmcli dev set wlo1 managed yes`.
 
+### The chip counts the frame as dropped (2026-08-28)
+
+**There is now a cheap, definitive failure signal.** `0x04EC` on this chip is
+`REG_DROP_PKT_NUM` -- a dropped-packet counter -- and it discriminates perfectly:
+
+| outcome | M2s built | drop counter across the attempt |
+|---|---|---|
+| failure | 4 | 1,2,3,4 -- one per M2 |
+| failure | 4 | 2,3,6,8 |
+| twelve successes in a row | 1 each | **11, static** |
+
+So the chip is not silently losing the frame: it is *counting* it. Detecting the
+fault no longer needs an air capture, which makes hypotheses cheap to test.
+
+**How that register was found is worth repeating.** The driver had been writing
+transmit-report enable bits to `0x04EC` and 0x3DF0 to `0x04F0` on every
+initialisation, using the *generic* Realtek names. On this chip:
+
+| address | generic header | 8814A header |
+|---|---|---|
+| `0x04EC` | `REG_TX_RPT_CTRL` | **`REG_DROP_PKT_NUM`** (counter) |
+| `0x04F0` | `REG_TX_RPT_TIME` | **`REG_PTCL_TX_RPT`** |
+
+The readback said `0x00 -> 0x00` on every boot while the log line said "TX
+report enabled", so per-frame transmit reporting was never on and no C2H report
+ever arrived. Both writes are removed; the counter is read instead. **Third time
+a generic Realtek register name has meant something else on this chip** --
+after 0x4FC/`EN_HWSEQ` and this. Always check `rtl8814a_spec.h`.
+
+**Consequence: the C2H transmit report is not reachable this way.** The vendor
+never touches those addresses for the 8814A, so getting the drop *reason*
+(its report defines `RETRY_OVER` and `LIFE_TIME_OVER`) needs another route.
+
+### Eliminated by measurement, at the failing M2
+
+Everything here was measured on a failing frame, not argued:
+
+| hypothesis | result |
+|---|---|
+| lifetime expiry | dead -- `LIFETIME_EN` (0x0426) reads 0x30, low nibble 0, expiry disabled for every AC; value 0xffffffff |
+| bad retry-limit register | dead -- 0x042A reads back 0x3030 as written |
+| wrong USB endpoint / queue | dead -- EAPOL moved to the VO queue (endpoint 0x02, the one management uses): 4/24 failed against 3/24 on BE |
+| descriptor retry limit | dead -- setting `RetryLimitEn`+12 on data frames: 2/14 still failed, drops still counted |
+| MACID | previously tested; moving data to MACID 1 **broke DHCP**, and MACID 0 is correct per the reference's allocation rules |
+| TXPAUSE, SECCFG, pages, channel, USB completion, descriptor bytes | all dead, see above |
+
+The VO result matters more than it looks: **management frames transmit on the
+very queue and endpoint where our data frame is dropped**, so the discriminator
+is not the queue. What still differs is frame type -- management versus data --
+and MACID, which is already known-correct.
+
 ### What is left
 
 **So the critical path is now step 3, not step 1.** Every driver-side avenue is

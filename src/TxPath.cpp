@@ -825,6 +825,17 @@ RTL8814AUTxPath::_BuildDescriptor(uint8* descriptor, const uint8* frameData,
 	// DWORD 4: transmit rate, and the retry limit for management frames.
 	// DATA_SHORT is NOT here — see dword 5.
 	uint32 dword4 = (dataRate & kTxDescDataRate_Mask);
+
+	// Data frames deliberately carry no explicit retry limit; they fall back
+	// to REG_RETRY_LIMIT, which reads back 0x3030 (48 each way) as intended.
+	//
+	// Setting RetryLimitEn and a limit of 12 on data frames was tried, since
+	// that is the one descriptor field differing between the management
+	// frames that transmit and the M2 that does not. It did not help -- 2
+	// failures in 14 attempts, and the chip still counted every failing M2 as
+	// dropped -- so it is not kept. Of the descriptor differences, MACID was
+	// tested and made things worse, the queue was tested and changed nothing,
+	// and this changed nothing either.
 	if (queueSelect == kTxQueueMGT || queueSelect == kTxQueueCMD) {
 		// The reference gives management frames an explicit retry limit and
 		// leaves fallback alone.  We used to set DISABLE_FB and NAV_USE_HDR
