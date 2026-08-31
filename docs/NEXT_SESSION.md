@@ -521,7 +521,38 @@ Two other structural candidates, unmeasured:
    the device-wide `fLock`, which transmit also takes. Contention on one mutex
    across the whole driver is plausible at these rates.
 
-### 8. Loose ends
+### 8. The KDL -- recurring, unattributed, and capturable next time
+
+The machine dropped into KDL on 2026-08-31 and again at least once earlier in
+this driver's history. **Both times the cause went unrecorded**, and that is the
+part worth fixing rather than the crash itself.
+
+What is known about the 2026-08-31 one:
+
+- It happened **mid-scan**. The last driver lines before the boot banner are
+  `BSS +` entries being added on 2.4 GHz channels 1 and 6, `data RX heartbeat`,
+  and `RX cb #4096` -- so the receive path and the scan were both active.
+- **It was not a boot failure and not deterministic.** The same build had booted
+  and run 30 attempts an hour earlier, and booted fine again afterwards. Its
+  driver source is byte-identical to a build with dozens of clean boots.
+- The receive walk and the BSS-list update were both reviewed for bounds faults
+  and both are sound: the walk bails on `payloadOffset + payloadLength > length`
+  and breaks on zero-length padding, and the PHY-status read is provably inside
+  that bound; SSID and IE copies are clamped.
+
+**Why the cause was not captured, and how to fix that permanently.** KDL output
+goes to the console, not the syslog. There is no `previous_syslog` on this
+machine. But `serial_debug_output true` and `serial_debug_port 0x2f8` are
+**already set** -- COM2 is the SOL UART on this board -- so a serial-over-LAN
+capture would record the panic text automatically. The only obstacle is that the
+BMC's IPMI-over-LAN stops answering periodically and needs a hard reset; it was
+dead when this crash happened.
+
+**So: before any long unattended run, check that SOL is alive.** A crash with a
+serial capture is a diagnosable bug; a crash without one costs a session and
+teaches nothing, which is what happened here twice.
+
+### 9. Loose ends
 
 - **`SetActivePowerMode()` hangs intermittently.** It is the post-assoc
   worker's first action and issues an H2C command; when it hangs, association
