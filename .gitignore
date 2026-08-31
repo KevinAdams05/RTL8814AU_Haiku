@@ -24,3 +24,6 @@ air-nr/
 
 # Output of scripts/interleave-adapters.sh
 adapter-results.txt
+
+# Output of scripts/interleave-networks.sh
+network-results.txt
