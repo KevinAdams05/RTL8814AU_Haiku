@@ -326,6 +326,28 @@ the two `dw 0=... dw 5=...` lines did not, which made the descriptor look
 undumped for an entire session. Use `grep -a -A2` around the anchor line, or
 grep for the payload rather than the prefix.
 
+## Three rounds is not enough; six was
+
+Interleaving is necessary but not sufficient. Testing whether the
+response-timing fix improved the join rate, two independent three-round
+comparisons of the same two builds pointed in **opposite directions**:
+
+| | PRETIME | POSTTIME | reading |
+|---|---|---|---|
+| run 1 | 10/30 | 18/30 | fix looks harmful, `p = 0.069` |
+| run 2 | 9/30 | 4/30 | fix looks helpful |
+| pooled | 19/60 (32%) | 22/60 (37%) | **no effect, `p = 0.701`** |
+
+Run 1 alone would have been written up as "the fix may be making things worse",
+on a p-value close enough to conventional significance to be persuasive. It was
+one anomalous block: 8/10 failures in a POSTTIME block sitting between two ties.
+Run 2 contained the mirror image, 7/10 failures in a PRETIME block.
+
+**With block-to-block noise running from 0/10 to 9/10, three blocks per arm can
+be dominated by one of them.** Budget six blocks per arm for anything that
+matters, and if two independent comparisons disagree, pool them rather than
+believing the more interesting one.
+
 ## The instrumentation made the fault worse -- measure with it removed
 
 On 2026-08-28 a per-M2 register readback was added to characterise the reason-15

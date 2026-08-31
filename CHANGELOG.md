@@ -61,13 +61,14 @@ Measured over the air, same access point, one join each:
 | before | 510 | 12 | 498 | 42.5 |
 | after | 8 | 8 | 0 | 1.0 |
 
-The transmissions-per-frame figure is a direct measurement and stands. Join
-failure rates are **not** quoted here, because this driver's rate drifts between
-roughly 10% and 67% on its own -- the same build has measured 30% and 13% in two
-tests -- so the sequential before-and-after comparison originally reported
-(6 in 30 down to 1 in 60) cannot be separated from that drift. Whether this fix
-also improves the join rate is untested; that it removes 97% of the
-retransmissions is not in doubt.
+The transmissions-per-frame figure is a direct measurement and stands.
+
+**This fix does not change the join failure rate.** Measured properly --
+interleaved against the build immediately before it, six blocks of ten per arm --
+it is 22 failures in 60 against 19 in 60, `p = 0.701`. An earlier note here
+claimed a fall from 20% to 1.7%; that came from comparing two sequential runs
+and does not reproduce. What the fix does is stop the chip retransmitting frames
+the access point has already acknowledged, which is worth having on its own.
 
 
 **Every frame this driver sent went out with sequence number 0.** Measured over

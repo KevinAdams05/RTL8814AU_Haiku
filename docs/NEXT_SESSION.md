@@ -67,10 +67,33 @@ own: the same build measured 30% and 13% in two tests, and one adapter went 30%,
 exactly the shape drift produces. The `p = 0.005` was computed against a
 baseline taken on a different day, which the test could not know.
 
-So: the response-timing fix is real and its airtime effect is measured. Whether
-it also improved the join failure rate is **unproven**, and would need an
-interleaved comparison against the pre-fix build to establish. That comparison
-has not been run.
+**That comparison has now been run, and the answer is no.** Interleaved,
+`febad92` (before the fix) against `f6110e4` (immediately after), six blocks of
+ten per arm across two sessions:
+
+| | PRETIME | POSTTIME |
+|---|---|---|
+| pooled | 19 / 60 (32%) | 22 / 60 (37%) |
+
+Fisher exact `p = 0.701`. **The response-timing fix has no measurable effect on
+the join failure rate**, in either direction.
+
+So the fix keeps exactly one of its two claimed results: it stops the chip
+retransmitting frames the access point has already acknowledged, 42.5
+transmissions per frame down to 1.0, which is a direct count off the air. The
+`20% -> 1.7%, p = 0.005` figure reported on 2026-08-26 is **withdrawn** -- it came
+from comparing two sequential runs, and it does not reproduce.
+
+**And that is informative about the defect itself:** removing 97% of the
+retransmissions changed the join failure rate not at all, so whatever is
+breaking these joins is not an airtime or retransmission problem.
+
+**One methodological point, because it nearly produced another wrong answer.**
+The first three-round run gave PRETIME 10/30 against POSTTIME 18/30, `p = 0.069`
+-- suggesting the fix was *harmful*. The second three-round run gave 9/30 against
+4/30, suggesting it helped. Pooled, they cancel. **Three rounds of ten per arm is
+not enough here**; six was. A single interleaved comparison can still mislead
+when block-to-block noise runs from 0/10 to 9/10.
 
 **The sequence-number fix alone changed nothing measurable**, which is worth
 recording: it is a genuine bug, verified fixed on the air, and it was not what
