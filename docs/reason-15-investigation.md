@@ -15,7 +15,67 @@ point has measured 30% and 13% in two tests, and one adapter went 30%, 60%, 10%
 across three blocks of a single afternoon. Only interleaved comparisons carry
 information. See [testing-notes.md](testing-notes.md).
 
-### The failure itself -- reproducible, cause unknown
+### What the defect is NOT (2026-08-31, and this is the useful part)
+
+Four axes have now been varied and none of them moves the failure rate. Each was
+interleaved, so drift cannot explain the nulls:
+
+| axis varied | result |
+|---|---|
+| **adapter** — ASUS vs Edimax, one AP, swaps between blocks | 10/30 vs 7/30, `p = 0.567` |
+| **band, radio, channel and SSID** — 5 GHz vs 2.4 GHz, 60 each | 24/60 vs 22/60, `p = 0.851` |
+| **airtime** — response-timing fix, 42.5 to 1.0 transmissions per frame | 19/60 vs 22/60, `p = 0.701` |
+| **air utilisation** during each attempt | 1.89 MB vs 1.85 MB across outcomes, ranges overlapping |
+
+And the failure is **the same failure everywhere**. Across 80 parsed joins on two
+networks and two bands, the signature is `associated -> M2 retried -> reason 15`:
+10 of 10 failures on 5 GHz, 6 of 7 on 2.4 GHz (the seventh never got an auth
+response). Not a family of failures with a common symptom -- one failure mode.
+
+**So it is not the access point, not the band, not the radio, not the RF or PHY
+configuration (which differ completely between bands), not the adapter, not
+airtime, and not contention.** That leaves the driver or the chip.
+
+### The structure of the bursts is the strongest clue
+
+The failures arrive in bursts that **hit both bands at the same time**:
+
+| round | 5 GHz | 2.4 GHz |
+|---|---|---|
+| 1 | 4/10 | 5/10 |
+| 2 | **10/10** | **10/10** |
+| 3 | 7/10 | 0/10 |
+| 4 | **0/10** | **0/10** |
+| 5 | 2/10 | 0/10 |
+| 6 | 1/10 | 7/10 |
+
+Round 2 failed everything on both bands; round 4 was perfect on both. Those are
+different SSIDs, different channels, different radios in the access point, and
+completely different PHY paths in our driver -- so whatever the bad state is, it
+is **global to the driver or the chip**, and it comes and goes.
+
+Note also that the run performs **no reboots**, so a burst both begins and ends
+within one uptime. It is a state that fills and drains, not a latch. An earlier
+reading of this as "a latch after N joins" was wrong, and so was reading it as a
+property of one adapter.
+
+### The experiment this points to
+
+Snapshot driver and chip state **once per join** -- at join time, not per M2 --
+and diff the snapshots either side of a burst boundary. Per-join is off the
+critical path, which matters: a nine-register readback next to the handshake
+doubled the failure rate it was meant to measure (see
+[testing-notes.md](testing-notes.md)). `TXPAGES` is already logged this way and
+can simply be widened.
+
+What to include: the TX transfer slot occupancy (a leak that drains would fit the
+burst shape exactly), the chip's queue-empty flags, `REG_CR`, the security and
+CAM state, and the firmware's MACID/RA configuration. The question is narrow --
+**what differs between a clean join and a failing one, given everything external
+has been excluded** -- and for the first time there is a defensible list of
+places for it to be.
+
+## The failure itself -- reproducible, cause unknown
 
 **This is the top open defect and it is now reproducible.** On the ASUS
 USB-AC68, joins fail in **bursts of consecutive attempts** that recover on
