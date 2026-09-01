@@ -15,7 +15,51 @@ point has measured 30% and 13% in two tests, and one adapter went 30%, 60%, 10%
 across three blocks of a single afternoon. Only interleaved comparisons carry
 information. See [testing-notes.md](testing-notes.md).
 
-### The per-join state snapshot shows nothing (2026-09-01)
+### THE CONTROL: the vendor driver joins this access point 60/60 (2026-09-01)
+
+Everything until now compared our driver against itself. This is the first
+measurement of whether the failure rate is ours at all -- the same chip family
+(Edimax AC1750), the same access point, the vendor Linux driver in managed mode,
+60 join cycles:
+
+| driver | failures | |
+|---|---|---|
+| **vendor `8814au` on Linux** | **0 / 60 (0%)** | |
+| ours, same access point | 37 / 120 (31%) | pooled |
+
+`p = 6.3e-08`.
+
+**Three things follow, and they reframe the whole investigation.**
+
+**1. The access point is exonerated.** A mature driver joins it sixty times
+without a single failure. Every hypothesis about band steering, PMF, VAP
+configuration or a hostile access point is dead, and the axis this document
+called "the only variable left that is plausible and cheap" is closed.
+
+**2. The defect is definitively ours.** Not the access point, not the
+environment, not the chip -- the same silicon family works perfectly under
+different software.
+
+**3. The "drift" was never environmental, and this is the expensive correction.**
+The vendor driver showed **zero variance** -- not one failure in sixty
+consecutive cycles. Meanwhile our driver swings from 0/10 to 10/10 between
+blocks, and days of work went into interleaved designs to control for what was
+assumed to be a noisy environment. **That instability is our driver's own.** The
+methodology was still right -- comparing sequential runs was still invalid -- but
+the reason was wrong, and "conditions were bad" was used to explain away results
+it should not have explained.
+
+### Caveats, stated because the result is being leaned on
+
+The comparison is not perfectly matched. The vendor cycle is NetworkManager
+driving association with no explicit scan wait, on Linux's USB stack; ours is
+scan, wait, `wifi-join`, on Haiku's. Both were measured as
+association-plus-four-way-handshake (`ipv4.method disabled` on the vendor side,
+`CCMP enabled` on ours), which is the right common criterion. At 60/0 against
+37/120 the mismatch does not overturn the conclusion, but a like-for-like
+harness would make it airtight.
+
+## The per-join state snapshot shows nothing (2026-09-01)
 
 The experiment the burst structure pointed to has been run, and it is a clean
 negative. A `JOINSTATE` line is now logged once per association -- off the
