@@ -98,6 +98,13 @@ typedef void (*RxFrameCallback)(void* cookie, const uint8* frameData,
 // established first, so a large aggregate is never truncated.
 static const uint32 kRxTransferCount = 4;
 
+// How hard Stop() tries to drain the endpoint before giving up. Cancellation
+// runs callbacks inline, so in the normal case the first pass is enough and the
+// loop exits immediately; the extra passes exist for the narrow window where a
+// callback submits a fresh transfer just as Stop() runs.
+static const uint32 kRxDrainAttempts = 20;
+static const bigtime_t kRxDrainInterval = 5000;	// 5 ms between passes
+
 
 class RTL8814AURxPath {
 public:
@@ -163,6 +170,15 @@ private:
 
 	// Pre-allocated receive buffers
 	uint8*						fBuffers[kRxTransferCount];
+
+	// How many bulk IN transfers are queued with the USB stack right now.
+	//
+	// Incremented on a successful submit, decremented when the completion
+	// callback runs. Stop() waits for this to reach zero before returning and
+	// Start() refuses to submit while it is non-zero, because without that
+	// bookkeeping a down/up cycle can leave a transfer queued and then submit
+	// a second one on the same buffer -- see the comments on those functions.
+	int32						fTransfersInFlight;
 
 	// Frame delivery callback
 	RxFrameCallback				fFrameCallback;

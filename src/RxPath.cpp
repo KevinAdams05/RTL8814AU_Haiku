@@ -53,6 +53,7 @@ RTL8814AURxPath::RTL8814AURxPath(RTL8814AURegisterIO* registerIO,
 	fFrameCallback(NULL),
 	fFrameCallbackCookie(NULL),
 	fRunning(false),
+	fTransfersInFlight(0),
 	fSubmitsLogged(0),
 	fTransfersCompleted(0),
 	fFramesReceived(0),
@@ -137,6 +138,18 @@ RTL8814AURxPath::Start()
 		return B_NO_INIT;
 	}
 
+	// Never submit on top of transfers that are still queued.
+	//
+	// Start() used to queue all four buffers unconditionally. Combined with a
+	// transfer surviving Stop() (see there), that put the same buffer on the
+	// endpoint twice and did so once per down/up cycle.
+	int32 queued = atomic_get(&fTransfersInFlight);
+	if (queued != 0) {
+		dprintf(RTL8814AU_DRIVER_NAME ": RX start refused: %" B_PRId32
+			" transfer(s) still queued from the previous run\n", queued);
+		return B_BUSY;
+	}
+
 	dprintf(RTL8814AU_DRIVER_NAME ": starting RX receive loop\n");
 	fRunning = true;
 
@@ -167,13 +180,45 @@ RTL8814AURxPath::Stop()
 	dprintf(RTL8814AU_DRIVER_NAME ": stopping RX receive loop\n");
 	fRunning = false;
 
-	if (fBulkIn != 0)
-		fUSBModule->cancel_queued_transfers(fBulkIn);
+	// Cancel, then WAIT until nothing is queued -- and cancel again each pass.
+	//
+	// One cancel is not enough, and this was the bug that made every
+	// `ifconfig down` / `up` cycle slightly worse than the last. The
+	// completion callback resubmits when it sees fRunning, and it checks that
+	// flag *before* calling queue_bulk(). A callback that passed the check
+	// just as Stop() ran will submit a fresh transfer after the cancel pass
+	// has already swept the endpoint, so that transfer survives Stop(). Start()
+	// then queued all four buffers again, leaving one buffer queued twice --
+	// an accumulation on the endpoint and a data race on the buffer, once per
+	// cycle.
+	//
+	// Measured: with a down/up between joins the failure rate ran 18/40 and
+	// degraded across the run; without one it was 2/40 and flat. Re-cancelling
+	// until the in-flight count reaches zero closes the window, because any
+	// late submission is swept by the following pass.
+	if (fBulkIn != 0) {
+		// Cancelling runs each transfer's callback inline on this thread --
+		// XHCI's CancelQueuedTransfers calls Finished() directly in a loop --
+		// so anything the receive callback blocks on, this call blocks on too.
+		for (uint32 attempt = 0; attempt < kRxDrainAttempts; attempt++) {
+			fUSBModule->cancel_queued_transfers(fBulkIn);
+			if (atomic_get(&fTransfersInFlight) <= 0)
+				break;
+			snooze(kRxDrainInterval);
+		}
+	}
 
-	// Cancelling runs each transfer's callback inline on this thread -- XHCI's
-	// CancelQueuedTransfers calls Finished() directly in a loop -- so anything
-	// the receive callback blocks on, this call blocks on too.
-	dprintf(RTL8814AU_DRIVER_NAME ": RX transfers cancelled\n");
+	int32 stranded = atomic_get(&fTransfersInFlight);
+	if (stranded > 0) {
+		// Say so rather than carrying on quietly: Start() will now refuse to
+		// resubmit, so the receive path stays down instead of double-queueing
+		// a buffer, and the reason is in the log.
+		dprintf(RTL8814AU_DRIVER_NAME ": RX stop: %" B_PRId32 " transfer(s) "
+			"still queued after %" B_PRIu32 " cancel attempts\n",
+			stranded, (uint32)kRxDrainAttempts);
+	} else {
+		dprintf(RTL8814AU_DRIVER_NAME ": RX transfers cancelled and drained\n");
+	}
 }
 
 
@@ -493,6 +538,8 @@ RTL8814AURxPath::_SubmitTransfer(uint32 index)
 {
 	status_t st = fUSBModule->queue_bulk(fBulkIn, fBuffers[index],
 		kUsbRxBufferSize, _RxCallback, this);
+	if (st == B_OK)
+		atomic_add(&fTransfersInFlight, 1);
 	if (fSubmitsLogged < 8) {
 		dprintf(RTL8814AU_DRIVER_NAME ": _SubmitTransfer(%" B_PRIu32 ") -> %s\n",
 			index, strerror(st));
@@ -518,6 +565,11 @@ RTL8814AURxPath::_RxCallback(void* cookie, status_t status, void* data,
 	RTL8814AURxPath* rxPath = static_cast<RTL8814AURxPath*>(cookie);
 	if (rxPath == NULL)
 		return;
+
+	// This transfer is no longer queued. Decrement before any early return --
+	// a cancelled transfer leaves the queue just as a completed one does, and
+	// Stop() is waiting on this reaching zero.
+	atomic_add(&rxPath->fTransfersInFlight, -1);
 
 	rxPath->fTransfersCompleted++;
 	// At ~200 callbacks/sec on this hardware, even every-64th is

@@ -15,7 +15,62 @@ point has measured 30% and 13% in two tests, and one adapter went 30%, 60%, 10%
 across three blocks of a single afternoon. Only interleaved comparisons carry
 information. See [testing-notes.md](testing-notes.md).
 
-### THE FAILURE RATE ACCUMULATES AND RESETS ON REBOOT (2026-09-01)
+### Attempted fix of Close()/Open(): hypothesis wrong, defect still open
+
+The down/up effect is solid and reproduced. Matched pairs, 40 joins each from a
+fresh reboot:
+
+| | failures | per 10-join block |
+|---|---|---|
+| with `ifconfig down`/`up` | 18/40 (45%) | 3, 5, 5, 5 |
+| without | **2/40 (5%)** | 2, 0, 0, 0 |
+| with, after the fix below | 15/40 (37%) | 2, 3, 3, 7 |
+
+`p = 0.000053` for the first pair. **The mechanism is still unknown.**
+
+### The hypothesis, and why it was wrong
+
+`RxPath::Stop()` cancelled the bulk IN transfers and returned without confirming
+they were reclaimed, while the completion callback resubmits after checking
+`fRunning` -- so a callback that passed the check just as `Stop()` ran could
+queue a transfer *after* the cancel pass swept the endpoint. `Start()` then
+submitted all four buffers unconditionally, which would leave one buffer queued
+twice: an accumulation on the endpoint and a data race on the buffer, once per
+cycle. It fitted the evidence exactly.
+
+`Stop()` now re-cancels until the in-flight count reaches zero, and `Start()`
+refuses to submit while anything is still queued. **The race never fires.**
+Across a 40-join run: 40 clean drains, **0 stranded transfers, 0 refusals**. And
+the rate did not improve -- 15/40 against 18/40 is noise.
+
+The change is kept as hardening, not as a fix. The window is real, closing it
+costs nothing, and the counter is what proved the hypothesis wrong.
+
+### Also excluded, from the same run
+
+- **USB transfer errors**: one `Device check-sum error` in an entire boot.
+- **TX errors**: none at all -- no callback errors, no short writes, no
+  queue-full, no wait timeouts.
+- **H2C timeouts**: two across 40 joins, and they do not track the failures. An
+  earlier "13 in the first half against 25 in the second" was an artefact of
+  splitting the log by line count rather than by join.
+
+So nothing the driver logs accumulates, while the failure rate demonstrably
+does. Whatever the down/up cycle damages is not visible in any counter, register
+or error path currently instrumented -- which is the same wall the per-join
+snapshot hit, and suggests the state lives in the chip or its firmware rather
+than in the driver.
+
+### Where to go next
+
+The cheapest discriminator not yet tried: **which half of the cycle causes it.**
+`down` and `up` can be issued independently. Run 40 joins with only `down`
+between them and no `up`, or only a re-`up` without a `down`, and see which arm
+degrades. That splits `Close()` from `Open()` without needing to know what
+either damages, and it is the same shape of experiment that found the cycle in
+the first place.
+
+## THE FAILURE RATE ACCUMULATES AND RESETS ON REBOOT (2026-09-01)
 
 This is the most useful thing found so far, and it reframes every rate in this
 document.
