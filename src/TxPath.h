@@ -130,6 +130,17 @@ public:
 	// allowance of log lines rather than spending it all at boot.
 	void						ResetTraces();
 
+	// How many transfer slots are currently in flight on each pipe, packed
+	// one byte per pipe.
+	//
+	// For the burst investigation: the reason-15 failures arrive in bursts
+	// that begin and end within one uptime, hit both bands at once, and are
+	// not explained by the access point, the band, the adapter, airtime or
+	// contention. A slot leak that drains would have exactly that shape, so
+	// this is sampled once per join -- never per frame, which is what made
+	// the last round of instrumentation worse than the fault.
+	uint32						SlotsInUse();
+
 	// TX statistics
 	uint32						FramesSent() const { return fFramesSent; }
 	uint32						FramesFailed() const

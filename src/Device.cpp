@@ -3706,21 +3706,35 @@ RTL8814AUDevice::_DoJoin(const uint8* bssid, const char* ssid,
 	// Each register carries the configured count in its high half and what is
 	// available in its low half, so a drift between the two halves that grows
 	// with every join is the thing to look for.
+	// Per-join state snapshot.
+	//
+	// Once per association, never per frame. The reason-15 failures arrive in
+	// bursts that begin and end within a single uptime and hit both bands at
+	// once, and the access point, band, radio, adapter, airtime and contention
+	// have all been excluded by interleaved measurement -- so the state that
+	// comes and goes is in this driver or the chip. Diffing this line either
+	// side of a burst boundary is the cheapest way to find it.
+	//
+	// Deliberately off the critical path: the last attempt at this put nine
+	// synchronous control transfers next to the handshake and doubled the
+	// failure rate it was measuring.
 	if (fRegisterIO != NULL) {
 		static uint32 sJoinCount = 0;
-		uint32 high = fRegisterIO->Read32(kRegFifoPageInfo1);
-		uint32 low = fRegisterIO->Read32(kRegFifoPageInfo2);
 		uint32 normal = fRegisterIO->Read32(kRegFifoPageInfo3);
-		uint32 extra = fRegisterIO->Read32(kRegFifoPageInfo4);
 		uint32 pub = fRegisterIO->Read32(kRegFifoPageInfo5);
-		dprintf(RTL8814AU_DRIVER_NAME ": TXPAGES join=%" B_PRIu32
-			" hi=%04x/%04x lo=%04x/%04x nml=%04x/%04x ext=%04x/%04x "
-			"pub=%04x/%04x\n", ++sJoinCount,
-			(unsigned)(high & 0xFFFF), (unsigned)(high >> 16),
-			(unsigned)(low & 0xFFFF), (unsigned)(low >> 16),
+		uint32 slots = fTxPath != NULL ? fTxPath->SlotsInUse() : 0;
+		uint16 qempty = fTxPath != NULL ? fTxPath->ReadTxQueueEmpty() : 0;
+		dprintf(RTL8814AU_DRIVER_NAME ": JOINSTATE join=%" B_PRIu32
+			" nml=%04x/%04x pub=%04x/%04x slots=%02x/%02x/%02x qempty=%04x "
+			"cr=%08x seccfg=%02x dropped=%u lt_en=%02x\n", ++sJoinCount,
 			(unsigned)(normal & 0xFFFF), (unsigned)(normal >> 16),
-			(unsigned)(extra & 0xFFFF), (unsigned)(extra >> 16),
-			(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16));
+			(unsigned)(pub & 0xFFFF), (unsigned)(pub >> 16),
+			(unsigned)(slots & 0xFF), (unsigned)((slots >> 8) & 0xFF),
+			(unsigned)((slots >> 16) & 0xFF), (unsigned)qempty,
+			(unsigned)fRegisterIO->Read32(kRegCR),
+			(unsigned)fRegisterIO->Read8(kRegSecCfg),
+			(unsigned)fRegisterIO->Read16(kRegDropPktNum),
+			(unsigned)fRegisterIO->Read8(kRegLifetimeEn));
 	}
 
 	// If we got stuck mid-handshake from a prior attempt that the AP

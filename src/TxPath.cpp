@@ -142,6 +142,31 @@ RTL8814AUTxPath::~RTL8814AUTxPath()
 static int32 sTxTraceGeneration = 0;
 
 
+/*! How many transfer slots are in flight per pipe, one byte each.
+
+    Sampled once per association, off any critical path. A slot that is marked
+    in use and never released would starve Transmit() of somewhere to put the
+    next frame, and it would do so in bursts that drain -- which is the shape
+    of the reason-15 failures.
+*/
+uint32
+RTL8814AUTxPath::SlotsInUse()
+{
+	MutexLocker locker(fLock);
+	uint32 packed = 0;
+	for (uint32 pipe = 0; pipe < kBulkOutEndpointCount && pipe < 4; pipe++) {
+		uint32 used = 0;
+		const uint32 base = pipe * kTxTransfersPerQueue;
+		for (uint32 i = 0; i < kTxTransfersPerQueue; i++) {
+			if (base + i < kTxTotalTransfers && fTransfers[base + i].inUse)
+				used++;
+		}
+		packed |= (used & 0xFF) << (pipe * 8);
+	}
+	return packed;
+}
+
+
 /*! Restart the capped per-pipe transmit traces.
 
     Called at the start of each association, so every attempt gets its own
