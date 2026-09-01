@@ -231,39 +231,58 @@ One adapter across three blocks of one afternoon: 30%, 60%, 10%.
 
 ### Where it stands
 
-The chip accepts a well-formed 193-byte M2, reports a successful USB
-completion, is on the right channel, is not paused, is not encrypting, has
-pages free, drains its transmit queue -- and never puts the frame on the air.
-It then **counts it as dropped**. Management frames on the same queue and
-endpoint transmit fine, so the discriminator is frame type, not the queue.
+**Most of what we have been measuring is a test-harness pathology, not the
+common user path.** Matched pairs of 40 joins from a fresh reboot:
 
-Roughly fifteen candidate causes are dead by measurement, and the full record --
-with what each cost and why it failed -- is in
-[reason-15-investigation.md](reason-15-investigation.md). Read it before
-proposing anything; the most likely way to lose a session here is to re-run an
-experiment that has already been done.
+| | failures |
+|---|---|
+| with `ifconfig down`/`up` between joins | 18/40 (45%) |
+| **without** | **2/40 (5%)** |
 
-**The cheap instrument:** `0x04EC` is `REG_DROP_PKT_NUM` on this chip and
-discriminates perfectly -- it rises once per failing M2 and does not move across
-a dozen successes. Detecting the fault needs no air capture. **But read it off
-the critical path**: nine synchronous control transfers next to the handshake
-took failures from 30% to 67%.
+`p = 0.000053`. With the cycle the rate also *degrades* across a run -- 30% to
+85% over 120 joins -- and **a reboot resets it**. Without the cycle there is no
+degradation at all.
+
+Two consequences worth being blunt about:
+
+- **The driver is better than this document has been claiming.** At 2/40 it is
+  better than the 17% shipped baseline. Every rate measured since 2026-08-25 was
+  inflated, because the reboot-free harness introduced a down/up cycle into every
+  attempt -- the very change that made fast testing possible.
+- **This is almost certainly the same bug as item 2**, the interface becoming
+  unregistered after roughly 150 down/up cycles. Same trigger, same cure.
+
+The underlying failure, when it happens, is unchanged: the chip accepts a
+well-formed M2, counts it as dropped, and never puts it on the air.
+
+**The access point and the hardware are exonerated.** The vendor Linux driver
+joins the same access point **100 times out of 100** across both adapters, with
+zero variance -- so the instability is ours, including the block-to-block noise
+this document spent days attributing to "conditions".
+
+Roughly twenty candidate causes are dead by measurement. Full record, including
+what each cost, in [reason-15-investigation.md](reason-15-investigation.md).
+**Read it before proposing anything** -- re-running a dead experiment is the
+easiest way to lose a session here.
 
 ### What to do next
 
-1. **Rerun the access-point comparison.** Both previous attempts are void --
-   one on a wedged interface, one because a connect used to blind later scans
-   (both now fixed). It is the only variable left that is plausible and cheap:
-   every measurement of this defect has been against one network on one access
-   point. `scripts/air-noreboot.sh` alternates SSIDs with no reboot.
-2. **Test whether the response-timing fix actually helped the join rate**, by
-   interleaving against the pre-fix build. Its airtime effect is proven; its
-   rate effect rests on a sequential comparison and is unproven.
-3. **Fix the interface wedge (item 2)** before any long run, since it silently
-   ends the usefulness of everything after it.
+1. **Split `Close()` from `Open()`.** `down` and `up` can be issued
+   independently, so run 40 joins with only a `down` between them and 40 with
+   only an `up`. That halves the search space without needing to know what
+   either damages, and it is the same shape of experiment that found the cycle.
+2. **Then instrument the guilty half.** Note the constraint the last two
+   attempts established: nothing the driver currently logs accumulates -- not
+   registers, not transfer slots, not USB errors, not H2C outcomes -- so the
+   state is likely in the chip or its firmware. Sample **off** the critical
+   path; a nine-register readback next to the handshake once doubled the failure
+   rate it was measuring.
+3. **Re-baseline the driver honestly** once the cycle bug is fixed, without
+   down/up between attempts, and update the CHANGELOG's user-facing numbers.
 
-**Do not** chase C2H, the drop reason, the two missing H2C commands, or air
-contention as causes: all four are settled in the investigation record.
+**Do not** chase the access point, the band, the adapter, airtime, contention,
+the pre-join scan, C2H, the drop reason, or the RX stop/start race. All are
+settled in the investigation record.
 
 ### What gates a release
 
@@ -272,7 +291,13 @@ But **the ASUS is the primary adapter** -- 0.3.0 was developed on it -- so
 shipping 0.4.0 with a roughly 38% join failure there is not viable. This defect
 gates the release. Nothing else on this list does.
 
-### 2. The interface wedges after many down/up cycles
+### 2. The interface wedges after many down/up cycles -- likely the same bug as item 1
+
+**Probably not a separate defect.** Item 1 establishes that the down/up cycle
+degrades the join rate progressively and that a reboot resets it; this item is
+that same cycle eventually taking the interface out of the stack's registration
+altogether. Same trigger, same cure, same code path. Treat them as one
+investigation and fix the cycle once.
 
 Reopened 2026-08-28. Most of the lifecycle fix holds -- `down` returns, the
 interface comes back, testing needs no reboot per attempt -- but after roughly
