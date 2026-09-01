@@ -67,7 +67,7 @@ interleaved, so drift cannot explain the nulls:
 | axis varied | result |
 |---|---|
 | **adapter** — ASUS vs Edimax, one AP, swaps between blocks | 10/30 vs 7/30, `p = 0.567` |
-| **band, radio, channel and SSID** — 5 GHz vs 2.4 GHz, 60 each | 24/60 vs 22/60, `p = 0.851` |
+| **band, radio, channel and SSID** — 5 GHz vs 2.4 GHz, 120 each | 37/120 vs 52/120, `p = 0.061` — **unstable, see below** |
 | **airtime** — response-timing fix, 42.5 to 1.0 transmissions per frame | 19/60 vs 22/60, `p = 0.701` |
 | **air utilisation** during each attempt | 1.89 MB vs 1.85 MB across outcomes, ranges overlapping |
 
@@ -80,7 +80,34 @@ response). Not a family of failures with a common symptom -- one failure mode.
 configuration (which differ completely between bands), not the adapter, not
 airtime, and not contention.** That leaves the driver or the chip.
 
-### The structure of the bursts is the strongest clue
+### The band result is not stable, and the "both bands together" claim is withdrawn
+
+The band comparison was run twice, 60 attempts per band each time, and the two
+runs **disagree in direction**:
+
+| | 5 GHz | 2.4 GHz | |
+|---|---|---|---|
+| 2026-08-31 | 24/60 (40%) | 22/60 (37%) | `p = 0.851` |
+| 2026-09-01 | 13/60 (22%) | 30/60 (50%) | `p = 0.0021` |
+| pooled | 37/120 (31%) | 52/120 (43%) | `p = 0.061` |
+
+Taken alone the second run says 2.4 GHz is significantly worse. Taken together
+they say nothing at `p = 0.061`. This is the same trap as the response-timing
+A/B, where two three-block comparisons pointed opposite ways -- except here each
+arm already had six blocks, so **six is not always enough either.**
+
+**And it forces a correction.** On 2026-08-31 one round collapsed on both bands
+at once, and this document concluded the bursts were "global to the driver or the
+chip". The second run does not support that: rounds 2, 3 and 4 collapsed
+**2.4 GHz only** -- 10/10, 10/10, 10/10 -- while the 5 GHz blocks interleaved
+between them ran 0/10, 4/10 and 3/10. For three consecutive rounds the failure
+tracked the *network* rather than the clock, and then in round 5 it swapped over.
+
+So the failure sometimes follows the network and sometimes the clock, and neither
+reading explains both runs. That is the most confusing data in this
+investigation, and it should not be resolved by picking the more convenient half.
+
+### The structure of the bursts
 
 The failures arrive in bursts that **hit both bands at the same time**:
 
