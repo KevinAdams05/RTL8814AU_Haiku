@@ -27,3 +27,6 @@ adapter-results.txt
 
 # Output of scripts/interleave-networks.sh
 network-results.txt
+
+# Output of scripts/interleave-scan-vs-noscan.sh
+scan-results.txt

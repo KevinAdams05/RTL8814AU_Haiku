@@ -15,7 +15,65 @@ point has measured 30% and 13% in two tests, and one adapter went 30%, 60%, 10%
 across three blocks of a single afternoon. Only interleaved comparisons carry
 information. See [testing-notes.md](testing-notes.md).
 
-### THE CONTROL: the vendor driver joins this access point 60/60 (2026-09-01)
+### THE FAILURE RATE ACCUMULATES AND RESETS ON REBOOT (2026-09-01)
+
+This is the most useful thing found so far, and it reframes every rate in this
+document.
+
+Over one 120-join run with **no reboots**, the failure rate climbed steadily:
+
+| round | SCAN arm | NOSCAN arm |
+|---|---|---|
+| 1 | 3/10 | 3/10 |
+| 2 | 5/10 | 4/10 |
+| 3 | 5/10 | 4/10 |
+| 4 | 6/10 | 8/10 |
+| 5 | 8/10 | 8/10 |
+| 6 | 9/10 | 8/10 |
+
+From about 30% to about 85%, both arms together. Then a reboot, and the first
+12 joins afterwards: **3 failures out of 12 (25%)**, against 33 of 40 (83%) in
+the two rounds immediately before. `p = 0.00042`.
+
+**So the driver degrades with accumulated use and a reboot restores it.** Not a
+burst that comes and goes -- accumulation.
+
+### What this explains
+
+- **Why absolute rates were never reproducible.** Every figure quoted in this
+  investigation depended on how many joins had already happened in that run.
+- **Why interleaved *build* comparisons kept coming out null while *network*
+  comparisons swung wildly.** `interleave-builds.sh` reboots between every
+  block, resetting the accumulation; `interleave-networks.sh` does not.
+- **Why the vendor driver showed zero variance.** Each of its cycles is a
+  `nmcli con down` / `con up`, and it accumulates nothing.
+- Possibly the earlier "bursts" too, at least in the no-reboot runs.
+
+### What it is not
+
+- **Not the pre-join scan.** SCAN and NOSCAN degraded identically, 36/60 against
+  35/60, with zero unresolved joins either side.
+- **Not the scan-notifier thread**, which `_DoScanRequest` spawns per scan.
+  NOSCAN performed 6 scans against SCAN's 60 and failed at the same rate.
+- **Not the post-assoc or EAPOL threads**, which are spawned once in
+  `_InitHardware()`.
+- **Not anything in the per-join register snapshot**, whose fields are constant
+  across 118 joins.
+
+### The next experiment, and a connection worth making
+
+What both arms did 60 times each is a join and an `ifconfig down` / `up` cycle.
+So the accumulating resource is tied to one of those, and **the down/up cycle is
+the stronger suspect because of item 2**: the interface stops being registered
+with the stack after roughly 150 down/up cycles, and that also only clears with a
+reboot. Two symptoms, the same trigger, the same cure -- quite possibly one bug.
+
+The test: after a reboot, run joins **without** cycling the interface between
+them, and see whether the rate still degrades. If it does not, the fault is in
+`Close()`/`Open()` rather than in joining, and item 2 stops being a separate
+problem.
+
+## THE CONTROL: the vendor driver joins this access point 60/60 (2026-09-01)
 
 Everything until now compared our driver against itself. This is the first
 measurement of whether the failure rate is ours at all -- the same chip family
