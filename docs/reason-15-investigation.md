@@ -15,7 +15,51 @@ point has measured 30% and 13% in two tests, and one adapter went 30%, 60%, 10%
 across three blocks of a single afternoon. Only interleaved comparisons carry
 information. See [testing-notes.md](testing-notes.md).
 
-### What the defect is NOT (2026-08-31, and this is the useful part)
+### The per-join state snapshot shows nothing (2026-09-01)
+
+The experiment the burst structure pointed to has been run, and it is a clean
+negative. A `JOINSTATE` line is now logged once per association -- off the
+critical path, where `TXPAGES` had run safely for days -- carrying page counts,
+per-pipe transmit-slot occupancy, queue-empty flags, `CR`, `SECCFG`, the
+dropped-packet counter and the lifetime enable.
+
+Across **118 joins, 75 successful and 43 failed**, every field is identical:
+
+| field | successes | failures | differs? |
+|---|---|---|---|
+| `nml` / `pub` pages | `0020/0020`, `0776/0776` | same | no |
+| `slots` (per-pipe in flight) | `00/00/00` | `00/00/00` | **no** |
+| `qempty` | `0fff` | `0fff` | no |
+| `seccfg` | `00` | `00` | no |
+| `lt_en` | `30` | `30` | no |
+| `cr` | `000206ff`, and `000006ff` once | `000206ff` | confounded |
+
+**The transmit-slot leak is dead**, and it was the leading candidate -- a slot
+marked in use and never released would have starved the transmit path in bursts
+that drain, which is exactly the observed shape. Occupancy is zero at every join,
+successful or not.
+
+**The `cr` difference is a mirage.** The single `000006ff` reading is join number
+1, the first after a boot, before `MSR` has been set to infrastructure mode. It
+is entirely confounded with first-join-after-boot and carries no information. It
+looked like a signal for about a minute.
+
+### What that leaves, and it is a real fork
+
+Either the distinguishing state is **not in these registers**, or it **does not
+exist at join time** and develops during the attempt itself. The snapshot is
+taken at the start of a join; if the bad state arises after that -- during
+association, or in the moments before M1 -- a join-time sample cannot see it by
+construction.
+
+The way to test the second reading without repeating the observer-effect
+disaster: **one** register read immediately after `ASSOCIATED`, not nine per M2.
+The instrumentation that doubled the failure rate was 9 reads times 4 M2s, about
+36 synchronous control transfers on the handshake path; a single read is one.
+Then measure the rate with it in place, interleaved against the same build
+without it, and only trust the readings if that comparison is null.
+
+## What the defect is NOT (2026-08-31, and this is the useful part)
 
 Four axes have now been varied and none of them moves the failure rate. Each was
 interleaved, so drift cannot explain the nulls:
