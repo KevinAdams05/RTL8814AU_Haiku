@@ -58,7 +58,7 @@ different chip's map. Both returned unrelated bytes (`12` and `20`), and the
 board-class decisions built on them were reasoning about noise. Read from the
 correct offsets, both adapters tested report RFE type **1**.
 | 0x100 | thermal calibration | currently unused |
-| 0x0D8..0x0DD | MAC address | per-device, e.g. `2c:4d:54:cb:6c:fd` |
+| 0x0D8..0x0DD | MAC address | per-device, e.g. `aa:bb:cc:dd:ee:ff` |
 
 ## MAC initialization
 

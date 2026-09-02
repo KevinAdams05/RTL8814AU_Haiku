@@ -2,7 +2,7 @@
 #
 # build-hpkg.sh — cross-build rtl8814au kernel driver and produce a .hpkg.
 #
-# Runs on the Haiku Linux cross-build server (kevin@192.168.74.122).
+# Runs on a Linux machine with a configured Haiku cross-build tree.
 # Expects the project tree (src/, firmware/, package/) at the parent dir.
 #
 # How it works: the driver's Jamfile assumes it lives inside a Haiku

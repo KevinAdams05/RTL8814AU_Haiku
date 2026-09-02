@@ -130,7 +130,7 @@ join attempt and none.
 
 **Throughput has been measured properly for the first time, and the transmit
 figure published in 0.3.0 was wrong.** Both of the test machine's interfaces
-sit on one subnet, so the routing table carries two `192.168.74.0/24` routes
+sit on one subnet, so the routing table carries two `192.168.1.0/24` routes
 and two default routes; which one a transfer uses depends on their order.
 Every earlier transmit number was really the gigabit wired link.
 

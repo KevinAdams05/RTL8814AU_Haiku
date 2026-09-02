@@ -126,7 +126,7 @@ routing sends everything out the wired one:
 - Pulling the 100 MB file back "achieved 88.9 Mbit/s" -- impossible on a link
   that had just measured 17 Mbit/s inbound. The interface's `Transmit` counter
   was **unchanged at 22 packets** afterwards, so none of it went over the air.
-- `ping -S 192.168.74.117` does not help. 2000 pings reported 0% loss, and the
+- `ping -S 192.168.1.117` does not help. 2000 pings reported 0% loss, and the
   wireless `Transmit` counter moved from 22 to **23**. Source binding sets the
   source address; it does not override the route.
 
@@ -263,7 +263,7 @@ Caught by an air capture rather than by reading the log. A run marked FAILED had
 exactly one driver event:
 
 ```
-RX DEAUTH toUs=0 reason=7 from=02:c5:7d:2a:4d:0d
+RX DEAUTH toUs=0 reason=7 from=aa:bb:cc:dd:ee:ff
 ```
 
 `toUs=0`, and from an access point belonging to a different network entirely.

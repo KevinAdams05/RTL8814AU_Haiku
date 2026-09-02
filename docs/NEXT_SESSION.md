@@ -456,7 +456,7 @@ Receive is now the faster direction, reversing what the older entries claim.
 How the routing problem was solved, since it blocked this for weeks:
 
 - **Receive** needs only that the peer address the wireless address
-  (192.168.74.77). That constrains the sender, so it is enough.
+  (192.168.1.77). That constrains the sender, so it is enough.
 - **Transmit and any internet transfer** are decided by Haiku's own routing,
   which prefers the wired default route. Addressing the wireless interface
   does not change it and `ping -S` does not either.

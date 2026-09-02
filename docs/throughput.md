@@ -104,7 +104,7 @@ the transmit path still sends one unaggregated frame at a time.
 ## How to measure it, and the trap
 
 Shredder has both a wired and a wireless interface **on the same subnet**, and
-the routing table therefore holds two `192.168.74.0/24` routes plus two default
+the routing table therefore holds two `192.168.1.0/24` routes plus two default
 routes. Which interface a transfer actually uses is decided by their order,
 which is incidental -- it changed during this session when the wired interface
 was brought back up, moving the wireless `/24` route ahead of the wired one
@@ -112,7 +112,7 @@ while leaving the wired *default* route in front.
 
 Consequently:
 
-- **Receive** can be forced by addressing the wireless address (`192.168.74.77`)
+- **Receive** can be forced by addressing the wireless address (`192.168.1.77`)
   directly. That constrains the *sender*, which is the peer, so it works.
 - **Transmit cannot be forced that way.** Addressing the wireless interface
   does not change how Haiku routes the reply, so the data leaves over the
