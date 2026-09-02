@@ -611,7 +611,7 @@ teaches nothing, which is what happened here twice.
 
 ## Standing constraints
 
-The 0.2.0-era instrumentation was stripped and the version is now 0.3.0.
+The 0.2.0-era instrumentation was stripped; the version is now 1.0.0.
 
 What remains is bounded and kept on purpose, because it is what a bug report
 from someone else's adapter needs to be useful:

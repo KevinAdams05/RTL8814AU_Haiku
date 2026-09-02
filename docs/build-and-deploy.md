@@ -85,10 +85,13 @@ The build script's first few lines list every env var it honors;
 
 ## Installing the .hpkg you just built
 
-Copy it into a `packages/` directory packagefs watches:
+Double-clicking the `.hpkg` hands it to HaikuDepot, which is what the README
+tells users to do. When you have just built one you are already in a shell
+with the file, so copying it into a `packages/` directory packagefs watches is
+usually quicker:
 
 ```sh
-cp build/rtl8814au-0.1.0-1-x86_64.hpkg ~/config/packages/
+cp build/rtl8814au-1.0.0-1-x86_64.hpkg ~/config/packages/
 ```
 
 User-level (`~/config/packages/`) is preferred over system-level

@@ -1,4 +1,4 @@
-rtl8814au (unofficial) 0.3.0 — how to connect
+rtl8814au (unofficial) 1.0.0 — how to connect
 =============================================
 
 You can connect from the Deskbar network menu, from the Network preferences
@@ -9,7 +9,7 @@ below because it is the one that can be scripted and pasted into a bug report.
 1. Install the driver
 ---------------------
 
-    pkgman install rtl8814au-0.3.0-1-x86_64.hpkg
+    pkgman install rtl8814au-1.0.0-1-x86_64.hpkg
 
 Then REBOOT. This is not optional: packagefs keeps serving the previously
 loaded driver until the machine restarts, so without a reboot you are still

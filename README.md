@@ -147,13 +147,24 @@ PRs are welcome! However, please follow the guidelines below.
 ### From a prebuilt `.hpkg`
 
 1. Download `rtl8814au-<version>-x86_64.hpkg` from the [Releases page](https://github.com/KevinAdams05/RTL8814AU_Haiku/releases).
-2. Copy it into one of:
-   - `~/config/packages/` — installs only for your user (recommended)
-   - `/system/packages/` — installs system-wide (needs root)
-3. Reboot.  On boot, packagefs activates the package and the driver appears at `/dev/net/rtl8814au/0`.
-4. Connect to a network — see the [How to Use](#how-to-use) section below.
+2. **Double-click it.** HaikuDepot opens and installs it for you.
+3. **Reboot.** This is not optional for a kernel driver — packagefs keeps
+   serving the previously loaded driver until the machine restarts, so until
+   you reboot you are still running whatever was there before, or nothing.
+4. Check the device turned up:
 
-To uninstall, delete the `.hpkg` from the `packages/` directory and reboot.
+   ```
+   ls /dev/net/rtl8814au/0
+   ```
+
+5. Connect to a network — see [How to Use](#how-to-use) below.
+
+To uninstall, remove it in HaikuDepot and reboot.
+
+If you would rather use the Terminal, `pkgman install
+rtl8814au-<version>-x86_64.hpkg` does the same thing, and dropping the file
+into `~/config/packages/` (for you) or `/system/packages/` (for everyone)
+still works — useful on a headless machine.
 
 ### Building from source
 
