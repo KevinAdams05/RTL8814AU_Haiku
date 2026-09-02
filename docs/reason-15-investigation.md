@@ -15,7 +15,45 @@ point has measured 30% and 13% in two tests, and one adapter went 30%, 60%, 10%
 across three blocks of a single afternoon. Only interleaved comparisons carry
 information. See [testing-notes.md](testing-notes.md).
 
-### Attempted fix of Close()/Open(): hypothesis wrong, defect still open
+### Bisecting Close(): inconclusive at n=40 per arm (2026-09-02)
+
+`Close()` does four things: wake blocked readers, `Disconnect()`, stop the
+receive path, cancel the transmit endpoints. Each arm below is 40 joins with a
+`down`/`up` between them, from a fresh reboot:
+
+| arm | failures | blocks of 10 | degrades? |
+|---|---|---|---|
+| HEAD | 18/40 (45%) | 3,5,5,5 | yes |
+| HEAD + RX drain hardening | 15/40 (38%) | 2,3,3,7 | yes |
+| TX `CancelAll()` skipped | 11/40 (28%) | 3,3,3,2 | no |
+| both TX cancel and RX stop skipped | 15/40 (38%) | 2,2,5,6 | yes |
+| **no `down`/`up` at all** | **2/40 (5%)** | 2,0,0,0 | no |
+
+**Do not read a winner out of this.** Skipping both is *worse* than skipping the
+transmit cancel alone, which makes no mechanistic sense; all four teardown arms
+cluster between 28% and 45%; and the best pair is `p = 0.16`. With
+block-to-block noise that has been observed from 0/10 to 10/10, n=40 cannot
+separate 28% from 45%. The "flat versus degrading" distinction rests on four
+points per arm.
+
+**What the table does establish, for the fourth independent time:** teardown
+causes the failures. Every arm that performs one sits at 28-45%; the arm that
+does not sits at 5%.
+
+### To finish this properly
+
+- **Six blocks of at least 20 per arm** -- roughly 120 joins, about two and a
+  half hours each. Anything smaller has already proved able to mislead.
+- **`Disconnect()` is the untested component**, and it is the one that sends an
+  H2C command. Test it before the others.
+- Consider that the cause may not be in `Close()` at all: the stack removes and
+  re-adds the interface around it, and that path is not ours.
+
+Removing the transmit cancel is **not** a fix and must not be adopted on this
+evidence -- cancelling outstanding transmits on close is correct behaviour, and
+leaving them queued has its own hazards.
+
+## Attempted fix of Close()/Open(): hypothesis wrong, defect still open
 
 The down/up effect is solid and reproduced. Matched pairs, 40 joins each from a
 fresh reboot:
