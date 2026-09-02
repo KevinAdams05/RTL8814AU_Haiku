@@ -38,6 +38,11 @@ Only the ASUS USB-AC68 and Edimax EW-7833UAC have been tested on real
 hardware. Seven further USB IDs are claimed because they appear in the
 reference driver's RTL8814AU table, and are untested.
 
+The firmware blob loaded into the adapter is Realtek's and is NOT
+covered by the GPL. It is redistributed under Realtek's binary
+redistribution licence, which is shipped with this package as
+LICENCE.rtlwifi_firmware.txt.
+
 This driver is NOT part of the official Haiku distribution. It is
 developed independently and shipped as a standalone package. Bug reports
 welcome at https://github.com/KevinAdams05/RTL8814AU_Haiku/issues."
@@ -47,10 +52,12 @@ vendor			"Kevin Adams"
 
 licenses {
 	"GNU GPL v2"
+	"Realtek WiFi Firmware"
 }
 
 copyrights {
 	"2026 Kevin Adams"
+	"2010 Realtek Semiconductor Corporation (firmware blob)"
 }
 
 provides {

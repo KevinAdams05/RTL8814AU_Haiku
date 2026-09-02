@@ -244,3 +244,11 @@ reference was consulted.
 Note that this is a change from MIT, and it means the driver cannot be
 contributed to Haiku's own tree, which is MIT-licensed. It is distributed as a
 standalone package.
+
+**The firmware blob is not GPL and is not ours.**
+`firmware/rtl8814aufw.bin` is Realtek firmware for the adapter's on-chip MCU,
+redistributed under Realtek's own binary redistribution licence — reproduced in
+`firmware/LICENCE.rtlwifi_firmware.txt` and shipped inside the package, because
+that licence requires the copyright notice and disclaimer to travel with it. See
+[docs/firmware.md](docs/firmware.md#licence-and-provenance) for the terms and
+for what is and is not known about which Realtek build it is.

@@ -350,3 +350,30 @@ proprietary programs.  If your program is a subroutine library, you may
 consider it more useful to permit linking proprietary applications with the
 library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
+
+
+================================================================================
+THE FIRMWARE BLOB IS NOT COVERED BY THIS LICENCE
+================================================================================
+
+`firmware/rtl8814aufw.bin` is Realtek firmware for the RTL8814AU's on-chip
+Lexra 3081 MCU. It is **not** part of this GPL work and is **not** licensed
+under the GPL. It is redistributed under Realtek's own binary redistribution
+licence, reproduced in full in `firmware/LICENCE.rtlwifi_firmware.txt` and
+shipped inside the package alongside this file.
+
+    Copyright (c) 2010, Realtek Semiconductor Corporation
+    All rights reserved.
+
+That licence permits redistribution in binary form without modification,
+provided the copyright notice and disclaimer above and in that file are
+reproduced with the distribution -- which is why both accompany every release.
+It also prohibits reverse engineering, decompilation and disassembly of the
+firmware. Nothing in this project does any of those: the documentation in
+`docs/firmware.md` describes only the blob's load container -- its 12-byte
+header, its two section sizes and the 8-byte trailers -- which is the
+information a host driver needs in order to load the firmware as intended. The
+MCU code inside is treated as opaque and is never decoded.
+
+The blob and the driver are distributed together as an aggregate. The firmware
+is data handed to the device, not linked into this program.

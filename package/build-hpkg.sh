@@ -135,6 +135,7 @@ mkdir -p "$PKG_ROOT/add-ons/kernel/drivers/bin"
 mkdir -p "$PKG_ROOT/add-ons/kernel/drivers/dev/net"
 mkdir -p "$PKG_ROOT/data/firmware/rtl8814au"
 mkdir -p "$PKG_ROOT/data/documentation/packages/rtl8814au"
+mkdir -p "$PKG_ROOT/data/licenses"
 mkdir -p "$PKG_ROOT/bin"
 
 cp "$BUILT_BINARY" "$PKG_ROOT/add-ons/kernel/drivers/bin/rtl8814au"
@@ -160,6 +161,30 @@ cp "$FIRMWARE_SRC"/rtl8814aufw.bin \
 # Ship the license under documentation/.
 cp "$PROJ/LICENSE" \
 	"$PKG_ROOT/data/documentation/packages/rtl8814au/LICENSE"
+
+# Realtek's firmware licence must travel with the blob: it permits binary
+# redistribution only if the copyright notice and disclaimer are reproduced
+# with the distribution.  Shipping the driver's LICENSE alone is not enough,
+# because the firmware is not covered by it.
+#
+# It goes in two places, and data/licenses/ is the one that is mandatory.
+# `package create` validates every entry in PackageInfo's `licenses` list
+# against the package's OWN contents, not against the host system: a name it
+# does not recognise as one of its built-in standard licences must exist at
+# data/licenses/<exact name> or the build is refused outright with
+# "License '...' isn't contained in package!".  "GNU GPL v2" is recognised;
+# "Realtek WiFi Firmware" is not, even though an installed Haiku carries that
+# licence at /system/data/licenses/Realtek WiFi Firmware.
+#
+# The filename must therefore match the declared name character for character,
+# spaces included.  The documentation copy is the one a user is likely to open,
+# and having it there means the notice travels with the .hpkg rather than
+# depending on what the host system happens to have installed -- which is what
+# Realtek's terms actually require.
+cp "$PROJ/firmware/LICENCE.rtlwifi_firmware.txt" \
+	"$PKG_ROOT/data/licenses/Realtek WiFi Firmware"
+cp "$PROJ/firmware/LICENCE.rtlwifi_firmware.txt" \
+	"$PKG_ROOT/data/documentation/packages/rtl8814au/LICENCE.rtlwifi_firmware.txt"
 
 # .PackageInfo lives at the package root.
 cp "$PKG_INFO_TEMPLATE" "$PKG_ROOT/.PackageInfo"
