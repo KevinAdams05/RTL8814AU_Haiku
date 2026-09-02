@@ -30,3 +30,9 @@ network-results.txt
 
 # Output of scripts/interleave-scan-vs-noscan.sh
 scan-results.txt
+
+# Python bytecode. A .pyc embeds the absolute path of the source it was
+# compiled from, so tracking one leaks the build machine's directory layout
+# as well as being a build artifact.
+__pycache__/
+*.pyc

@@ -148,11 +148,18 @@ re-derive a magic constant when the chip does something unexpected. Write it.
 
 ### 1.4 In-driver WPA2 is a deliberate architectural exception
 
-Haiku's network stack does not deliver ethertype `0x888E` (EAPOL) frames to
-`AF_LINK` packet sockets, so `wpa_supplicant` cannot run the 4-way handshake
-for this driver. The handshake therefore runs **inside the kernel**, and
-software CCMP encrypt/decrypt runs in the data path because the chip's hardware
-crypto engine will not engage.
+This driver can run the WPA2 four-way handshake **inside the kernel**, which is
+not how a Haiku wireless driver is normally built. Software CCMP
+encrypt/decrypt runs in the data path too, because the chip's hardware crypto
+engine will not engage.
+
+It is a deliberate exception rather than a workaround for a platform defect.
+The original justification -- that Haiku does not deliver EAPOL to `AF_LINK`
+packet sockets -- **was wrong**, and `docs/wpa-supplicant-and-deskbar.md`
+records why. The `wpa_supplicant` path works, and is the one to prefer. The
+in-driver path is kept because it works, needs no `net_server` round trip, and
+is the better tool for scripting and for isolating the driver during
+diagnosis.
 
 This is unusual, and the style consequence is: `src/WPA2Crypto.{h,cpp}` and the
 handshake code in `Device.cpp` are held to the same style as everything else,

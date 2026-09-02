@@ -3402,12 +3402,18 @@ RTL8814AUDevice::_RxFrameReceived(void* cookie, const uint8* frameData,
 	uint32 ethLen = 14 + payloadLen;
 
 	// EAPOL frame (ethertype 0x888E) — divert to the in-driver WPA2
-	// state machine instead of pushing into the data ring.  Haiku's
-	// network stack does not deliver non-IP / non-ARP ethertypes to
-	// AF_LINK packet sockets, so wpa_supplicant cannot see EAPOL via
-	// the normal path.  We run the 4-way handshake in-kernel using the
-	// PMK supplied via IOC_HAIKU_JOIN's rich struct, then program the
-	// derived PTK + GTK directly into the chip's security CAM.
+	// state machine instead of pushing into the data ring, but only when
+	// we are the ones running the handshake.  We run the four-way
+	// handshake in-kernel using the PMK supplied via IOC_HAIKU_JOIN's
+	// rich struct, then program the derived PTK + GTK directly into the
+	// chip's security CAM.
+	//
+	// This comment used to justify the diversion by saying Haiku's stack
+	// does not deliver non-IP ethertypes to AF_LINK packet sockets, so
+	// wpa_supplicant could not see EAPOL.  That was wrong -- see
+	// docs/wpa-supplicant-and-deskbar.md -- and it contradicted the
+	// discriminator immediately below, which exists precisely because
+	// the supplicant *does* drive joins and must be left its frames.
 	if (llc[6] == 0x88 && llc[7] == 0x8E) {
 		// Only intercept EAPOL if we are the ones running the handshake.
 		//

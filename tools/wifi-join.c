@@ -5,17 +5,32 @@
  * wifi-join: bring up a WPA2-PSK network on the rtl8814au unofficial
  * driver.
  *
- * Why this tool exists: Haiku's network stack does not deliver
- * ethertype 0x888E (EAPOL) frames to AF_LINK packet sockets, so
- * wpa_supplicant cannot run the WPA2 4-way handshake.  The rtl8814au
- * driver works around this by running the handshake inside the
- * kernel — but to do that it needs the network passphrase, and
- * neither `ifconfig <dev> join SSID password` nor the Deskbar
- * Network app ever delivers the passphrase to the driver.
+ * Why this tool exists: it worked first, and it is still the most
+ * direct way in.  It hands the driver a passphrase and lets the
+ * driver run the four-way handshake in the kernel, with no
+ * net_server round trip — which makes it a better tool for
+ * scripting and for diagnosing the driver in isolation than going
+ * through the normal path.
  *
- * This tool fills that gap: it accepts SSID + passphrase on the
- * command line and hands them to the driver via the driver-specific
- * `IOC_HAIKU_JOIN` ioctl.  The driver runs PBKDF2, drives the full
+ * It is NOT the only way to connect.  The Deskbar network menu, the
+ * Network preferences panel and `ifconfig <dev> join SSID password`
+ * all work as of 0.3.0; they go through net_server and
+ * wpa_supplicant, and that is the route to prefer for ordinary use.
+ *
+ * An earlier version of this comment claimed Haiku's stack does not
+ * deliver ethertype 0x888E (EAPOL) frames to AF_LINK packet sockets,
+ * and that this was why wpa_supplicant could not run the handshake.
+ * That was wrong, and it is worth correcting in place because it was
+ * an accusation against Haiku rather than against this driver.
+ * Haiku delivers EAPOL correctly — binding an AF_LINK socket for
+ * 0x888E succeeds.  What actually blocked the supplicant were three
+ * faults here: the driver swallowed every EAPOL frame before the
+ * supplicant could see one, it never implemented the ioctl that
+ * installs the supplicant's keys, and it failed the SSID read-back
+ * the supplicant performs immediately after associating.
+ *
+ * This tool accepts SSID + passphrase on the command line and hands
+ * them to the driver via the driver-specific `IOC_HAIKU_JOIN` ioctl.  The driver runs PBKDF2, drives the full
  * 4-way handshake, and installs the keys.  After this tool reports
  * success, the network stack can be brought up over the link via
  * `ifconfig`, `dhcpconfig`, or whatever else manages your IP config.
