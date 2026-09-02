@@ -117,6 +117,39 @@ interface stayed unusable until a reboot.
 For anyone testing the driver, this is the difference between one reboot per
 join attempt and none.
 
+**Throughput has been measured properly for the first time, and the transmit
+figure published in 0.3.0 was wrong.** Both of the test machine's interfaces
+sit on one subnet, so the routing table carries two `192.168.74.0/24` routes
+and two default routes; which one a transfer uses depends on their order.
+Every earlier transmit number was really the gigabit wired link.
+
+Measured on 5 GHz, channel 149 at 20 MHz, with each figure checked against the
+wireless interface's own byte counters:
+
+| | published in 0.3.0 | actually |
+|---|---|---|
+| Transmit | 53.9 Mbit/s | **9-11 Mbit/s** |
+| Receive | 15.1 Mbit/s | **16-19 Mbit/s** |
+
+So **receive is now the faster direction**, which reverses what the 0.2.0 and
+0.3.0 entries say about it being a tenth of transmit.
+
+Integrity and stability over **2.05 GB received and 207 MB transmitted**: twelve of
+twelve MD5 checksums matched on a 1.1 MB to 39.3 MB size ladder; a 279 MB and
+a **1.02 GB** Alpine ISO downloaded from the internet at 15.94 and 16.47
+Mbit/s, both matching the distributor's published SHA256; **2,387,968** receive
+callbacks completed with `crc=0 drop=0`; one bad USB bulk-IN transfer in those
+2.39 million, a count that did not move across the second gigabyte; zero
+transmit errors, zero transmit timeouts, zero `queue_bulk` failures, zero H2C
+timeouts, no stalls and no panics.
+
+The rates themselves are a configuration limit rather than a defect. The
+driver runs 20 MHz with no A-MPDU aggregation, no transmit rate adaptation and
+CCMP in software, so almost all the airtime goes to per-frame overhead. See
+`docs/throughput.md` for the method, which matters more than the numbers: a
+transmit figure gathered without dropping the wired interface is worthless,
+and only the interface's byte counters can tell you which happened.
+
 ## 0.3.0 — 2026-08-21
 
 **5 GHz works, and so does connecting from the Deskbar.** 0.2.0 could only
@@ -132,6 +165,11 @@ use 2.4 GHz, and only via the bundled `wifi-join` helper.
 both bands are verified end to end: association, four-way handshake, CCMP
 keys, DHCP lease, ICMP at every ping size from 56 to 1472 bytes, and a full
 SSH session over the air.
+
+**The transmit figure in that table is wrong.** It was gathered before the
+routing trap was understood and is a measurement of the wired link; the real
+value is 9-11 Mbit/s. The receive figure is close to correct. See the
+Unreleased entry above.
 
 On an Edimax AC1750, 2.4 GHz reaches the same standard. 5 GHz only
 associated when 0.3.0 was written; as of 2026-08-25 it completes the
@@ -334,7 +372,9 @@ predicts how often it should have been breaking, and it does.
 
 - **Receive throughput on 2.4 GHz** is roughly a tenth of transmit. Each
   bulk-IN buffer stops receiving while its contents are processed and there
-  are only four of them. 5 GHz is much less affected.
+  are only four of them. 5 GHz is much less affected. (Later correction: on
+  5 GHz the ratio is the other way round, receive being the faster direction
+  once the transmit figure is measured without routing contamination.)
 - No transmit rate adaptation; every data frame goes out at a fixed rate.
 - CCMP runs in software rather than on the chip's engine.
 - A-MPDU aggregation is disabled.

@@ -135,9 +135,12 @@ gigabit wired link. **Check the interface's own `Transmit` counter before
 believing a transmit number** -- it is the only thing here that cannot be
 fooled by routing.
 
-Testing it properly needs the wired interface down, which severs the only
-control channel, so it needs either the cable physically out or a working
-serial console. IPMI is currently unavailable for the latter.
+**Solved 2026-09-02.** Taking the wired interface down does *not* sever the
+only control channel: once the wireless interface holds an address, SSH over it
+keeps working with wired down, so it is its own control channel. Transmit
+measures 9-11 Mbit/s that way. See [throughput.md](throughput.md) for the
+method and `scripts/iso-download-test.sh` for a form of it that cannot strand
+the machine. (IPMI also works now -- the BMC needs an explicit `-C 3`.)
 
 ## Testing traps that cost real time
 

@@ -108,10 +108,13 @@ before that is inflated by an unknown amount. See
 
 **Do not trust these two things without re-checking them:**
 
-- Any transmit throughput number. Both test interfaces share a subnet and
-  Haiku routes out the wired one, so transmit figures gathered over the air
-  are almost certainly measuring gigabit ethernet. Check the interface's own
-  `Transmit` counter, which routing cannot fake.
+- Any transmit throughput number **taken before 2026-09-02**. Both test
+  interfaces share a subnet and Haiku routes out the wired one, so those
+  figures are measuring gigabit ethernet. Transmit has since been measured
+  properly by dropping the wired interface -- see
+  [throughput.md](throughput.md) -- and the rule still stands for any new
+  figure: check the interface's own `Transmit` counter, which routing cannot
+  fake.
 - Any failure rate taken from a handful of runs. Two "regressions" this
   session were the access point dropping off the air and a wedged adapter that
   needed a power cycle, and one hypothesis was built on a channel readback that
@@ -129,7 +132,7 @@ Current state at a glance:
 | | ASUS USB-AC68 | Edimax AC1750 |
 |---|---|---|
 | 2.4 GHz | works | works |
-| 5 GHz | works (54/15 Mbit/s) | **works** -- 59 of 60 joins, WPA2-CCMP, DHCP lease over the air (2026-08-25) |
+| 5 GHz | works (its 54 Mbit/s transmit figure was the wired link -- see [throughput.md](throughput.md)) | **works** -- 59 of 60 joins, WPA2-CCMP, DHCP lease over the air (2026-08-25) |
 
 **The two adapters behave the same.** Settled 2026-08-28 by an interleaved
 comparison on one access point -- three rounds of ten attempts each, with a
@@ -432,40 +435,54 @@ The remaining limits are known and all deliberate:
 - **A-MPDU aggregation is disabled.** `MAX_AGG_NUM` and `AMPDU_DENSITY` are
   never set and Block-ACK state is not wired up.
 
-### 6. Throughput, and why it cannot be measured here
+### 6. Throughput -- measured 2026-09-02
 
-The response-timing fix cut transmissions per frame from 42.5 to 1.0, so
-throughput should have improved substantially. It has not been measured,
-because there is still nowhere to measure it to.
+**This is done.** Full method and figures in
+[throughput.md](throughput.md). Summary, on 5 GHz channel 149 at 20 MHz with
+the Edimax, every number checked against the wireless interface's own byte
+counters:
 
-`Adams-Guest` looked ideal: it is a **separate subnet, 192.168.20.0/24**, so
-routing cannot divert its traffic out of the wired interface the way it does on
-the shared subnet. DHCP over the air works and shredder gets 192.168.20.16.
-But the network blocks client traffic -- neither shredder nor a second adapter
-on the same network can ping the gateway or each other.
+| | |
+|---|---|
+| receive | 16-19 Mbit/s |
+| transmit | 9-11 Mbit/s |
+| internet download | 279 MB and 1.02 GB Alpine ISOs at 15.94 / 16.47 Mbit/s, published SHA256 matched |
+| integrity | 12 of 12 MD5 matches on a 1.1-39.3 MB ladder, both directions |
+| soak | 2.05 GB received, 2,387,968 RX callbacks, `crc=0 drop=0`, 0 dropped, 0 TX errors |
 
-**That was checked against the vendor driver, and it fails there too**, so it
-is the network's policy and not ours. Worth remembering as the general
-technique: when a link-level test fails, run the same test with the vendor
-driver on the same network before spending any time on the driver.
+**The transmit figure published in 0.3.0 (53.9 Mbit/s) was the wired link.**
+Receive is now the faster direction, reversing what the older entries claim.
 
-What would actually work, in order of preference:
+How the routing problem was solved, since it blocked this for weeks:
 
-1. **The main 5 GHz network** (`AdamsFamily02-5G`), which is a normal subnet
-   with reachable hosts. Needs its passphrase; it has never been recorded, only
-   supplied for individual runs.
-2. **Drop the wired interface** over IPMI serial-over-LAN, so routing has no
-   alternative. The BMC and SOL setup are already documented.
+- **Receive** needs only that the peer address the wireless address
+  (192.168.74.77). That constrains the sender, so it is enough.
+- **Transmit and any internet transfer** are decided by Haiku's own routing,
+  which prefers the wired default route. Addressing the wireless interface
+  does not change it and `ping -S` does not either.
+- So the wired interface has to go **down**. That does not sever control the
+  way this document previously assumed: once the wireless interface holds an
+  address, it *is* the control channel, and SSH over it keeps working with
+  wired down. `scripts/iso-download-test.sh` does this safely -- it runs
+  entirely on the test machine so a dropped session cannot strand it, and a
+  watchdog child restores wired unconditionally after 30 minutes.
 
-Either way, read the interface's own `Transmit` counter as well as any
-timing figure -- routing cannot fake the counter, and every transmit number in
-this document's history was suspect for exactly that reason.
+The general technique that settled the guest-network dead end is still worth
+keeping: **when a link-level test fails, run the same test with the vendor
+driver on the same network before spending any time on the driver.** That is
+what proved `Adams-Guest` blocks client traffic by policy -- it fails on the
+vendor driver too.
+
+What is left here is not measurement but raising the ceiling. The rates are a
+configuration limit: 20 MHz, no A-MPDU aggregation, no transmit rate
+adaptation, CCMP in software. With aggregation off, per-frame overhead
+dominates the airtime whatever the PHY rate is.
 
 ### 7. Receive throughput
 
-Note the transmit figures below predate the discovery that transmit cannot be
-measured over the air on this bench -- see
-[testing-notes.md](testing-notes.md). Treat them as unverified.
+Note the transmit figures below predate the routing discovery and are
+measurements of the wired link. Transmit has since been measured properly at
+9-11 Mbit/s -- see [throughput.md](throughput.md).
 
 | | Loss | Transmit | Receive |
 |---|---|---|---|
