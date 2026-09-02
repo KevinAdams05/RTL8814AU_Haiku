@@ -15,7 +15,26 @@ point has measured 30% and 13% in two tests, and one adapter went 30%, 60%, 10%
 across three blocks of a single afternoon. Only interleaved comparisons carry
 information. See [testing-notes.md](testing-notes.md).
 
-### Bisecting Close(): inconclusive at n=40 per arm (2026-09-02)
+### CORRECTION: AdamsFamily02-5G is not broken (2026-09-02)
+
+An earlier note here and in the task list said that network "never answers our
+authentication". **That was wrong.** It came from a syslog grep whose pattern
+did not match the driver's actual log wording, not from anything on the air.
+
+Captured on the air: our driver sends auth, **the access point answers**
+(`alg=0 seq=2 status=0`), we send the association request, **and it accepts**
+(`assoc-resp`). Ten measured joins gave 6 successes and 4 failures, and every
+failure was `associated, handshake did not complete` -- the ordinary reason-15
+defect at the ordinary rate. The vendor driver joins the same network 8/8.
+
+So there is nothing 5 GHz-specific to fix, and that network is usable for
+throughput work -- which matters, because unlike the guest VLAN it is a normal
+subnet with reachable hosts.
+
+**The lesson is one this project keeps relearning: absence from a grep is not
+absence from the wire.**
+
+## Bisecting Close(): inconclusive at n=40 per arm (2026-09-02)
 
 `Close()` does four things: wake blocked readers, `Disconnect()`, stop the
 receive path, cancel the transmit endpoints. Each arm below is 40 joins with a
