@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 — 2026-09-02
+
+**First release considered fit for general use.** The driver associates on both
+bands by any of Haiku's connection routes, completes WPA2-PSK, holds a link
+under sustained load, and moves data without corrupting it -- 2.05 GB received
+and 207 MB transmitted across this release's testing with zero dropped packets
+and every checksum matching.
+
+What 1.0 does *not* mean: a join can still fail and need retrying, and
+repeatedly cycling the interface makes that much worse. Both are quantified
+under Known limitations below, and both are honest numbers rather than
+estimates.
 
 **After connecting once, the driver could not see any other network until
 reboot.** Enabling CCMP at the end of a successful handshake sets the chip's
@@ -149,6 +160,40 @@ CCMP in software, so almost all the airtime goes to per-frame overhead. See
 `docs/throughput.md` for the method, which matters more than the numbers: a
 transmit figure gathered without dropping the wired interface is worthless,
 and only the interface's byte counters can tell you which happened.
+
+### Known limitations
+
+- **A join can fail and need retrying.** From a fresh boot, without cycling the
+  interface, **2 of 40 joins failed (5%)**. The failure mode is an incomplete
+  four-way handshake: the chip accepts a well-formed 193-byte EAPOL M2, reports
+  the USB transfer complete, counts the frame in `REG_DROP_PKT_NUM`, and never
+  puts it on the air. Around twenty candidate causes have been eliminated by
+  measurement and the mechanism is still unknown -- see
+  `docs/reason-15-investigation.md`. Retrying works.
+- **Avoid repeatedly taking the interface down and up.** With an
+  `ifconfig down`/`up` between joins the failure rate rises to **18 of 40
+  (45%)**, `p = 0.000053`, and *degrades* across a run, from about 30% to about
+  85% over 120 joins. After roughly 150 cycles the interface stops being
+  registered with the network stack altogether. **A reboot clears both**, and
+  normal use -- connect, stay connected -- does not trigger either.
+- **Throughput is 16-19 Mbit/s receive and 9-11 Mbit/s transmit** on 5 GHz.
+  This is a configuration limit, not a defect: the driver runs 20 MHz with no
+  A-MPDU aggregation, no transmit rate adaptation and CCMP in software, so
+  per-frame overhead dominates the airtime. See `docs/throughput.md`.
+- **2.4 GHz receive is slower than 5 GHz.** Prefer 5 GHz where you have it.
+- **20 MHz channels only.** No 40 or 80 MHz, so no path to 802.11ac rates yet.
+- **No A-MPDU aggregation** and **no transmit rate adaptation**; every data
+  frame goes out at a fixed rate.
+- **CCMP runs in software** rather than on the chip's engine.
+- **Open (unencrypted) networks** must go through `net_server`, which tears the
+  association down again immediately. This one is Haiku-side, not the driver.
+- **No auto-connect at boot.** Also Haiku-side, and it affects every WiFi
+  driver on the platform; the README documents the `UserBootscript`
+  workaround.
+
+Only two adapters have actually been in a machine, the ASUS USB-AC68 and the
+Edimax EW-7833UAC. The other seven USB IDs are claimed on the strength of
+appearing in the reference driver's RTL8814AU table and are untested.
 
 ## 0.3.0 — 2026-08-21
 

@@ -1,5 +1,7 @@
->[!WARNING]
->This is alpha version code. It is start to work, but it is not finished.
+>[!NOTE]
+>**Version 1.0.0.** The driver works, but a join can still fail
+>and need retrying. There may also be other bugs, please log them if you run into issues. This is
+>not part of the official Haiku distribution.
 
 
 **Bug reports (please attach listdev output, syslog and/or screenshots) and PRs welcome! See "Logging Bugs / How to Help" section below**
@@ -26,8 +28,8 @@ reference driver's RTL8814AU table.
 
 | Device | Tested |  ID | Class |
 |---|---|---|---|
-| ASUS USB-AC68|🚧| 0b05:1817 | 802.11ac AC1900, 4×4 dual-band |
-| Edimax EW-7833UAC |🚧| 7392:a833 | 802.11ac AC1750, 4×4 dual-band |
+| ASUS USB-AC68|✅| 0b05:1817 | 802.11ac AC1900, 4×4 dual-band |
+| Edimax EW-7833UAC |✅| 7392:a833 | 802.11ac AC1750, 4×4 dual-band |
 | ASUS USB-AC68 (rev 2) | 🟨 | 0b05:1852 |  |
 | Netgear A7000 | 🟨 | 0846:9054 |  |
 | D-Link DWA-192 | 🟨 | 2001:331a |  |
@@ -38,6 +40,45 @@ reference driver's RTL8814AU table.
 
 The class column is empty for the untested rows. I will add in the details when/if I get devices to test, or based on reports from other users.
 
+
+---
+
+## Known Limitations
+
+These are measured, not estimated. Full detail and method in
+[CHANGELOG.md](CHANGELOG.md) and [docs/](docs/).
+
+| | |
+|---|---|
+| **A join can fail** | 2 of 40 from a fresh boot (**5%**). Retry works. |
+| **Don't cycle the interface repeatedly** | With `ifconfig down`/`up` between joins, failures rise to 18 of 40 (**45%**) and degrade from ~30% to ~85% over 120 joins. After ~150 cycles the interface stops being registered with the stack. **A reboot clears both.** |
+| **Receive throughput** | 16–19 Mbit/s on 5 GHz |
+| **Transmit throughput** | 9–11 Mbit/s on 5 GHz |
+| **Channel width** | 20 MHz only — no 40/80 MHz, so no 802.11ac rates yet |
+| **Aggregation** | No A-MPDU |
+| **Rate control** | None; every data frame goes out at a fixed rate |
+| **Crypto** | CCMP in software, not on the chip's engine |
+| **2.4 GHz receive** | Slower than 5 GHz — prefer 5 GHz where you have it |
+
+The join failure is an incomplete four-way handshake: the chip accepts a
+well-formed 193-byte EAPOL M2, reports the USB transfer complete, counts the
+frame dropped in `REG_DROP_PKT_NUM`, and never puts it on the air. Around
+twenty candidate causes have been eliminated by measurement; the mechanism is
+still unknown. The elimination record is in
+[docs/reason-15-investigation.md](docs/reason-15-investigation.md) — read it
+before investigating, it will save you repeating work.
+
+The throughput figures are a **configuration limit, not a defect**. With 20 MHz
+channels, no aggregation and no rate adaptation, per-frame overhead dominates
+the airtime whatever the PHY rate is, so the gap to the "AC1750" number on the
+box is features that are switched off. Method and counter-validated
+measurements in [docs/throughput.md](docs/throughput.md).
+
+Two limitations are **Haiku-side, not this driver**: open unencrypted networks
+must go through `net_server`, which tears the association down again
+immediately; and there is no auto-connect at boot, which affects every WiFi
+driver on the platform (see the `UserBootscript` workaround under
+[Reconnect after reboot](#reconnect-after-reboot)).
 
 ---
 
@@ -58,7 +99,7 @@ Detailed docs live in [docs/](docs/).  Highlights:
 
 ## Logging Bugs
 
-Bugs are welcome! To log a bug, [please log it here in github as an issue](https://github.com/KevinAdams05/rtl8814au_unofficial/issues), and include as much detail as possible.
+Bugs are welcome! To log a bug, [please log it here in github as an issue](https://github.com/KevinAdams05/RTL8814AU_Haiku/issues), and include as much detail as possible.
 
 **From Haiku**
 - attach your syslog file
@@ -131,7 +172,7 @@ PRs are welcome! However, please follow the guidelines below.
 
 ### From a prebuilt `.hpkg`
 
-1. Download `rtl8814au-<version>-x86_64.hpkg` from the [Releases page](https://github.com/KevinAdams05/rtl8814au_unofficial/releases).
+1. Download `rtl8814au-<version>-x86_64.hpkg` from the [Releases page](https://github.com/KevinAdams05/RTL8814AU_Haiku/releases).
 2. Copy it into one of:
    - `~/config/packages/` — installs only for your user (recommended)
    - `/system/packages/` — installs system-wide (needs root)

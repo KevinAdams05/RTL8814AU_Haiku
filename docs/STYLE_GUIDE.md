@@ -1322,7 +1322,7 @@ Facts a contributor needs to keep examples accurate:
 rtl8814au ships as a standalone, unofficial `.hpkg` built by
 `package/build-hpkg.sh` on the Haiku cross-build server. The package is
 `rtl8814au` (GPL v2), and it also provides `cmd:wifi_join`. The repository lives at
-`KevinAdams05/rtl8814au_unofficial`.
+`KevinAdams05/RTL8814AU_Haiku`.
 
 It is not part of the Haiku source tree, and since 2026-08-27 it is GPL v2,
 which closes the door on contributing it to Haiku's MIT-licensed tree. The

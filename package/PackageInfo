@@ -1,5 +1,5 @@
 name			rtl8814au
-version			0.3.0-1
+version			1.0.0-1
 architecture	x86_64
 summary			"RTL8814AU USB WiFi driver (unofficial)"
 
@@ -7,25 +7,40 @@ description		"Native Haiku kernel driver for USB WiFi adapters based on
 the Realtek RTL8814AU chipset (4x4 802.11ac, used in adapters like the
 ASUS USB-AC68 and Edimax EW-7833UAC).
 
-Supports open and WPA2-PSK (AES/CCMP) networks via an in-driver 4-way
-handshake (the standard Haiku wpa_supplicant path has a stack-level issue
-with EAPOL delivery on AF_LINK that prevents conventional drivers from
-completing WPA2 association).  CCMP encrypt/decrypt for the data path is
-performed in software inside the driver — the chip's HW crypto engine
-refuses to engage on Haiku and the SW fallback is what makes WPA2 work
-end-to-end.
+Open and WPA2-PSK (AES/CCMP) networks work on both 2.4 GHz and 5 GHz, by
+any of Haiku's normal connection routes: the Deskbar network menu, the
+Network preferences panel, or
 
-To join a WPA2-PSK network, run the bundled `wifi-join` tool — neither
-`ifconfig <dev> join SSID password` nor the Deskbar Network app can
-deliver the passphrase to the driver, so the helper is currently the
-only path that completes the handshake:
-
-  wifi-join /dev/net/rtl8814au/0 <ssid> <passphrase>
+  ifconfig /dev/net/rtl8814au/0 join <ssid> <passphrase>
   ifconfig /dev/net/rtl8814au/0 auto-config
 
-This driver is NOT part of the official Haiku distribution.  It is
-developed independently and shipped as a standalone package.  Bug reports
-welcome at https://github.com/KevinAdams05/rtl8814au_unofficial/issues."
+A bundled wifi-join helper is also included. It hands the passphrase
+straight to the driver and runs the four-way handshake in the kernel,
+which needs no net_server round trip and is useful for scripting and for
+diagnosing the driver in isolation. Both routes are supported and end in
+the same place.
+
+CCMP encrypt and decrypt for the data path are performed in software
+inside the driver; the chip's hardware crypto engine has not been made to
+engage on Haiku and the software fallback is what makes WPA2 work end to
+end.
+
+Known limitations, measured rather than estimated: a join can fail and
+need retrying, at about 5 percent from a fresh boot; repeatedly taking
+the interface down and up makes this much worse and a reboot clears it;
+throughput is 16-19 Mbit/s receive and 9-11 Mbit/s transmit on 5 GHz,
+which is a consequence of running 20 MHz channels with no frame
+aggregation and no transmit rate adaptation rather than a defect. Open
+unencrypted networks and auto-connect at boot are limited by Haiku
+itself, not by this driver. See the changelog for the full list.
+
+Only the ASUS USB-AC68 and Edimax EW-7833UAC have been tested on real
+hardware. Seven further USB IDs are claimed because they appear in the
+reference driver's RTL8814AU table, and are untested.
+
+This driver is NOT part of the official Haiku distribution. It is
+developed independently and shipped as a standalone package. Bug reports
+welcome at https://github.com/KevinAdams05/RTL8814AU_Haiku/issues."
 
 packager		"Kevin Adams <kevinadams05@gmail.com>"
 vendor			"Kevin Adams"
@@ -39,8 +54,8 @@ copyrights {
 }
 
 provides {
-	rtl8814au = 0.3.0
-	cmd:wifi_join = 0.3.0
+	rtl8814au = 1.0.0
+	cmd:wifi_join = 1.0.0
 }
 
 requires {
@@ -48,5 +63,5 @@ requires {
 }
 
 urls {
-	"https://github.com/KevinAdams05/rtl8814au_unofficial"
+	"https://github.com/KevinAdams05/RTL8814AU_Haiku"
 }

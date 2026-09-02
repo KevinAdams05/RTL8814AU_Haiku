@@ -7,7 +7,7 @@ on reboot.
 
 If you just want to install the driver, see [Installation](../README.md#installation)
 in the top-level README — you can grab a prebuilt `.hpkg` from the
-[Releases page](https://github.com/KevinAdams05/rtl8814au_unofficial/releases)
+[Releases page](https://github.com/KevinAdams05/RTL8814AU_Haiku/releases)
 without ever building locally.
 
 This document is for people who want to compile from source.
@@ -23,7 +23,7 @@ You need:
   `configure --build-cross-tools x86_64` dance from the
   [official Haiku build docs](https://www.haiku-os.org/development/build-haiku-from-source/).
 - A checkout of this repo somewhere convenient (e.g.
-  `~/projects/rtl8814au_unofficial/`).
+  `~/projects/RTL8814AU_Haiku/`).
 
 The build does not need any external dependencies — the Haiku tree's
 own `jam` and cross-tools handle everything.
@@ -31,7 +31,7 @@ own `jam` and cross-tools handle everything.
 ## Source layout
 
 ```
-rtl8814au_unofficial/
+RTL8814AU_Haiku/
 ├── src/                    # driver source code
 │   ├── Jamfile             # KernelAddon target
 │   ├── Driver.cpp / Device.cpp / RegisterIO.cpp / Firmware.cpp
