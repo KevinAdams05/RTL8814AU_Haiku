@@ -45,40 +45,11 @@ The class column is empty for the untested rows. I will add in the details when/
 
 ## Known Limitations
 
-These are measured, not estimated. Full detail and method in
-[CHANGELOG.md](CHANGELOG.md) and [docs/](docs/).
-
-| | |
-|---|---|
-| **A join can fail** | 2 of 40 from a fresh boot (**5%**). Retry works. |
-| **Don't cycle the interface repeatedly** | With `ifconfig down`/`up` between joins, failures rise to 18 of 40 (**45%**) and degrade from ~30% to ~85% over 120 joins. After ~150 cycles the interface stops being registered with the stack. **A reboot clears both.** |
-| **Receive throughput** | 16–19 Mbit/s on 5 GHz |
-| **Transmit throughput** | 9–11 Mbit/s on 5 GHz |
-| **Channel width** | 20 MHz only — no 40/80 MHz, so no 802.11ac rates yet |
-| **Aggregation** | No A-MPDU |
-| **Rate control** | None; every data frame goes out at a fixed rate |
-| **Crypto** | CCMP in software, not on the chip's engine |
-| **2.4 GHz receive** | Slower than 5 GHz — prefer 5 GHz where you have it |
-
-The join failure is an incomplete four-way handshake: the chip accepts a
-well-formed 193-byte EAPOL M2, reports the USB transfer complete, counts the
-frame dropped in `REG_DROP_PKT_NUM`, and never puts it on the air. Around
-twenty candidate causes have been eliminated by measurement; the mechanism is
-still unknown. The elimination record is in
-[docs/reason-15-investigation.md](docs/reason-15-investigation.md) — read it
-before investigating, it will save you repeating work.
-
-The throughput figures are a **configuration limit, not a defect**. With 20 MHz
-channels, no aggregation and no rate adaptation, per-frame overhead dominates
-the airtime whatever the PHY rate is, so the gap to the "AC1750" number on the
-box is features that are switched off. Method and counter-validated
-measurements in [docs/throughput.md](docs/throughput.md).
-
-Two limitations are **Haiku-side, not this driver**: open unencrypted networks
-must go through `net_server`, which tears the association down again
-immediately; and there is no auto-connect at boot, which affects every WiFi
-driver on the platform (see the `UserBootscript` workaround under
-[Reconnect after reboot](#reconnect-after-reboot)).
+A join can fail and need retrying, throughput is well below what the hardware
+is sold on, and a couple of limits are Haiku's rather than the driver's. All of
+it is measured rather than estimated, and written up in
+**[docs/known-limitations.md](docs/known-limitations.md)** — worth a look
+before you install.
 
 ---
 
@@ -87,6 +58,9 @@ driver on the platform (see the `UserBootscript` workaround under
 
 Detailed docs live in [docs/](docs/).  Highlights:
 
+- [Known limitations](docs/known-limitations.md) — what does not work yet, measured rather than estimated
+- [Command-line usage](docs/command-line-usage.md) — scanning, `ifconfig join`, `wifi-join`, reconnecting after a reboot
+- [Throughput](docs/throughput.md) — measured rates, and how to measure them without the routing trap
 - [Architecture overview](docs/architecture.md) — how the driver is organized, threading model, where to start reading
 - [Hardware initialization](docs/hardware-init.md) — power-on, EFUSE, MAC init, firmware load, PHY config
 - [RX path](docs/rx-path.md) and [TX path](docs/tx-path.md) — frame conversion, EAPOL diversion, descriptor build
@@ -200,148 +174,28 @@ ifconfig /dev/net/rtl8814au/0
 You should see `Hardware type: Ethernet, Address: <your MAC>` and
 the interface marked `up broadcast`.
 
-### Scan for networks
+### Connect to a network
 
-```
-ifconfig /dev/net/rtl8814au/0 scan
-```
+Click the network icon in the **Deskbar** and pick your network, or use the
+**Network** preferences panel if you want more control. Enter the passphrase
+when asked. That is all most people need.
 
-Returns the BSS list — SSIDs, signal strengths, security types.
+Both routes go through Haiku's `net_server`, which hands the join to
+`wpa_supplicant` — the normal Haiku path, and the one to prefer. WPA2-PSK
+(AES/CCMP) works on both 2.4 GHz and 5 GHz; **prefer 5 GHz where you have it**,
+since receive is faster there.
 
-A scan sweeps all 42 supported channels across both bands and takes about
-5.6 seconds, so the results of the scan you just asked for may land just
-after the command returns — run it twice if the network you want is not
-listed yet.  The sweep is driven by the driver rather than the chip's
-firmware, which does not sweep on its own.
+Two caveats, both Haiku's rather than the driver's: **open (unencrypted)
+networks** are torn down again immediately by `net_server`, and Haiku does not
+**auto-connect at boot** — there is a workaround in
+[docs/command-line-usage.md](docs/command-line-usage.md#reconnect-after-reboot).
 
-Scanning is skipped while connected, since hopping away from the access
-point's channel to collect beacons would drop the link.  Disconnect first
-if you need fresh results.
+### Doing it from the command line
 
-### Join an open network
-
-Use Haiku's standard `ifconfig` flow.  No special tools needed:
-
-```
-ifconfig /dev/net/rtl8814au/0 join <SSID>
-ifconfig /dev/net/rtl8814au/0 auto-config
-```
-
-### Join a WPA2-PSK network
-
-Any of these work:
-
-- the **Deskbar** network menu
-- the **Network** preferences panel
-- `ifconfig /dev/net/rtl8814au/0 join <SSID> <passphrase>`
-- the bundled `wifi-join` helper, below
-
-The first three go through Haiku's `net_server`, which hands the join to
-`wpa_supplicant`; `wifi-join` instead drives the handshake inside the driver.
-Both routes are supported and end in the same place.
-
-```
-wifi-join /dev/net/rtl8814au/0 <SSID> <passphrase>
-ifconfig /dev/net/rtl8814au/0 auto-config
-```
-
-`wifi-join` runs the WPA2-PSK 4-way handshake against the AP, then
-forks into the background and keeps the device fd open so the
-connection stays alive.  It prints the background process ID; the
-connection lives until that pid dies.
-
-Example:
-
-```
-$ wifi-join /dev/net/rtl8814au/0 MyHomeWiFi 'super secret pw'
-wifi-join: handshake kicked off for SSID 'MyHomeWiFi' on /dev/net/rtl8814au/0
-wifi-join: background pid 1234 holds the device open; kill it to disconnect.
-wifi-join: bring up IP next, e.g. `ifconfig /dev/net/rtl8814au/0 auto-config`
-
-$ ifconfig /dev/net/rtl8814au/0 auto-config
-$ ping -c 3 192.168.1.1
-PING 192.168.1.1 (192.168.1.1): 56 data bytes
-64 bytes from 192.168.1.1: icmp_seq=0 ttl=64 time=0.402 ms
-...
-```
-
-### Disconnect
-
-Kill the background `wifi-join` process:
-
-```
-kill <pid>
-```
-
-This closes the device fd, which tells the driver to tear down the
-link.
-
-### Reconnect after reboot
-
-Haiku does not currently auto-connect to a saved WiFi network at
-boot.  After every reboot you need to run `wifi-join` again.
-
-This is **not specific to this driver** — the same limitation
-affects every WiFi driver on Haiku (the `iprowifi4965` and
-`rtl8188ee` user threads converge on the same workaround).  The
-underlying issue is in `net_server` / `wpa_supplicant` /
-`wireless_networks` persistence, well outside this driver's scope.
-See the Haiku forum discussion at
-[Wi-Fi auto connect after boot](https://discuss.haiku-os.org/t/wi-fi-auto-connect-after-boot/13156)
-for the current state of community workarounds and upstream activity.
-
-**Workaround** — add the join + auto-config commands to
-`~/config/settings/boot/UserBootscript` so they run at every login:
-
-```sh
-# At the bottom of ~/config/settings/boot/UserBootscript
-
-# Bring down ethernet first if you only want WiFi
-# ifconfig /dev/net/<your_ethernet>/0 down
-
-# Connect WiFi and request DHCP
-wifi-join /dev/net/rtl8814au/0 'YourSSID' 'YourPassphrase'
-ifconfig /dev/net/rtl8814au/0 auto-config
-```
-
-The passphrase is in plaintext in this file — protect it accordingly
-(`chmod 600 ~/config/settings/boot/UserBootscript`).  Equivalent
-behavior can also be achieved by dropping an executable shell script
-into the per-user-launch directory at `~/config/settings/boot/launch/`
-if you prefer to keep boot commands separated by purpose.
-
-### Why are there two ways to connect?
-
-Both work, and they get there differently.
-
-The **Deskbar and `ifconfig join`** route goes through Haiku's `net_server`,
-which always hands a wireless join to `wpa_supplicant`. The supplicant runs
-the four-way handshake and passes the resulting keys down to the driver. This
-is the normal Haiku path and the one to prefer.
-
-**`wifi-join`** instead hands the driver the passphrase directly and lets it
-run the handshake itself, in the kernel. It exists because it worked first,
-and it is still useful: it needs no `net_server` round trip, which makes it a
-better tool for scripting and for diagnosing the driver in isolation.
-
-An earlier version of this file claimed the Deskbar route was impossible
-because of a Haiku kernel bug — that EAPOL frames were not delivered to
-userland `AF_LINK` packet sockets. **That was wrong, and worth correcting
-plainly since it was an accusation against Haiku rather than this driver.**
-Haiku's stack delivers EAPOL correctly; a test binding an `AF_LINK` socket
-for ethertype 0x888E succeeds. What actually blocked the Deskbar was three
-faults in this driver: it swallowed every EAPOL frame before the supplicant
-could see one, it never implemented the ioctl that installs the supplicant's
-keys, and it failed the SSID read-back the supplicant performs right after
-associating — which made the supplicant conclude the association was not real
-and tear it down.
-
-One genuine Haiku-side limitation remains: **open (unencrypted) networks**
-have to go through `net_server`, and it tears the association down again
-immediately. That one is not the driver's doing.
-
-See [docs/wpa2-in-driver.md](docs/wpa2-in-driver.md) for the full
-design.
+Scanning by hand, `ifconfig join`, the bundled `wifi-join` helper,
+disconnecting, and reconnecting automatically after a reboot are all covered in
+**[docs/command-line-usage.md](docs/command-line-usage.md)**. You do not need
+any of it for normal use.
 
 ---
 
